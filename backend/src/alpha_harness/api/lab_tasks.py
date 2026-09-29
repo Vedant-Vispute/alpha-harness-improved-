@@ -1,14 +1,16 @@
 """Tasks: what the labs added, run from one place.
 
 A lab only adds a task. Here a task runs: it waits until its cores fit in the free slots,
-runs until its simulations are spent, across days if it has to, and can be paused,
-stopped, changed or removed. Search Lab, Template Lab and Evolution Lab add scheduler.
+runs until its simulations are spent, across days if it has to, and can be paused, changed,
+continued, cloned or removed. It is never stopped: anything that would have ended it early
+pauses it instead, to be resumed where it left off or cloned fresh.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Query
@@ -16,22 +18,30 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 
 from ..db.models import SimStatus, SimulationRecord, Study, StudyStatus, Trial, TrialState, utcnow
+from ..labs import power_pool as pool_lab
 from ..labs import scheduler, search
+from ..labs.launch import AddedTask, add_study
 from ..labs.objectives import FAILURE, OBJECTIVES, StudyNotFoundError
 from ..labs.params import (
+    BY_SAMPLER,
     CORRELATION_BREAKER,
+    GA_SAMPLER,
+    POWER_POOL_SAMPLER,
     SETTINGS_SAMPLER,
     TASK_SAMPLERS,
     TEMPLATE_SAMPLER,
+    PowerPoolParams,
     task_params,
 )
 from ..labs.study import ranked
 from ..schemas import Out
 from ..tasks import Task
 from ..tools import power_pool
+from ..tools.settings_sampler import PENDING_SEND
 from ..tools.submission_planner import ESCAPE
 from ..vault.yields import checks_of, clean, is_submitted, verdict
 from .deps import State, refuse
+from .prompts import chosen
 
 router = APIRouter(prefix="/api/lab-tasks", tags=["lab-tasks"])
 
@@ -84,6 +94,13 @@ class LabTask(Out):
     decay: int | None
     cores: int
     dataset_ids: list[str]
+    #: The datasets' names, in the same order; the id where the catalog has no name.
+    dataset_names: list[str] = Field(default_factory=list)
+    #: Single fields the task was told to use, when it was; zero uses its datasets whole.
+    chosen_fields: int = 0
+    #: LLM Power Pool Lab only: the prompt it sends and the model it asks.
+    prompt_name: str | None = None
+    model: str | None = None
     fields: int
     target: int
     simulated: int
@@ -280,7 +297,7 @@ async def _progress(state: Any, ids: list[int]) -> dict[int, dict[str, Any]]:
     return out
 
 
-def _task(row: Study, progress: dict[str, Any]) -> LabTask:
+def _task(row: Study, progress: dict[str, Any], names: dict[str, str] | None = None) -> LabTask:
     # Read raw on purpose: this only displays, and one malformed old row must not take the
     # whole Tasks list down with a validation error.
     params = row.sampler_params or {}
@@ -313,6 +330,12 @@ def _task(row: Study, progress: dict[str, Any]) -> LabTask:
             "expression": row.template_source if row.sampler in ONE_EXPRESSION else None,
             "cores": scheduler.cores_of(row),
             "datasetIds": params.get("datasetIds") or [],
+            "datasetNames": [(names or {}).get(d, d) for d in params.get("datasetIds") or []],
+            "chosenFields": len(params.get("fieldIds") or []),
+            "promptName": (params.get("promptName") or "Built-in")
+            if row.sampler == POWER_POOL_SAMPLER
+            else None,
+            "model": params.get("model") or None,
             "fields": len((params.get("space") or {}).get("fields") or {}),
             "target": row.max_trials,
             # What spent quota, as the scheduler counts toward the target.
@@ -331,9 +354,25 @@ def _task(row: Study, progress: dict[str, Any]) -> LabTask:
     )
 
 
+async def _dataset_names(state: Any, rows: list[Study]) -> dict[str, str]:
+    """Every dataset the tasks name, by id, as the catalog calls them. Empty when unsynced."""
+    ids = sorted({d for r in rows for d in (r.sampler_params or {}).get("datasetIds") or []})
+    if not ids:
+        return {}
+    found = await state.catalog.query(
+        f"""
+        SELECT dataset_id, any_value(name) AS name FROM data_set
+        WHERE dataset_id IN ({", ".join("?" for _ in ids)}) GROUP BY dataset_id
+        """,  # noqa: S608
+        ids,
+    )
+    return {str(f["dataset_id"]): str(f["name"] or f["dataset_id"]) for f in found}
+
+
 async def _payload(state: Any, task_id: int) -> LabTask:
     row = await _one(state, task_id)
-    return _task(row, (await _progress(state, [row.id]))[row.id])
+    names = await _dataset_names(state, [row])
+    return _task(row, (await _progress(state, [row.id]))[row.id], names)
 
 
 @router.get("")
@@ -341,7 +380,8 @@ async def list_tasks(state: State) -> LabTasks:
     """Every task, newest first, and the slots they share."""
     rows = await _rows(state)
     progress = await _progress(state, [r.id for r in rows])
-    return LabTasks(slots=state.engine.slots, tasks=[_task(r, progress[r.id]) for r in rows])
+    names = await _dataset_names(state, rows)
+    return LabTasks(slots=state.engine.slots, tasks=[_task(r, progress[r.id], names) for r in rows])
 
 
 async def _queue(state: Any, ids: list[int]) -> None:
@@ -355,12 +395,20 @@ async def _queue(state: Any, ids: list[int]) -> None:
             for task_id in ids:
                 row = await session.get(Study, task_id)
                 if row is not None and row.status in RUNNABLE:
-                    if row.status == StudyStatus.FAILED:
-                        row.message = None
-                        row.finished_at = None
+                    # Whatever paused it is behind it now.
+                    row.message = None
+                    row.finished_at = None
                     row.status = StudyStatus.QUEUED
                     params = task_params(row)
                     params.queued_at = queued_at
+                    params.stopping = False
+                    if isinstance(params, PowerPoolParams):
+                        # Its call allowance and empty-answer count start again, or the check
+                        # that paused it would pause it again on the first tick.
+                        llm = dict(params.llm)
+                        llm |= {"empty": 0, "failed": 0, "capFrom": int(llm.get("calls") or 0)}
+                        params.llm = llm
+                        pool_lab.forget_retry(task_id)
                     row.sampler_params = params.dump()
             await session.commit()
     await scheduler.start_waiting(state.optimizer)
@@ -450,8 +498,7 @@ async def pause(task_id: int, state: State) -> LabTask:
     # meantime was written back to PAUSED, and a finished task holds no cores.
     async with state.optimizer.lock(task_id):
         row = await _one(state, task_id)
-        stopping = task_params(row).stopping
-        if row.status not in (StudyStatus.RUNNING, StudyStatus.QUEUED) or stopping:
+        if row.status not in (StudyStatus.RUNNING, StudyStatus.QUEUED):
             raise refuse(409, "not_running", "Only a running or waiting task can pause.")
         await state.optimizer.set_status(task_id, StudyStatus.PAUSED)
         await state.engine.drop_queued(row.task)
@@ -460,20 +507,163 @@ async def pause(task_id: int, state: State) -> LabTask:
     return await _payload(state, task_id)
 
 
-@router.post("/{task_id}/stop")
-async def stop(task_id: int, state: State) -> LabTask:
-    """Finish a task early. Simulations already sent still finish and are scored.
+class ContinueTask(BaseModel):
+    #: Simulations to add to its target. Zero carries on towards the target it has.
+    simulations: int = Field(default=0, ge=0, le=search.MAX_SIMULATIONS)
 
-    Pressed on a task that is *already* stopping, it forces: what is out on BRAIN is
-    cancelled where it can be, the trials close whatever their simulations are doing, and
-    the cores come back. There is no separate button because there is no separate
-    intention — the second press means the first one did not work.
+
+@router.post("/{task_id}/continue")
+async def continue_task(task_id: int, body: ContinueTask, state: State) -> LabTask:
+    """Carry any task on from where it left off, with more simulations if it met its target.
+
+    A paused, waiting-to-start or finished task all continue the same way: its trials, its
+    memory and what it learnt stay, and it runs until the new target is met.
+    """
+    async with state.optimizer.lock(task_id):
+        row = await _one(state, task_id)
+        if row.status in (StudyStatus.RUNNING, StudyStatus.QUEUED):
+            raise refuse(409, "running", "It is already running.")
+        target = row.max_trials + body.simulations
+        if target > search.MAX_SIMULATIONS:
+            raise refuse(
+                422, "too_many", f"A task takes at most {search.MAX_SIMULATIONS:,} simulations."
+            )
+        progress = (await _progress(state, [task_id]))[task_id]
+        simulated = _task(row, progress).simulated
+        if row.sampler in ONE_EXPRESSION:
+            async with state.db.session() as session:
+                parked = await session.scalar(
+                    select(func.count()).where(
+                        Trial.study_id == task_id,
+                        Trial.state == TrialState.PRUNED,
+                        Trial.message == PENDING_SEND,
+                    )
+                )
+            if not parked and not (progress["states"].get(TrialState.QUEUED) or 0):
+                raise refuse(
+                    422,
+                    "nothing_left",
+                    "Every simulation it was written with has been sent. Clone it to run "
+                    "them again.",
+                )
+        elif simulated >= target:
+            raise refuse(
+                422,
+                "target_met",
+                f"It has simulated its {row.max_trials:,}. Add simulations to continue it.",
+            )
+        async with state.db.session() as session:
+            stored = await session.get(Study, task_id)
+            if stored is not None:
+                stored.max_trials = target
+                # Runnable again, however it ended: _queue takes it from here.
+                stored.status = StudyStatus.PAUSED
+                await session.commit()
+    await _queue(state, [task_id])
+    return await _payload(state, task_id)
+
+
+class CloneTask(BaseModel):
+    #: Its target; omitted copies the original's.
+    simulations: int | None = Field(default=None, ge=1, le=search.MAX_SIMULATIONS)
+    #: LLM Power Pool Lab only: send another prompt. With ``prompt_id`` null, the built-in.
+    change_prompt: bool = False
+    prompt_id: int | None = None
+    #: Queue it at once rather than leaving it Not Started.
+    run: bool = False
+
+
+@router.post("/{task_id}/clone", status_code=201)
+async def clone(task_id: int, body: CloneTask, state: State) -> AddedTask:
+    """A fresh task with this one's market, datasets, fields and settings, and nothing it did.
+
+    Labs that write their simulations when added (Settings Sampler, Correlation Breaker) get
+    them all again; Evolution Lab gets its seeds.
     """
     row = await _one(state, task_id)
-    if row.status not in (StudyStatus.RUNNING, StudyStatus.PAUSED, StudyStatus.QUEUED):
-        raise refuse(409, "not_started", "Only a task that has been run can stop.")
-    await scheduler.stop_task(state.optimizer, row, force=task_params(row).stopping)
-    return await _payload(state, task_id)
+    params = BY_SAMPLER[row.sampler].model_validate(row.sampler_params or {})
+    params.queued_at = None
+    params.stopping = False
+    if isinstance(params, PowerPoolParams):
+        params.llm = {"calls": 0}
+        params.calls = []
+        if body.change_prompt:
+            name, system = await chosen(state, pool_lab.KIND, body.prompt_id)
+            params.prompt_id = body.prompt_id
+            params.prompt_name = name if body.prompt_id is not None else None
+            params.system = system if body.prompt_id is not None else None
+    elif body.change_prompt:
+        raise refuse(422, "no_prompt", "Only an LLM Power Pool Lab task sends a prompt.")
+
+    async with state.db.session() as session:
+        if row.sampler in ONE_EXPRESSION:
+            written = (
+                await session.scalars(
+                    select(Trial)
+                    .where(Trial.study_id == task_id, Trial.expression.is_not(None))
+                    .order_by(Trial.number)
+                )
+            ).all()
+        elif row.sampler == GA_SAMPLER:
+            written = (
+                await session.scalars(
+                    select(Trial)
+                    .where(Trial.study_id == task_id, Trial.generation == 0)
+                    .order_by(Trial.number)
+                )
+            ).all()
+        else:
+            written = []
+    now = utcnow()
+
+    def seeds(study_id: int) -> list[Trial]:
+        if row.sampler == GA_SAMPLER:
+            return [
+                Trial(
+                    study_id=study_id,
+                    number=i,
+                    params=dict(t.params or {}),
+                    distributions={},
+                    expression=t.expression,
+                    settings=dict(t.settings or {}),
+                    state=t.state,
+                    values=t.values,
+                    result=t.result,
+                    alpha_id=t.alpha_id,
+                    generation=0,
+                    message=t.message,
+                    finished_at=now,
+                )
+                for i, t in enumerate(written)
+            ]
+        return [
+            Trial(
+                study_id=study_id,
+                number=i,
+                params={k: v for k, v in (t.params or {}).items() if k == "source"},
+                distributions={},
+                expression=t.expression,
+                settings=dict(t.settings or {}),
+                state=TrialState.PRUNED,
+                message=PENDING_SEND,
+            )
+            for i, t in enumerate(written)
+        ]
+
+    return await add_study(
+        state,
+        now=now,
+        sampler=row.sampler,
+        params=params,
+        simulations=body.simulations
+        or (len(written) if row.sampler in ONE_EXPRESSION else 0)
+        or row.max_trials,
+        batch_size=row.batch_size,
+        template_source=row.template_source,
+        template_name=row.template_name,
+        run=body.run,
+        seeds=seeds if written else None,
+    )
 
 
 @router.patch("/{task_id}")
@@ -496,8 +686,12 @@ async def change(task_id: int, body: TaskChange, state: State) -> LabTask:
 
 
 @router.delete("/{task_id}")
-async def remove(task_id: int, state: State) -> TaskRemoved:
-    """Remove a task that is not running. The Alphas it found stay in Alphas."""
+async def remove(task_id: int, state: State, force: bool = False) -> TaskRemoved:
+    """Remove a task. The Alphas it found stay in Alphas.
+
+    ``force``, from a held Delete, takes a running task down as well: it is paused, what it
+    has out on BRAIN is cancelled where BRAIN allows, and then it goes.
+    """
     # Held across the check and the delete: a ``run`` landing between them queued work for a
     # task whose rows were then deleted under it, leaving simulations nothing would score.
     async with state.optimizer.lock(task_id):
@@ -513,13 +707,237 @@ async def remove(task_id: int, state: State) -> TaskRemoved:
                     SimulationRecord.status.in_([SimStatus.PENDING, SimStatus.RUNNING]),
                 )
             )
-        if row.status in (StudyStatus.RUNNING, StudyStatus.QUEUED) or out:
-            raise refuse(409, "running", "Pause or stop the task first: simulations are still out.")
+        if (row.status in (StudyStatus.RUNNING, StudyStatus.QUEUED) or out) and not force:
+            raise refuse(409, "running", "Pause the task first: simulations are still out.")
+        if force:
+            await state.optimizer.set_status(task_id, StudyStatus.PAUSED)
+            await state.engine.drop_queued(row.task)
+            await state.engine.abandon(row.task)
+            await scheduler.prune_unsent(state.optimizer, task_id, everything=True)
         await state.engine.drop_queued(row.task)
         await state.optimizer.delete(task_id)
         await state.engine.set_quota(row.task, 0, enabled=False)
     await state.optimizer.notify()
     return TaskRemoved(removed=task_id)
+
+
+class TaskSetting(Out):
+    label: str
+    value: str
+
+
+class TaskDataset(Out):
+    id: str
+    name: str
+    #: Trials that spent a simulation on it, and how they ended.
+    simulated: int
+    complete: int
+    failed: int
+    best: float | None
+
+
+class TaskCall(Out):
+    """One LLM call of an LLM Power Pool Lab task."""
+
+    at: str | None
+    dataset: str | None
+    prompt: str | None
+    model: str | None
+    fields: int | None
+    valid: int | None
+    rejected: int | None
+    tokens: int | None
+    error: str | None
+
+
+class TaskInfo(Out):
+    id: int
+    name: str
+    lab_name: str
+    status: StudyStatus
+    message: str | None
+    settings: list[TaskSetting]
+    datasets: list[TaskDataset]
+    #: The single fields it was told to use, in rank order, and how they were ranked.
+    fields: list[str]
+    rank_by: str | None
+    llm_calls: int
+    recent_calls: list[TaskCall]
+    created_at: str | None
+    queued_at: str | None
+    started_at: str | None
+    finished_at: str | None
+    updated_at: str | None
+
+
+#: Stored run state and bulk that the info view lists elsewhere or not at all.
+HIDDEN = frozenset(
+    {
+        "space",
+        "tree",
+        "calls",
+        "llm",
+        "system",
+        "fieldIds",
+        "datasetIds",
+        "stopping",
+        # Listed from the task itself, which a resize keeps current.
+        "cores",
+        "queuedAt",
+        "nStartupTrials",
+        "n_startup_trials",
+        "promptId",
+        "rankBy",
+    }
+)
+LABELS = {
+    "nanHandling": "NaN handling",
+    "testPeriod": "Test period",
+    "mutationRate": "Mutation rate",
+    "alphaId": "Source Alpha",
+    "promptName": "Prompt",
+    "multivariate": "Multivariate sampler",
+}
+
+
+def _label(key: str) -> str:
+    return LABELS.get(key) or re.sub(r"(?<!^)(?=[A-Z])", " ", key).replace("_", " ").capitalize()
+
+
+def _value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, list):
+        items: list[Any] = list(value)  # pyright: ignore[reportUnknownArgumentType]
+        return ", ".join(str(v) for v in items) or "None"
+    if isinstance(value, dict):
+        return f"{len(value)} entries"  # pyright: ignore[reportUnknownArgumentType]
+    return str(value)
+
+
+@router.get("/{task_id}/info")
+async def info(task_id: int, state: State) -> TaskInfo:
+    """Everything known about a task: how it was set up, where its simulations went, and, for
+    the LLM lab, its prompt, model and recent calls."""
+    row = await _one(state, task_id)
+    params: dict[str, Any] = dict(row.sampler_params or {})
+    names = await _dataset_names(state, [row])
+    settings = [
+        TaskSetting(label=_label(k), value=_value(v))
+        for k, v in params.items()
+        if k not in HIDDEN and v not in (None, "", [])
+    ]
+    if row.sampler == POWER_POOL_SAMPLER and "promptName" not in params:
+        settings.append(TaskSetting(label="Prompt", value="Built-in"))
+    space = params.get("space") or {}
+    if space.get("fields"):
+        settings.append(TaskSetting(label="Fields searched", value=f"{len(space['fields']):,}"))
+    settings += [
+        TaskSetting(label="Cores", value=str(scheduler.cores_of(row))),
+        TaskSetting(label="Target", value=f"{row.max_trials:,} simulations"),
+        TaskSetting(label="Batch size", value=str(row.batch_size)),
+        TaskSetting(label="Task key", value=row.task),
+    ]
+
+    # Where the simulations went: by dataset for the LLM lab, by field for the searches.
+    key = func.coalesce(
+        func.json_extract(Trial.params, "$.dataset"), func.json_extract(Trial.params, "$.field")
+    )
+    value = func.json_extract(Trial.values, "$[0]")
+    async with state.db.session() as session:
+        grouped = (
+            await session.execute(
+                select(key, Trial.state, func.count(), func.max(value))
+                .where(
+                    Trial.study_id == task_id,
+                    Trial.state.in_(
+                        [
+                            TrialState.COMPLETE,
+                            TrialState.FAIL,
+                            TrialState.RUNNING,
+                            TrialState.QUEUED,
+                        ]
+                    ),
+                )
+                .group_by(key, Trial.state)
+            )
+        ).all()
+    ids = set(params.get("datasetIds") or [])
+    unmapped = [str(k) for k, *_ in grouped if k is not None and str(k) not in ids]
+    field_to_dataset: dict[str, str] = {}
+    if unmapped:
+        found = await state.catalog.query(
+            f"""
+            SELECT DISTINCT field_id, dataset_id FROM data_field
+            WHERE region = ? AND delay = ? AND field_id IN ({", ".join("?" for _ in unmapped)})
+            """,  # noqa: S608
+            [params.get("region"), params.get("delay"), *unmapped],
+        )
+        field_to_dataset = {str(f["field_id"]): str(f["dataset_id"]) for f in found}
+    per: dict[str, dict[str, Any]] = {}
+    for k, trial_state, n, best in grouped:
+        dataset = (
+            None
+            if k is None
+            else str(k)
+            if str(k) in ids or str(k) == pool_lab.CHOSEN
+            else field_to_dataset.get(str(k))
+        )
+        entry = per.setdefault(
+            dataset or "", {"simulated": 0, "complete": 0, "failed": 0, "best": None}
+        )
+        entry["simulated"] += int(n)
+        if trial_state == TrialState.COMPLETE:
+            entry["complete"] += int(n)
+            if best is not None and float(best) > FAILURE:
+                entry["best"] = max(entry["best"] or float(best), float(best))
+        elif trial_state == TrialState.FAIL:
+            entry["failed"] += int(n)
+    order: list[str] = [str(d) for d in params.get("datasetIds") or []]
+    order += [d for d in per if d not in order]
+    datasets = [
+        TaskDataset(
+            id=d or "—",
+            name=("Chosen fields" if d == pool_lab.CHOSEN else names.get(d, d) or "Not recorded"),
+            **per.get(d, {"simulated": 0, "complete": 0, "failed": 0, "best": None}),
+        )
+        for d in order
+        if d in per or d in ids
+    ]
+
+    llm = params.get("llm") or {}
+    calls = [c for c in (params.get("calls") or []) if isinstance(c, dict)][-20:][::-1]
+    return TaskInfo(
+        id=row.id,
+        name=row.name,
+        lab_name=TASK_SAMPLERS.get(row.sampler, row.sampler),
+        status=StudyStatus(row.status),
+        message=row.message,
+        settings=settings,
+        datasets=datasets,
+        fields=list(params.get("fieldIds") or []),
+        rank_by=params.get("rankBy"),
+        llm_calls=int(llm.get("calls") or 0),
+        recent_calls=[
+            TaskCall(
+                at=c.get("at"),
+                dataset=c.get("dataset"),
+                prompt=c.get("prompt"),
+                model=c.get("model"),
+                fields=c.get("fields"),
+                valid=c.get("valid"),
+                rejected=c.get("rejected"),
+                tokens=c.get("tokens"),
+                error=c.get("error"),
+            )
+            for c in calls
+        ],
+        created_at=row.created_at.isoformat() if row.created_at else None,
+        queued_at=params.get("queuedAt"),
+        started_at=row.started_at.isoformat() if row.started_at else None,
+        finished_at=row.finished_at.isoformat() if row.finished_at else None,
+        updated_at=row.updated_at.isoformat() if row.updated_at else None,
+    )
 
 
 @router.get("/{task_id}/top")

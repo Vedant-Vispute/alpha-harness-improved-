@@ -865,7 +865,10 @@ export interface paths {
         post?: never;
         /**
          * Remove
-         * @description Remove a task that is not running. The Alphas it found stay in Alphas.
+         * @description Remove a task. The Alphas it found stay in Alphas.
+         *
+         *     ``force``, from a held Delete, takes a running task down as well: it is paused, what it
+         *     has out on BRAIN is cancelled where BRAIN allows, and then it goes.
          */
         delete: operations["remove_api_lab_tasks__task_id__delete"];
         options?: never;
@@ -875,6 +878,73 @@ export interface paths {
          * @description Change a task's cores or simulations. A running task takes them from its next round.
          */
         patch: operations["change_api_lab_tasks__task_id__patch"];
+        trace?: never;
+    };
+    "/api/lab-tasks/{task_id}/clone": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Clone
+         * @description A fresh task with this one's market, datasets, fields and settings, and nothing it did.
+         *
+         *     Labs that write their simulations when added (Settings Sampler, Correlation Breaker) get
+         *     them all again; Evolution Lab gets its seeds.
+         */
+        post: operations["clone_api_lab_tasks__task_id__clone_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lab-tasks/{task_id}/continue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Continue Task
+         * @description Carry any task on from where it left off, with more simulations if it met its target.
+         *
+         *     A paused, waiting-to-start or finished task all continue the same way: its trials, its
+         *     memory and what it learnt stay, and it runs until the new target is met.
+         */
+        post: operations["continue_task_api_lab_tasks__task_id__continue_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lab-tasks/{task_id}/info": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Info
+         * @description Everything known about a task: how it was set up, where its simulations went, and, for
+         *     the LLM lab, its prompt, model and recent calls.
+         */
+        get: operations["info_api_lab_tasks__task_id__info_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/lab-tasks/{task_id}/pause": {
@@ -911,31 +981,6 @@ export interface paths {
          * @description Run a task, resume a paused one, or retry a failed one. It starts once its cores fit.
          */
         post: operations["run_api_lab_tasks__task_id__run_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/lab-tasks/{task_id}/stop": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Stop
-         * @description Finish a task early. Simulations already sent still finish and are scored.
-         *
-         *     Pressed on a task that is *already* stopping, it forces: what is out on BRAIN is
-         *     cancelled where it can be, the trials close whatever their simulations are doing, and
-         *     the cores come back. There is no separate button because there is no separate
-         *     intention — the second press means the first one did not work.
-         */
-        post: operations["stop_api_lab_tasks__task_id__stop_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2574,6 +2619,31 @@ export interface components {
             /** Updatedat */
             updatedAt: string | null;
         };
+        /** CloneTask */
+        CloneTask: {
+            /**
+             * Change Prompt
+             * @default false
+             */
+            change_prompt: boolean;
+            /** Prompt Id */
+            prompt_id?: number | null;
+            /**
+             * Run
+             * @default false
+             */
+            run: boolean;
+            /** Simulations */
+            simulations?: number | null;
+        };
+        /** ContinueTask */
+        ContinueTask: {
+            /**
+             * Simulations
+             * @default 0
+             */
+            simulations: number;
+        };
         /** CorrelatedPair */
         CorrelatedPair: {
             /** A */
@@ -3137,12 +3207,19 @@ export interface components {
             best: number | null;
             /** Cached */
             cached: number;
+            /**
+             * Chosenfields
+             * @default 0
+             */
+            chosenFields: number;
             /** Cores */
             cores: number;
             /** Createdat */
             createdAt: string | null;
             /** Datasetids */
             datasetIds: string[];
+            /** Datasetnames */
+            datasetNames?: string[];
             /** Decay */
             decay: number | null;
             /** Delay */
@@ -3165,6 +3242,8 @@ export interface components {
             markets?: number | null;
             /** Message */
             message: string | null;
+            /** Model */
+            model?: string | null;
             /** Mutationrate */
             mutationRate: number | null;
             /** Nanhandling */
@@ -3173,6 +3252,8 @@ export interface components {
             objectiveLabel: string;
             /** Population */
             population: number | null;
+            /** Promptname */
+            promptName?: string | null;
             /** Queued */
             queued: number;
             /** Queuedat */
@@ -4547,6 +4628,30 @@ export interface components {
             /** Value */
             value: number;
         };
+        /**
+         * TaskCall
+         * @description One LLM call of an LLM Power Pool Lab task.
+         */
+        TaskCall: {
+            /** At */
+            at: string | null;
+            /** Dataset */
+            dataset: string | null;
+            /** Error */
+            error: string | null;
+            /** Fields */
+            fields: number | null;
+            /** Model */
+            model: string | null;
+            /** Prompt */
+            prompt: string | null;
+            /** Rejected */
+            rejected: number | null;
+            /** Tokens */
+            tokens: number | null;
+            /** Valid */
+            valid: number | null;
+        };
         /** TaskChange */
         TaskChange: {
             /** Cores */
@@ -4554,10 +4659,66 @@ export interface components {
             /** Simulations */
             simulations?: number | null;
         };
+        /** TaskDataset */
+        TaskDataset: {
+            /** Best */
+            best: number | null;
+            /** Complete */
+            complete: number;
+            /** Failed */
+            failed: number;
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Simulated */
+            simulated: number;
+        };
+        /** TaskInfo */
+        TaskInfo: {
+            /** Createdat */
+            createdAt: string | null;
+            /** Datasets */
+            datasets: components["schemas"]["TaskDataset"][];
+            /** Fields */
+            fields: string[];
+            /** Finishedat */
+            finishedAt: string | null;
+            /** Id */
+            id: number;
+            /** Labname */
+            labName: string;
+            /** Llmcalls */
+            llmCalls: number;
+            /** Message */
+            message: string | null;
+            /** Name */
+            name: string;
+            /** Queuedat */
+            queuedAt: string | null;
+            /** Rankby */
+            rankBy: string | null;
+            /** Recentcalls */
+            recentCalls: components["schemas"]["TaskCall"][];
+            /** Settings */
+            settings: components["schemas"]["TaskSetting"][];
+            /** Startedat */
+            startedAt: string | null;
+            status: components["schemas"]["StudyStatus"];
+            /** Updatedat */
+            updatedAt: string | null;
+        };
         /** TaskRemoved */
         TaskRemoved: {
             /** Removed */
             removed: number;
+        };
+        /** TaskSetting */
+        TaskSetting: {
+            /** Label */
+            label: string;
+            /** Value */
+            value: string;
         };
         /** TasksSummary */
         TasksSummary: {
@@ -6120,7 +6281,9 @@ export interface operations {
     };
     remove_api_lab_tasks__task_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                force?: boolean;
+            };
             header?: never;
             path: {
                 task_id: number;
@@ -6184,6 +6347,107 @@ export interface operations {
             };
         };
     };
+    clone_api_lab_tasks__task_id__clone_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloneTask"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AddedTask"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    continue_task_api_lab_tasks__task_id__continue_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ContinueTask"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LabTask"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    info_api_lab_tasks__task_id__info_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     pause_api_lab_tasks__task_id__pause_post: {
         parameters: {
             query?: never;
@@ -6216,37 +6480,6 @@ export interface operations {
         };
     };
     run_api_lab_tasks__task_id__run_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                task_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["LabTask"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    stop_api_lab_tasks__task_id__stop_post: {
         parameters: {
             query?: never;
             header?: never;

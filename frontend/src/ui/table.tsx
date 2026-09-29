@@ -42,6 +42,7 @@ export function DataTable<T>({
   maxHeight = '70vh',
   rowHeight = 34,
   label,
+  header: showHeader = true,
 }: {
   rows: T[]
   columns: Column<T>[]
@@ -65,6 +66,8 @@ export function DataTable<T>({
   maxHeight?: string | undefined
   rowHeight?: number
   label: string
+  /** False drops the column names, for a table stacked under another with the same columns. */
+  header?: boolean
 }) {
   const scroller = useRef<HTMLDivElement>(null)
   const virtual = useVirtualizer({
@@ -165,7 +168,7 @@ export function DataTable<T>({
         Presentational, so the rowgroups below stay owned by the table rather than by a plain div.
       */}
       <div role="presentation" className="w-fit min-w-full">
-        {header}
+        {showHeader && header}
         {loading && rows.length === 0 ? (
           <div className="flex flex-col gap-1 p-2">
             {Array.from({ length: 8 }, (_, i) => (

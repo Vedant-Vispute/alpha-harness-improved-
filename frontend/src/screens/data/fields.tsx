@@ -12,6 +12,7 @@ import {
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import {
+  type CatalogFacets,
   catalog,
   type DataFieldRow,
   type FieldAvailabilityRow,
@@ -25,7 +26,6 @@ import { isRegionAgnostic, runsRegionAgnostic } from '@/lib/scope'
 import { useDebounced } from '@/lib/use-debounced'
 import { type PickFrom, useDatasetPick } from '@/screens/data/dataset-pick'
 import {
-  clearExclusions,
   exclusionCount,
   MAX_PICKED_FIELDS,
   rankLabel,
@@ -669,10 +669,7 @@ function FieldFilters({ scope }: { scope: Scope }) {
   ]
   const advancedOn = ADVANCED.filter((k) => isActive(active[k])).length + exclusionCount(filter)
   // The exclusion half opens only beside a selection, which is all it ever acts on.
-  const excluding = useTicked(scope).length > 0
-  useEffect(() => {
-    if (!excluding) clearExclusions()
-  }, [excluding])
+
   const s = stats.data
 
   // A lab choosing datasets lands here: More filters opens, lit, and scrolls into view.
@@ -811,9 +808,9 @@ function FieldFilters({ scope }: { scope: Scope }) {
             </>
           }
         >
-          <div className={cn('grid grid-cols-1 gap-6', excluding && 'lg:grid-cols-2')}>
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
             <section aria-label="Selection filters" className="flex min-w-0 flex-col gap-4">
-              {excluding && <HalfTitle title="Selection filters" hint="What the table shows." />}
+              <HalfTitle title="Selection filters" hint="What the table shows." />
               {tree.data ? (
                 <DatasetTree
                   source={tree.data}
@@ -825,12 +822,7 @@ function FieldFilters({ scope }: { scope: Scope }) {
               ) : (
                 !tree.isError && <Skeleton className="h-40" />
               )}
-              <div
-                className={cn(
-                  'grid grid-cols-1 gap-4 md:grid-cols-2',
-                  !excluding && 'xl:grid-cols-3',
-                )}
-              >
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 <Range
                   label="Coverage (%)"
                   hint={
@@ -885,7 +877,7 @@ function FieldFilters({ scope }: { scope: Scope }) {
                 />
               </div>
             </section>
-            {excluding && <ExclusionFilters scope={scope} names={names} />}
+            <ExclusionFilters scope={scope} names={names} market={tree.data} />
           </div>
         </Disclosure>
       </div>
@@ -904,17 +896,30 @@ function HalfTitle({ title, hint }: { title: string; hint: ReactNode }) {
 }
 
 /**
- * The right half of More filters: what to take back out of the selection. Its tree holds only
- * the categories, subcategories and datasets the selected fields come from.
+ * The right half of More filters: what never shows, in the table or a selection. With fields
+ * selected its tree holds only the categories, subcategories and datasets they come from; with
+ * none, the whole market's, so a dataset can be kept out without selecting anything first.
  */
-function ExclusionFilters({ scope, names }: { scope: Scope; names: Map<string, string> }) {
+function ExclusionFilters({
+  scope,
+  names,
+  market,
+}: {
+  scope: Scope
+  names: Map<string, string>
+  /** The market's whole tree, for when nothing is selected. */
+  market: CatalogFacets | undefined
+}) {
   const { filter, set } = useFieldFilter()
   const ids = useTicked(scope).map((f) => f.id)
+  const picked = ids.length > 0
   const selection = useQuery({
     queryKey: ['catalog', 'facets', scope, 'selection', ids],
     queryFn: () => catalog.facets(scope, { field_ids: ids }),
+    enabled: picked,
     placeholderData: keepPreviousData,
   })
+  const source = picked ? selection.data : market
   return (
     <section
       aria-label="Exclusion filters"
@@ -923,28 +928,36 @@ function ExclusionFilters({ scope, names }: { scope: Scope; names: Map<string, s
       <HalfTitle
         title="Exclusion filters"
         hint={
-          <>
-            What to leave out of your{' '}
-            <span className="num text-ink-muted">{fmt.int(ids.length)}</span> selected fields. They
-            drop out of the table too, and come back when the filter goes.
-          </>
+          picked ? (
+            <>
+              What to leave out of the table and of your{' '}
+              <span className="num text-ink-muted">{fmt.int(ids.length)}</span> selected fields.
+              They come back when the filter goes.
+            </>
+          ) : (
+            'What never shows in the table, whatever else is chosen. It comes back when the filter goes.'
+          )
         }
       />
-      {selection.isError && (
+      {picked && selection.isError && (
         <ErrorNotice error={selection.error} title="Could not read the selected fields' datasets" />
       )}
-      {selection.data ? (
+      {source ? (
         <DatasetTree
           title="Exclude datasets"
-          searchLabel="Search the selection's categories, subcategories and datasets"
-          source={selection.data}
-          counts={selection.data}
+          searchLabel={
+            picked
+              ? "Search the selection's categories, subcategories and datasets"
+              : 'Search categories, subcategories and datasets to exclude'
+          }
+          source={source}
+          counts={source}
           names={names}
           value={filter.exclude_dataset_ids ?? []}
           onChange={(exclude_dataset_ids) => set({ exclude_dataset_ids })}
         />
       ) : (
-        !selection.isError && <Skeleton className="h-40" />
+        !(picked && selection.isError) && <Skeleton className="h-40" />
       )}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <DateRange

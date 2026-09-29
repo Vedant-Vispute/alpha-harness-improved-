@@ -1,8 +1,9 @@
 /**
  * Ticking single fields in the Fields table, and ranking them for a lab. The ticks outlive
  * paging and filtering, so a researcher can gather fields over several searches; the order
- * they reach a lab in is the table's order at the moment they are sent. Exclusion filters then
- * take fields back out of the selection without unticking them, so undoing one restores them.
+ * they reach a lab in is the table's order at the moment they are sent. Exclusion filters keep
+ * fields out of the table always, and out of the selection without unticking them, so undoing
+ * one restores them.
  */
 
 import { keepPreviousData, useMutation, useQuery } from '@tanstack/react-query'
@@ -41,10 +42,7 @@ export const useFieldSelection = create<FieldSelection>()(
     (set, get) => ({
       scope: null,
       fields: [],
-      load: (scope, fields) => {
-        clearExclusions()
-        set({ scope, fields })
-      },
+      load: (scope, fields) => set({ scope, fields }),
       toggle: (scope, rows, on) => {
         // Ticks from another market name fields this one may not have: start over.
         const kept = sameMarket(get().scope, scope) ? get().fields : []
@@ -57,10 +55,7 @@ export const useFieldSelection = create<FieldSelection>()(
         }))
         set({ scope, fields: on ? [...rest, ...added].slice(0, MAX_PICKED_FIELDS) : rest })
       },
-      clear: () => {
-        clearExclusions()
-        set({ scope: null, fields: [] })
-      },
+      clear: () => set({ scope: null, fields: [] }),
     }),
     { name: 'alpha-harness-field-selection', storage: createJSONStorage(() => sessionStorage) },
   ),
@@ -93,18 +88,6 @@ const isOn = (v: unknown) => v != null && v !== '' && !(Array.isArray(v) && v.le
 /** How many exclusion filters are set. */
 export const exclusionCount = (filter: FieldFilterState) =>
   EXCLUSION_KEYS.filter((k) => isOn(filter[k])).length
-
-/** They only mean something beside a selection, so they go when it goes. */
-export function clearExclusions() {
-  const { filter, set } = useFieldFilter.getState()
-  if (exclusionCount(filter) > 0)
-    set({
-      exclude_dataset_ids: [],
-      exclude_date_min: null,
-      exclude_date_max: null,
-      exclude_keywords: [],
-    })
-}
 
 /** Why an exclusion filter takes `row` out, in a few words; null when none does. */
 export function excludedBy(row: DataFieldRow, filter: FieldFilterState): string | null {

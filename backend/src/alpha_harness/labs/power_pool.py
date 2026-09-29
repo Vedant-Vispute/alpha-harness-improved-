@@ -77,6 +77,11 @@ _calls: dict[int, asyncio.Task[None]] = {}
 _retry: dict[int, float] = {}
 
 
+def forget_retry(study_id: int) -> None:
+    """Drop the back-off after a failed call, for a task resumed by hand."""
+    _retry.pop(study_id, None)
+
+
 class Rejected(ValueError):
     """Why an expression is thrown away before it is simulated."""
 
@@ -486,7 +491,8 @@ async def refill(optimizer: Optimizer, row: Study, want: int, waiting: bool) -> 
     left = len(ready) - sent
     llm = params_of(row, PowerPoolParams).llm
     calls = int(llm.get("calls") or 0)
-    cap = max(3, 2 * -(-row.max_trials // PER_CALL))
+    # Counted from the last resume: a paused task resumed gets a whole allowance again.
+    cap = int(llm.get("capFrom") or 0) + max(3, 2 * -(-row.max_trials // PER_CALL))
     stop = (
         "the last 3 LLM calls wrote no new valid Alpha"
         if int(llm.get("empty") or 0) >= 3
@@ -501,7 +507,14 @@ async def refill(optimizer: Optimizer, row: Study, want: int, waiting: bool) -> 
     ):
         _calls[row.id] = spawn(_write(optimizer, row.id), name=f"power-pool-{row.id}")
     elif stop and not busy and not (waiting or sent or left):
-        await scheduler.finish(optimizer, row.id, StudyStatus.COMPLETE, f"Stopped: {stop}.")
+        # Paused, not complete: the target is not met, and a resume or a clone with another
+        # prompt can still meet it.
+        await scheduler.finish(
+            optimizer,
+            row.id,
+            StudyStatus.PAUSED,
+            f"Paused: {stop}. Resume to keep going, or clone it with another prompt.",
+        )
     return sent
 
 
