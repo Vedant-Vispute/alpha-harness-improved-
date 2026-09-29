@@ -1,6 +1,7 @@
 /** The Datasets and Settings panels of a lab task, and the task settings every lab asks for. */
 
 import { DatabaseIcon, XIcon } from 'lucide-react'
+import type { ReactNode } from 'react'
 import { DASH, fmt } from '@/lib/format'
 import { isRegionAgnostic, regionLabel, useScopeOptions } from '@/lib/scope'
 import { NeutralizationPicker } from '@/screens/research-labs/neutralization'
@@ -85,11 +86,14 @@ export function DatasetsPanel({
   names,
   onChoose,
   onRemove,
+  children,
 }: {
   ids: string[]
   names: Map<string, string>
   onChoose: () => void
   onRemove: (id: string) => void
+  /** More of what the task is given to work from, under the datasets: the LLM lab's prompt. */
+  children?: ReactNode
 }) {
   const chosen = ids.length > 0
   return (
@@ -132,6 +136,7 @@ export function DatasetsPanel({
           </Button>
         </Empty>
       )}
+      {children && <div className="mt-4 border-t border-hairline pt-4">{children}</div>}
     </Panel>
   )
 }

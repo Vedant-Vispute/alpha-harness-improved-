@@ -35,6 +35,7 @@ from .api import (
     llm,
     portfolio,
     power_pool_lab,
+    prompts,
     quarter,
     search_lab,
     sims,
@@ -150,6 +151,7 @@ def create_app() -> FastAPI:
     app.include_router(template_lab.router)
     app.include_router(ga.router)
     app.include_router(llm.router)
+    app.include_router(prompts.router)
     app.include_router(vault.router)
     app.include_router(portfolio.router)
     app.include_router(quarter.router)

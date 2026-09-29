@@ -84,6 +84,11 @@ class PowerPoolParams(TaskParams):
     universe: str | None = None
     dataset_ids: list[str] = Field(default_factory=list)
     model: str = ""
+    #: A saved prompt from LLM Prompts, re-read on every call; null sends the built-in.
+    prompt_id: int | None = None
+    prompt_name: str | None = None
+    #: The prompt's text when the task was added, sent if the saved prompt is deleted.
+    system: str | None = None
     #: Running LLM tallies: ``calls``, ``empty``, ``failed`` and ``byDataset``.
     llm: dict[str, Any] = Field(default_factory=dict)
     #: The last hundred LLM calls, for the task's detail view.

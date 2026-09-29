@@ -1,7 +1,8 @@
 """The system prompts the application sends.
 
 A system prompt is invisible in the output, so they are kept together here rather than
-scattered through the callers, and AI › Prompts shows each one word for word.
+scattered through the callers, and LLM Prompts shows each one word for word. The user's
+own copies live in :mod:`.library`.
 
 Three principles run through them: write for a reader with no quantitative training,
 never invent a field or operator name (a hallucinated one costs a simulation from a daily
@@ -90,7 +91,7 @@ ANSWER
 Only JSON: {"alphas": [{"expression": "..."}]} holding exactly 20 different expressions.
 """
 
-#: Every prompt the application sends, as AI › Prompts lists them.
+#: Every built-in prompt, as LLM Prompts lists them. Each slug is also a saved prompt's kind.
 PROMPTS = (
     Prompt(
         slug="assistant",

@@ -6,6 +6,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { fmt } from '@/lib/format'
 import { DEFAULT_SCOPE, useScopeOptions } from '@/lib/scope'
+import { PromptPicker, useChosenPrompt } from '@/screens/prompts/picker'
 import {
   MAX_SIMULATIONS,
   simulationsValid,
@@ -41,6 +42,8 @@ interface PowerPoolDraft {
   cores: number
   simulations: number | null
   model: string | null
+  /** A saved prompt from LLM Prompts; null sends the built-in. */
+  promptId: number | null
   /** Empty keeps every neutralization BRAIN offers for the market. */
   neutralizations: string[]
 }
@@ -55,11 +58,15 @@ const useDraft = create<PowerPoolDraft>()(
       cores: 4,
       simulations: null,
       model: null,
+      promptId: null,
       neutralizations: [],
     }),
     { name: 'alpha-harness-power-pool-lab' },
   ),
 )
+
+/** The built-in this lab sends, and the kind of every saved prompt it can send instead. */
+const PROMPT_KIND = 'power_pool_lab'
 
 const PRE =
   'num max-h-80 overflow-auto rounded-md border border-hairline bg-canvas p-3 text-body-compact whitespace-pre-wrap text-ink-muted'
@@ -78,6 +85,8 @@ export function PowerPoolLabScreen() {
       ? draft.model
       : (options.data?.defaultModel ?? null)
 
+  const promptId = useChosenPrompt(PROMPT_KIND, draft.promptId ?? null)
+
   // BRAIN's legal list for this market; the LLM draws from whatever is chosen, or all of it.
   const scopeOptions = useScopeOptions({
     instrumentType: 'EQUITY',
@@ -92,6 +101,7 @@ export function PowerPoolLabScreen() {
     universe: draft.universe,
     dataset_ids: draft.datasetIds,
     model,
+    prompt_id: promptId,
     neutralizations: draft.neutralizations,
     cores: draft.cores,
     simulations: draft.simulations ?? 0,
@@ -131,7 +141,18 @@ export function PowerPoolLabScreen() {
         names={names}
         onChoose={choose}
         onRemove={(id) => set({ datasetIds: draft.datasetIds.filter((x) => x !== id) })}
-      />
+      >
+        <Fieldset
+          legend="Prompt"
+          hint="What the LLM is told before the datasets. Edits in LLM Prompts reach running tasks on their next call."
+        >
+          <PromptPicker
+            kind={PROMPT_KIND}
+            value={promptId}
+            onChange={(next) => set({ promptId: next })}
+          />
+        </Fieldset>
+      </DatasetsPanel>
       <Panel title="Settings">
         <div className="flex flex-col gap-4">
           <div className="flex flex-wrap items-start gap-x-8 gap-y-4">
@@ -184,7 +205,9 @@ export function PowerPoolLabScreen() {
             <Notice key={m} tone="warn" title={m} />
           ))}
           {plan?.prompt && (
-            <Disclosure summary={`Prompt · ~${fmt.int(plan.prompt.tokens)} tokens`}>
+            <Disclosure
+              summary={`Prompt · ${plan.prompt.name} · ~${fmt.int(plan.prompt.tokens)} tokens`}
+            >
               <div className="flex flex-col gap-2">
                 <pre className={PRE} role="region" aria-label="System prompt">
                   {plan.prompt.system}

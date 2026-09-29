@@ -23,11 +23,11 @@ from ..labs.launch import (
     synced_universes,
 )
 from ..labs.params import POWER_POOL_SAMPLER, PowerPoolParams
-from ..llm.prompts import POWER_POOL_LAB
 from ..llm.registry import DEFAULT_MODEL
 from ..llm.text import estimate_tokens
 from ..schemas import Out
 from .deps import State, refuse
+from .prompts import chosen
 
 router = APIRouter(prefix="/api/power-pool-lab", tags=["power-pool-lab"])
 
@@ -38,6 +38,8 @@ class PowerPoolRequest(BaseModel):
     universe: str
     dataset_ids: list[str] = Field(default_factory=list, max_length=50)
     model: str | None = None
+    #: A saved prompt from LLM Prompts; null sends the built-in.
+    prompt_id: int | None = None
     #: Empty keeps every neutralization BRAIN offers; anything here is drawn from instead.
     neutralizations: list[str] = Field(default_factory=list, max_length=20)
     cores: int = Field(default=search.MAX_CORES, ge=1, le=search.MAX_CORES)
@@ -59,6 +61,8 @@ class PowerPoolOptions(Out):
 
 
 class PowerPoolPrompt(Out):
+    #: The chosen prompt's name, or the built-in's label.
+    name: str
     system: str
     user: str
     tokens: int
@@ -139,6 +143,7 @@ async def _plan(body: PowerPoolRequest, state: Any) -> dict[str, Any]:
     if not neutralizations:
         problems.append("BRAIN's settings list is not loaded. Sign in again.")
 
+    prompt_name, system = await chosen(state, power_pool.KIND, body.prompt_id)
     fields = 0
     prompt = None
     run = PowerPoolParams(
@@ -160,12 +165,13 @@ async def _plan(body: PowerPoolRequest, state: Any) -> dict[str, Any]:
             fields += len(ctx.fields)
             if prompt is None and info is not None and operators:
                 user, shown = power_pool.user_prompt(
-                    ctx, operators, run, "None yet.", 0, power_pool.budget_for(info)
+                    ctx, operators, run, "None yet.", 0, power_pool.budget_for(info), system
                 )
                 prompt = {
-                    "system": POWER_POOL_LAB,
+                    "name": prompt_name,
+                    "system": system,
                     "user": user,
-                    "tokens": estimate_tokens(POWER_POOL_LAB + user),
+                    "tokens": estimate_tokens(system + user),
                 }
                 if ctx.fields and shown < min(10, len(ctx.fields)):
                     problems.append(
@@ -173,6 +179,8 @@ async def _plan(body: PowerPoolRequest, state: Any) -> dict[str, Any]:
                         "Choose another model."
                     )
     calls = -(-body.simulations // power_pool.PER_CALL)
+    if not system.strip():
+        problems.append(f"“{prompt_name}” is empty. Write it in LLM Prompts, or choose another.")
     if model_id in models and calls > models[model_id]["remainingToday"]:
         warnings.append(
             f"About {calls:,} LLM calls; {model_id} has "
@@ -188,6 +196,8 @@ async def _plan(body: PowerPoolRequest, state: Any) -> dict[str, Any]:
         "problems": problems,
         "warnings": warnings,
         "model": model_id,
+        "promptName": prompt_name,
+        "system": system,
     }
 
 
@@ -216,6 +226,9 @@ async def add_task(body: PowerPoolRequest, state: State) -> AddedTask:
             neutralizations=plan["neutralizations"],
             dataset_ids=body.dataset_ids,
             model=plan["model"],
+            prompt_id=body.prompt_id,
+            prompt_name=plan["promptName"] if body.prompt_id is not None else None,
+            system=plan["system"] if body.prompt_id is not None else None,
             cores=body.cores,
             llm={"calls": 0},
         ),

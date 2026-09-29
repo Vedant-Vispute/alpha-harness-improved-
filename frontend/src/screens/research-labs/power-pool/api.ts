@@ -14,6 +14,8 @@ export interface PowerPoolRequest {
   universe: string
   dataset_ids: string[]
   model: string | null
+  /** A saved prompt from LLM Prompts; null sends the built-in. */
+  prompt_id: number | null
   /** Empty keeps every neutralization BRAIN offers for the market. */
   neutralizations: string[]
   cores: number

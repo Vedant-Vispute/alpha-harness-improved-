@@ -7,6 +7,7 @@ import {
   LayoutGridIcon,
   ListChecksIcon,
   RefreshCwIcon,
+  ScrollTextIcon,
   SparklesIcon,
   WrenchIcon,
 } from 'lucide-react'
@@ -21,7 +22,6 @@ export const AI_TABS = [
   { tab: 'providers', label: 'Providers' },
   { tab: 'keys', label: 'Keys' },
   { tab: 'budget', label: 'Budget' },
-  { tab: 'prompts', label: 'Prompts' },
   { tab: 'assistant', label: 'Assistant' },
 ] as const
 
@@ -77,6 +77,12 @@ export const NAV = [
     label: 'Tools',
     icon: WrenchIcon,
     tabs: TOOL_TABS,
+  },
+  {
+    to: '/prompts',
+    group: 'Research',
+    label: 'LLM Prompts',
+    icon: ScrollTextIcon,
   },
   {
     to: '/tasks',

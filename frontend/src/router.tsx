@@ -120,6 +120,20 @@ const correlationBreaker = createRoute({
   ),
 })
 
+/** `open` is the prompt on screen: a saved prompt's id, or a built-in's slug. A number stays
+ *  one, since the router quotes a numeric string in the URL (`?open=%221%22`). */
+const llmPrompts = createRoute({
+  getParentRoute: () => root,
+  path: '/prompts',
+  validateSearch: (search: Record<string, unknown>): { open?: string | number | undefined } => ({
+    open:
+      typeof search['open'] === 'string' || typeof search['open'] === 'number'
+        ? search['open']
+        : undefined,
+  }),
+  component: lazyRouteComponent(() => import('@/screens/prompts'), 'PromptsScreen'),
+})
+
 const tasks = createRoute({ getParentRoute: () => root, path: '/tasks' })
 const tasksIndex = createRoute({
   getParentRoute: () => tasks,
@@ -174,7 +188,14 @@ const aiIndex = createRoute({
     throw redirect({ to: '/ai/$tab', params: { tab: 'providers' } })
   },
 })
-const aiTab = createRoute({ getParentRoute: () => ai, path: '$tab' })
+const aiTab = createRoute({
+  getParentRoute: () => ai,
+  path: '$tab',
+  // Prompts moved to their own screen, where they can be edited; old links follow them.
+  beforeLoad: ({ params }) => {
+    if (params.tab === 'prompts') throw redirect({ to: '/prompts', search: {} })
+  },
+})
 const aiThread = createRoute({ getParentRoute: () => ai, path: 'assistant/$threadId' })
 
 const pyramids = createRoute({
@@ -190,6 +211,7 @@ const routeTree = root.addChildren([
   data,
   labs.addChildren([labsIndex, searchLab, templateLab, evolutionLab, powerPoolLab]),
   tools.addChildren([toolsIndex, settingsSampler, submissionPlanner, correlationBreaker]),
+  llmPrompts,
   tasks.addChildren([tasksIndex, taskResults]),
   pool.addChildren([poolIndex, poolTab]),
   portfolio,

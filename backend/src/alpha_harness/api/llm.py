@@ -1,7 +1,6 @@
-"""The assistant: keys, models and the prompts it sends.
+"""The assistant: keys and models. The prompts it sends live in :mod:`.prompts`.
 
-Prompts are served in full on purpose: one decides what an answer looks like and is
-otherwise invisible. Keys are the only secret here, and leave only as a masked hint.
+Keys are the only secret here, and leave only as a masked hint.
 """
 
 from __future__ import annotations
@@ -12,27 +11,12 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from ..llm.keys import serialise
-from ..llm.prompts import PROMPTS
 from ..llm.providers import LLMProviders, catalogue
 from ..llm.registry import LLMModels
-from ..llm.text import estimate_tokens
 from ..schemas import Out
 from .deps import State
 
 router = APIRouter(prefix="/api/llm", tags=["assistant"])
-
-
-class PromptInfo(Out):
-    slug: str
-    label: str
-    purpose: str
-    body: str
-    characters: int
-    estimated_tokens: int
-
-
-class PromptList(Out):
-    prompts: list[PromptInfo]
 
 
 class LLMKeyUsage(Out):
@@ -107,28 +91,6 @@ async def models(state: State) -> LLMModels:
     rather than sitting in a help page.
     """
     return state.llm.registry.roster()
-
-
-# --- prompts --------------------------------------------------------------
-
-
-@router.get("/prompts")
-async def list_prompts() -> PromptList:
-    """Every system prompt the application sends, in full. The token estimate is shown
-    because prompt tokens come out of the same per-minute budget as the answer."""
-    return PromptList(
-        prompts=[
-            PromptInfo(
-                slug=p.slug,
-                label=p.label,
-                purpose=p.purpose,
-                body=p.body,
-                characters=len(p.body),
-                estimated_tokens=estimate_tokens(p.body),
-            )
-            for p in PROMPTS
-        ]
-    )
 
 
 @router.get("/keys")

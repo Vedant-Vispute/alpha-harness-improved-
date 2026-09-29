@@ -1067,27 +1067,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/llm/prompts": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List Prompts
-         * @description Every system prompt the application sends, in full. The token estimate is shown
-         *     because prompt tokens come out of the same per-minute budget as the answer.
-         */
-        get: operations["list_prompts_api_llm_prompts_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/llm/providers": {
         parameters: {
             query?: never;
@@ -1221,6 +1200,51 @@ export interface paths {
         /** Add Task */
         post: operations["add_task_api_power_pool_lab_tasks_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/prompts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Library
+         * @description Every prompt: each built-in first, then the saved ones, newest edit first.
+         */
+        get: operations["library_api_prompts_get"];
+        put?: never;
+        /**
+         * Create
+         * @description A new prompt, blank or a copy: a copy sends the text it starts from.
+         */
+        post: operations["create_api_prompts_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/prompts/{prompt_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Edit */
+        put: operations["edit_api_prompts__prompt_id__put"];
+        post?: never;
+        /**
+         * Remove
+         * @description A task already using it keeps the text it had when it was added.
+         */
+        delete: operations["remove_api_prompts__prompt_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2681,6 +2705,16 @@ export interface components {
             dropped: number;
         };
         /**
+         * EditPrompt
+         * @description Only what is sent changes.
+         */
+        EditPrompt: {
+            /** Body */
+            body?: string | null;
+            /** Name */
+            name?: string | null;
+        };
+        /**
          * EngineStatus
          * @description Slot occupancy, queue depth and task quotas — what the matrix header shows.
          */
@@ -3179,6 +3213,29 @@ export interface components {
             /** Vector */
             vector: number;
         };
+        /** LibraryPrompt */
+        LibraryPrompt: {
+            /** Basedon */
+            basedOn: string | null;
+            /** Body */
+            body: string;
+            /** Builtin */
+            builtIn: boolean;
+            /** Characters */
+            characters: number;
+            /** Estimatedtokens */
+            estimatedTokens: number;
+            /** Id */
+            id: number | null;
+            /** Kind */
+            kind: string;
+            /** Name */
+            name: string;
+            /** Updatedat */
+            updatedAt: string | null;
+            /** Words */
+            words: number;
+        };
         /** LineageSibling */
         LineageSibling: {
             /** Alphaid */
@@ -3281,6 +3338,20 @@ export interface components {
             rpm: number;
             /** Tpm */
             tpm: number;
+        };
+        /** NewPrompt */
+        NewPrompt: {
+            /** Based On */
+            based_on?: string | null;
+            /**
+             * Body
+             * @default
+             */
+            body: string;
+            /** Kind */
+            kind: string;
+            /** Name */
+            name: string;
         };
         /** OperatorsRead */
         OperatorsRead: {
@@ -3574,6 +3645,8 @@ export interface components {
         };
         /** PowerPoolPrompt */
         PowerPoolPrompt: {
+            /** Name */
+            name: string;
             /** System */
             system: string;
             /** Tokens */
@@ -3596,6 +3669,8 @@ export interface components {
             model?: string | null;
             /** Neutralizations */
             neutralizations?: string[];
+            /** Prompt Id */
+            prompt_id?: number | null;
             /** Region */
             region: string;
             /**
@@ -3683,14 +3758,11 @@ export interface components {
             /** Truncation */
             truncation?: number | null;
         };
-        /** PromptInfo */
-        PromptInfo: {
-            /** Body */
-            body: string;
-            /** Characters */
-            characters: number;
-            /** Estimatedtokens */
-            estimatedTokens: number;
+        /**
+         * PromptKind
+         * @description One job a prompt can do: a built-in's slug, and where it is chosen.
+         */
+        PromptKind: {
             /** Label */
             label: string;
             /** Purpose */
@@ -3698,10 +3770,12 @@ export interface components {
             /** Slug */
             slug: string;
         };
-        /** PromptList */
-        PromptList: {
+        /** PromptLibrary */
+        PromptLibrary: {
+            /** Kinds */
+            kinds: components["schemas"]["PromptKind"][];
             /** Prompts */
-            prompts: components["schemas"]["PromptInfo"][];
+            prompts: components["schemas"]["LibraryPrompt"][];
         };
         /** PyramidCategory */
         PyramidCategory: {
@@ -3940,6 +4014,11 @@ export interface components {
             dataset_ids?: string[];
             /** Model */
             model?: string | null;
+            /**
+             * Prompt Id
+             * @description A saved Assistant prompt from LLM Prompts; omit for the built-in
+             */
+            prompt_id?: number | null;
             /** @default normal */
             reasoning: components["schemas"]["Reasoning"];
             scope: components["schemas"]["Tuple4"];
@@ -6395,26 +6474,6 @@ export interface operations {
             };
         };
     };
-    list_prompts_api_llm_prompts_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PromptList"];
-                };
-            };
-        };
-    };
     providers_api_llm_providers_get: {
         parameters: {
             query?: never;
@@ -6582,6 +6641,123 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["AddedTask"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    library_api_prompts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptLibrary"];
+                };
+            };
+        };
+    };
+    create_api_prompts_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewPrompt"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryPrompt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_api_prompts__prompt_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                prompt_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EditPrompt"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryPrompt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_api_prompts__prompt_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                prompt_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

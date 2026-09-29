@@ -19,11 +19,10 @@ import {
 import { Assistant } from './assistant'
 import { Budget } from './budget'
 import { Keys } from './keys'
-import { Prompts } from './prompts'
 import { Providers } from './providers'
 import { useKeys } from './shared'
 
-const SCREENS = { keys: Keys, budget: Budget, prompts: Prompts } as const
+const SCREENS = { keys: Keys, budget: Budget } as const
 
 export function AiScreen() {
   const params = useParams({ strict: false })

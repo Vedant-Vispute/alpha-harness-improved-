@@ -19,6 +19,7 @@ from sqlalchemy import func, or_, select
 
 from ..brain.schemas import REGION_AGNOSTIC_REGION, SimulationSettings
 from ..db.models import Study, StudyStatus, Trial, TrialState, utcnow
+from ..llm import library
 from ..llm.keys import BudgetExhaustedError, LLMError
 from ..llm.prompts import POWER_POOL_LAB
 from ..llm.text import FENCE
@@ -48,6 +49,8 @@ if TYPE_CHECKING:  # pragma: no cover
 
 log = structlog.get_logger(__name__)
 
+#: The built-in's slug, which is also the kind of every saved prompt this lab can send.
+KIND = "power_pool_lab"
 PER_CALL = 20
 FIELDS_PER_CALL = 200
 MAX_OPERATORS, MAX_FIELDS = 8, 3
@@ -313,8 +316,9 @@ def user_prompt(
     memory: str,
     offset: int,
     budget: int,
+    system: str = POWER_POOL_LAB,
 ) -> tuple[str, int]:
-    """The user turn, and how many field lines it shows."""
+    """The user turn, and how many field lines it shows beside ``system``."""
     head = "\n\n".join(
         [
             f"MARKET\n{run.region} · Delay {run.delay} · Universes {', '.join(run.universes)}"
@@ -332,7 +336,7 @@ def user_prompt(
             f"Write {PER_CALL} new Power Pool Alphas that use {ctx.id}.",
         ]
     )
-    room = budget * 4 - len(POWER_POOL_LAB) - len(head) - len(tail) - 200
+    room = budget * 4 - len(system) - len(head) - len(tail) - 200
     total = len(ctx.fields)
     start = offset % total if total else 0
     ordered = ctx.fields[start:] + ctx.fields[:start]
@@ -436,20 +440,22 @@ async def _write(optimizer: Optimizer, study_id: int) -> None:
                 f"{dataset} is not in the downloaded catalog. Sync it, then resume.",
             )
 
+        prompt_name, system = await _system(optimizer, run)
         memory = await memory_of(optimizer, study_id, dataset)
         offset = int(by.get(dataset, {}).get("offset", 0))
-        user, shown = user_prompt(ctx, operators, run, memory, offset, budget_for(model))
+        user, shown = user_prompt(ctx, operators, run, memory, offset, budget_for(model), system)
         entry: dict[str, Any] = {
             "at": utcnow().isoformat(),
             "dataset": dataset,
             "model": model.id,
+            "prompt": prompt_name,
             "fields": shown,
         }
         items: list[dict[str, Any]] = []
         answered = False
         try:
             answer = await optimizer.llm.generate(
-                system=POWER_POOL_LAB,
+                system=system,
                 user=user,
                 model_id=model.id,
                 response_schema=SCHEMA,
@@ -547,6 +553,18 @@ async def _write(optimizer: Optimizer, study_id: int) -> None:
     except Exception:
         log.exception("power_pool.write_failed", study_id=study_id)
         _retry[study_id] = time.monotonic() + 60.0
+
+
+async def _system(optimizer: Optimizer, run: PowerPoolParams) -> tuple[str, str]:
+    """The saved prompt's text as it is now, so an edit reaches the next call; the text it had
+    when the task was added once it is deleted; the built-in when none was chosen."""
+    if run.prompt_id is not None:
+        try:
+            return await library.resolve(optimizer.db, KIND, run.prompt_id)
+        except library.PromptNotFoundError:
+            if run.system:
+                return f"{run.prompt_name or 'Prompt'} (deleted)", run.system
+    return await library.resolve(optimizer.db, KIND, None)
 
 
 async def _note(optimizer: Optimizer, study_id: int, message: str) -> None:
