@@ -8,13 +8,21 @@ import { catalog } from '@/api/catalog'
 import type { Scope } from '@/api/types'
 import { DEFAULT_SCOPE, useScope } from '@/lib/scope'
 import { useDebounced } from '@/lib/use-debounced'
-import { type PickFrom, useDatasetPick } from '@/screens/data/dataset-pick'
+import { type PickedField, type PickFrom, useDatasetPick } from '@/screens/data/dataset-pick'
+import { useFieldSelection } from '@/screens/data/field-pick'
 
 export interface LabDraft {
   region: string
   delay: number
   universe: string
   datasetIds: string[]
+  /**
+   * Single fields chosen in the Data Explorer, ranked; `datasetIds` are theirs. Empty uses the
+   * datasets whole. Absent from a draft saved before fields could be chosen.
+   */
+  fields?: PickedField[]
+  /** How `fields` were ranked: "Alphas, most first". */
+  rankBy?: string | null
   cores: number
   /** `null` until the user assigns them: a task always has simulations chosen on purpose. */
   simulations: number | null
@@ -30,6 +38,8 @@ export const LAB_DEFAULTS: LabDraft = {
   delay: DEFAULT_SCOPE.delay,
   universe: DEFAULT_SCOPE.universe,
   datasetIds: [],
+  fields: [],
+  rankBy: null,
   cores: 4,
   simulations: null,
   decay: 0,
@@ -39,8 +49,16 @@ export const LAB_DEFAULTS: LabDraft = {
 
 export const MAX_SIMULATIONS = 100_000
 
-/** A draft's market and datasets: dataset names, and the round trip to the Data Explorer to choose them. */
-type LabMarket = Pick<LabDraft, 'region' | 'delay' | 'universe' | 'datasetIds'>
+/**
+ * A draft's market, datasets and fields: dataset names, the round trip to the Data Explorer to
+ * choose them, and the props of the Datasets panel that shows them.
+ */
+type LabMarket = Pick<
+  LabDraft,
+  'region' | 'delay' | 'universe' | 'datasetIds' | 'fields' | 'rankBy'
+>
+
+const NO_FIELDS: PickedField[] = []
 
 export function useLabMarket(
   draft: LabMarket,
@@ -66,6 +84,9 @@ export function useLabMarket(
         delay: pick.scope.delay,
         universe: pick.scope.universe,
         datasetIds: pick.ids,
+        // A pick of whole datasets clears fields chosen before it.
+        fields: pick.fields ?? [],
+        rankBy: pick.rankBy ?? null,
       })
   }, [from, set])
 
@@ -79,13 +100,41 @@ export function useLabMarket(
     [datasets.data],
   )
 
+  const fields = draft.fields ?? NO_FIELDS
   const choose = () => {
-    useDatasetPick.getState().start(scope, draft.datasetIds, from)
+    // Chosen fields come back selected. Their datasets are not ticked as well, which would
+    // narrow the table to those datasets instead of the search that found the fields.
+    useDatasetPick.getState().start(scope, fields.length ? [] : draft.datasetIds, from)
+    useFieldSelection.getState().load(scope, fields)
     setDataScope(scope)
     void navigate({ to: '/data' })
   }
-  return { chosen, names, choose }
+  const panel = {
+    ids: draft.datasetIds,
+    fields,
+    rankBy: draft.rankBy ?? null,
+    names,
+    onChoose: choose,
+    // A dataset goes with its fields; the last field going leaves its datasets, used whole.
+    onRemove: (id: string) =>
+      set({
+        datasetIds: draft.datasetIds.filter((x) => x !== id),
+        fields: fields.filter((f) => f.dataset !== id),
+      }),
+    onRemoveField: (id: string) => {
+      const left = fields.filter((f) => f.id !== id)
+      set({
+        fields: left,
+        datasetIds: left.length ? [...new Set(left.map((f) => f.dataset))] : draft.datasetIds,
+      })
+    },
+    onUseDatasets: () => set({ fields: [], rankBy: null }),
+  }
+  return { chosen, names, choose, panel }
 }
+
+/** The single fields a task is told to use, in rank order; empty uses its datasets whole. */
+export const fieldIdsOf = (draft: Pick<LabDraft, 'fields'>) => (draft.fields ?? []).map((f) => f.id)
 
 /**
  * A lab's free preview of `body`, asked once the form has been still for `wait` ms. `current`
@@ -139,6 +188,7 @@ export function labBody(draft: LabDraft, vectorOperators: string[]) {
     delay: draft.delay,
     universe: draft.universe,
     dataset_ids: draft.datasetIds,
+    field_ids: fieldIdsOf(draft),
     vector_operators: vectorOperators,
     neutralizations: draft.neutralizations,
     decay: draft.decay,

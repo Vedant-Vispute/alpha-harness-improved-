@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -89,6 +89,11 @@ class Field:
     description: str
     #: How many regions carry it, in the region-agnostic market; null in every other.
     regions: int | None
+    #: Filled for chosen fields only, whose prompt lines say where each comes from and how
+    #: crowded it is.
+    dataset: str = ""
+    alphas: int | None = None
+    users: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,30 +109,40 @@ class Context:
     own: frozenset[str]
     names: frozenset[str]
     held: dict[str, frozenset[str]]
+    #: Set when the task was given single fields: ``fields`` holds only them, in the order
+    #: they were ranked, and ``rank_by`` says how.
+    chosen: bool = False
+    rank_by: str | None = None
+    #: The datasets the chosen fields come from, as ``(id, name)``.
+    datasets: tuple[tuple[str, str], ...] = ()
 
 
-async def context_for(
-    catalog: Catalog, region: str, delay: int, universes: list[str], dataset: str
-) -> Context | None:
+#: The dataset a chosen-fields task files every Alpha under: one pool, so one memory.
+CHOSEN = "chosen fields"
+
+
+async def _rows(
+    catalog: Catalog, region: str, delay: int, universes: list[str], where: str, args: list[Any]
+) -> list[dict[str, Any]]:
+    """The market's rows for ``where``, plus the price, volume and grouping fields."""
     marks = ", ".join("?" for _ in universes)
     extra = (*DATA_FIELDS, *GROUPING)
-    rows = await catalog.query(
+    return await catalog.query(
         f"""
         SELECT field_id, dataset_id, field_type, universe, coverage, description,
-               region_coverage FROM data_field
+               region_coverage, alpha_count, user_count FROM data_field
         WHERE instrument_type = 'EQUITY' AND region = ? AND delay = ? AND universe IN ({marks})
           AND field_type IN ('MATRIX', 'VECTOR', 'GROUP')
-          AND (dataset_id = ? OR field_id IN ({", ".join("?" for _ in extra)}))
+          AND ({where} OR field_id IN ({", ".join("?" for _ in extra)}))
         """,  # noqa: S608
-        [region, delay, *universes, dataset, *extra],
+        [region, delay, *universes, *args, *extra],
     )
-    if not any(r["dataset_id"] == dataset for r in rows):
-        return None
-    meta = await catalog.query(
-        "SELECT name, description, category_name, subcategory_name FROM data_set "
-        "WHERE region = ? AND delay = ? AND dataset_id = ? LIMIT 1",
-        [region, delay, dataset],
-    )
+
+
+def _best(
+    rows: list[dict[str, Any]], universes: list[str]
+) -> tuple[dict[str, set[str]], dict[str, dict[str, Any]]]:
+    """Which universes hold each field, and its row in the first universe that has it."""
     held: dict[str, set[str]] = {}
     info: dict[str, dict[str, Any]] = {}
     rank = {u: i for i, u in enumerate(universes)}
@@ -137,19 +152,89 @@ async def context_for(
         best = info.get(field_id)
         if best is None or rank[str(r["universe"])] < rank[str(best["universe"])]:
             info[field_id] = r
+    return held, info
+
+
+def _field(r: dict[str, Any], *, chosen: bool = False) -> Field:
+    base = Field(
+        str(r["field_id"]),
+        str(r["field_type"]),
+        r["coverage"],
+        str(r["description"] or "")[:160],
+        r["region_coverage"],
+    )
+    if not chosen:
+        return base
+    return replace(
+        base, dataset=str(r["dataset_id"]), alphas=r["alpha_count"], users=r["user_count"]
+    )
+
+
+async def chosen_context(
+    catalog: Catalog,
+    region: str,
+    delay: int,
+    universes: list[str],
+    field_ids: list[str],
+    rank_by: str | None,
+) -> Context | None:
+    """One pool of the fields the task was given, in their ranked order.
+
+    A field no downloaded universe has is left out; ``None`` when none is left.
+    """
+    marks = ", ".join("?" for _ in field_ids)
+    rows = await _rows(catalog, region, delay, universes, f"field_id IN ({marks})", field_ids)
+    held, info = _best(rows, universes)
+    wanted = [f for f in dict.fromkeys(field_ids) if f in info and f not in GROUPING]
+    if not wanted:
+        return None
+    own = frozenset(wanted)
+    ids = list(dict.fromkeys(str(info[f]["dataset_id"]) for f in wanted))
+    meta = await catalog.query(
+        f"""
+        SELECT DISTINCT dataset_id, name FROM data_set
+        WHERE region = ? AND delay = ? AND dataset_id IN ({", ".join("?" for _ in ids)})
+        """,  # noqa: S608
+        [region, delay, *ids],
+    )
+    names = {str(m["dataset_id"]): str(m["name"] or m["dataset_id"]) for m in meta}
+    # Only the chosen fields and the basics are known names, so an Alpha reaching for any
+    # other field of these datasets is thrown away rather than simulated.
+    known = {f: r for f, r in info.items() if f in own or f in DATA_FIELDS or f in GROUPING}
+    return Context(
+        id=CHOSEN,
+        name=f"{len(wanted)} chosen fields",
+        category="",
+        description="",
+        fields=tuple(_field(info[f], chosen=True) for f in wanted),
+        basics=tuple(_field(info[f]) for f in DATA_FIELDS if f in info and f not in own),
+        groups=tuple(g for g in GROUPING if g in info),
+        types={f: str(r["field_type"]) for f, r in known.items()},
+        own=own,
+        names=frozenset(known),
+        held={f: frozenset(held[f]) for f in known},
+        chosen=True,
+        rank_by=rank_by,
+        datasets=tuple((d, names.get(d, d)) for d in ids),
+    )
+
+
+async def context_for(
+    catalog: Catalog, region: str, delay: int, universes: list[str], dataset: str
+) -> Context | None:
+    rows = await _rows(catalog, region, delay, universes, "dataset_id = ?", [dataset])
+    if not any(r["dataset_id"] == dataset for r in rows):
+        return None
+    meta = await catalog.query(
+        "SELECT name, description, category_name, subcategory_name FROM data_set "
+        "WHERE region = ? AND delay = ? AND dataset_id = ? LIMIT 1",
+        [region, delay, dataset],
+    )
+    held, info = _best(rows, universes)
     own = {f for f, r in info.items() if r["dataset_id"] == dataset}
-
-    def field(f: str) -> Field:
-        r = info[f]
-        return Field(
-            f,
-            str(r["field_type"]),
-            r["coverage"],
-            str(r["description"] or "")[:160],
-            r["region_coverage"],
-        )
-
-    fields = sorted((field(f) for f in own if f not in GROUPING), key=lambda x: -(x.coverage or 0))
+    fields = sorted(
+        (_field(info[f]) for f in own if f not in GROUPING), key=lambda x: -(x.coverage or 0)
+    )
     m = meta[0] if meta else {}
     return Context(
         id=dataset,
@@ -159,7 +244,7 @@ async def context_for(
         ),
         description=str(m.get("description") or "")[:800],
         fields=tuple(fields),
-        basics=tuple(field(f) for f in DATA_FIELDS if f in info and f not in own),
+        basics=tuple(_field(info[f]) for f in DATA_FIELDS if f in info and f not in own),
         groups=tuple(g for g in GROUPING if g in info),
         types={f: str(r["field_type"]) for f, r in info.items()},
         own=frozenset(own),
@@ -183,7 +268,9 @@ def check(text: str, ctx: Context, table: dict[str, Any]) -> tuple[str, frozense
     if len(data) > MAX_FIELDS:
         raise Rejected(f"{len(data)} data fields ({', '.join(data)}); Power Pool allows 3.")
     if not used & (ctx.own - set(GROUPING)):
-        raise Rejected(f"Uses no field of {ctx.id}.")
+        raise Rejected(
+            "Uses none of the chosen fields." if ctx.chosen else f"Uses no field of {ctx.id}."
+        )
     for path, node in walk(tree):
         if node.kind == "name" and ctx.types.get(node.value) == "VECTOR":
             parent = node_at(tree, path[:-1]) if path else None
@@ -226,6 +313,9 @@ def _line(f: Field) -> str:
     # The region count only exists in the region-agnostic market, and there it decides
     # whether two fields can appear in one expression at all.
     regions = f" · {f.regions}/4 regions" if f.regions is not None else ""
+    if f.dataset:
+        crowd = f" · {f.alphas or 0:,} alphas · {f.users or 0:,} users"
+        return f"{f.id} · {f.dataset} · {f.type} · {coverage}{regions}{crowd} · {f.description}"
     return f"{f.id} · {f.type} · {coverage}{regions} · {f.description}"
 
 
@@ -318,22 +408,31 @@ def user_prompt(
     budget: int,
     system: str = POWER_POOL_LAB,
 ) -> tuple[str, int]:
-    """The user turn, and how many field lines it shows beside ``system``."""
-    head = "\n\n".join(
-        [
-            f"MARKET\n{run.region} · Delay {run.delay} · Universes {', '.join(run.universes)}"
-            + (REGION_AGNOSTIC_BRIEF if run.region == REGION_AGNOSTIC_REGION else ""),
-            "OPERATORS\n" + operators_text(operators),
-            f"DATASET\n{ctx.id} · {ctx.name} · {ctx.category}\n{ctx.description}",
-        ]
-    )
+    """The user turn, and how many field lines it shows beside ``system``.
+
+    A dataset's fields go most complete first, a window at a time. Chosen fields go in the
+    order they were ranked, numbered, and stand in for the dataset the rules speak of.
+    """
+    market = f"MARKET\n{run.region} · Delay {run.delay} · Universes {', '.join(run.universes)}"
+    if run.region == REGION_AGNOSTIC_REGION:
+        market += REGION_AGNOSTIC_BRIEF
+    if ctx.chosen:
+        about = "DATASETS\n" + "\n".join(f"{d} · {name}" for d, name in ctx.datasets)
+        mine, ask = (
+            "THESE FIELDS",
+            f"Write {PER_CALL} new Power Pool Alphas, each using at least one of your fields.",
+        )
+    else:
+        about = f"DATASET\n{ctx.id} · {ctx.name} · {ctx.category}\n{ctx.description}"
+        mine, ask = ctx.id, f"Write {PER_CALL} new Power Pool Alphas that use {ctx.id}."
+    head = "\n\n".join([market, "OPERATORS\n" + operators_text(operators), about])
     tail = "\n\n".join(
         [
             "PRICE AND VOLUME FIELDS · count as data fields\n"
             + "\n".join(_line(f) for f in ctx.basics),
             "GROUPING FIELDS · not counted\n" + ", ".join(ctx.groups),
-            f"YOUR EARLIER ALPHAS ON {ctx.id}\n{memory}",
-            f"Write {PER_CALL} new Power Pool Alphas that use {ctx.id}.",
+            f"YOUR EARLIER ALPHAS ON {mine}\n{memory}",
+            ask,
         ]
     )
     room = budget * 4 - len(system) - len(head) - len(tail) - 200
@@ -347,9 +446,19 @@ def user_prompt(
             break
         room -= len(line) + 1
         lines.append(line)
-    title = (
-        f"FIELDS OF {ctx.id} · {start + 1}-{start + len(lines)} of {total:,}, most complete first"
-    )
+    if ctx.chosen:
+        lines = [f"{start + i + 1}. {line}" for i, line in enumerate(lines)]
+        order = f"ranked by {ctx.rank_by}" if ctx.rank_by else "in the order they were chosen"
+        title = (
+            f"YOUR FIELDS · {start + 1}-{start + len(lines)} of {total:,}, {order}\n"
+            "They were chosen for this task and stand in for the dataset in the rules: every "
+            "Alpha uses at least one of them, and no other field of these datasets."
+        )
+    else:
+        title = (
+            f"FIELDS OF {ctx.id} · {start + 1}-{start + len(lines)} of {total:,}, "
+            "most complete first"
+        )
     return f"{head}\n\n{title}\n" + "\n".join(lines) + f"\n\n{tail}", len(lines)
 
 
@@ -414,13 +523,18 @@ async def _write(optimizer: Optimizer, study_id: int) -> None:
         run = params_of(row, PowerPoolParams)
         llm = dict(run.llm)
         by = dict(llm.get("byDataset") or {})
-        ids = run.dataset_ids
-        dataset = min(ids, key=lambda d: (by.get(d, {}).get("calls", 0), ids.index(d)))
         model = optimizer.llm.registry.get(run.model)
         operators = await optimizer.metadata.cached_operators() or []
-        ctx = await context_for(
-            optimizer.alphas.catalog, run.region, run.delay, run.universes, dataset
-        )
+        catalog = optimizer.alphas.catalog
+        if run.field_ids:
+            dataset = CHOSEN
+            ctx = await chosen_context(
+                catalog, run.region, run.delay, run.universes, run.field_ids, run.rank_by
+            )
+        else:
+            ids = run.dataset_ids
+            dataset = min(ids, key=lambda d: (by.get(d, {}).get("calls", 0), ids.index(d)))
+            ctx = await context_for(catalog, run.region, run.delay, run.universes, dataset)
         if model is None:
             return await _pause(
                 optimizer,
@@ -437,7 +551,8 @@ async def _write(optimizer: Optimizer, study_id: int) -> None:
             return await _pause(
                 optimizer,
                 study_id,
-                f"{dataset} is not in the downloaded catalog. Sync it, then resume.",
+                ("None of the chosen fields is" if run.field_ids else f"{dataset} is not")
+                + " in the downloaded catalog. Sync it, then resume.",
             )
 
         prompt_name, system = await _system(optimizer, run)

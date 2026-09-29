@@ -2879,8 +2879,24 @@ export interface components {
             coverage_min?: number | null;
             /** Dataset Ids */
             dataset_ids?: string[];
+            /** Date Max */
+            date_max?: string | null;
+            /** Date Min */
+            date_min?: string | null;
+            /** Exclude Dataset Ids */
+            exclude_dataset_ids?: string[];
+            /** Exclude Date Max */
+            exclude_date_max?: string | null;
+            /** Exclude Date Min */
+            exclude_date_min?: string | null;
+            /** Exclude Keywords */
+            exclude_keywords?: string[];
+            /** Field Ids */
+            field_ids?: string[];
             /** Field Types */
             field_types?: string[];
+            /** Keywords */
+            keywords?: string[];
             /**
              * Limit
              * @default 100
@@ -3665,12 +3681,16 @@ export interface components {
             dataset_ids?: string[];
             /** Delay */
             delay: number;
+            /** Field Ids */
+            field_ids?: string[];
             /** Model */
             model?: string | null;
             /** Neutralizations */
             neutralizations?: string[];
             /** Prompt Id */
             prompt_id?: number | null;
+            /** Rank By */
+            rank_by?: string | null;
             /** Region */
             region: string;
             /**
@@ -4049,6 +4069,8 @@ export interface components {
             decay: number;
             /** Delay */
             delay: number;
+            /** Field Ids */
+            field_ids?: string[];
             /** Neutralizations */
             neutralizations?: string[];
             /** Region */
@@ -4649,6 +4671,8 @@ export interface components {
             decay: number;
             /** Delay */
             delay: number;
+            /** Field Ids */
+            field_ids?: string[];
             /** Neutralizations */
             neutralizations?: string[];
             /** Region */

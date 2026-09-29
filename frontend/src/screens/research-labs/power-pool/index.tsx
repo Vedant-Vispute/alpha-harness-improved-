@@ -6,8 +6,10 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { fmt } from '@/lib/format'
 import { DEFAULT_SCOPE, useScopeOptions } from '@/lib/scope'
+import type { PickedField } from '@/screens/data/dataset-pick'
 import { PromptPicker, useChosenPrompt } from '@/screens/prompts/picker'
 import {
+  fieldIdsOf,
   MAX_SIMULATIONS,
   simulationsValid,
   useAddTask,
@@ -39,6 +41,9 @@ interface PowerPoolDraft {
   delay: number
   universe: string
   datasetIds: string[]
+  /** Single fields, ranked; the prompt shows only these. Absent from an older saved draft. */
+  fields?: PickedField[]
+  rankBy?: string | null
   cores: number
   simulations: number | null
   model: string | null
@@ -55,6 +60,8 @@ const useDraft = create<PowerPoolDraft>()(
       delay: DEFAULT_SCOPE.delay,
       universe: DEFAULT_SCOPE.universe,
       datasetIds: [],
+      fields: [],
+      rankBy: null,
       cores: 4,
       simulations: null,
       model: null,
@@ -74,7 +81,7 @@ const PRE =
 export function PowerPoolLabScreen() {
   const draft = useDraft()
   const set = useDraft.setState
-  const { names, choose } = useLabMarket(draft, set, '/labs/power-pool')
+  const { panel } = useLabMarket(draft, set, '/labs/power-pool')
   const options = useQuery({
     queryKey: ['power-pool-lab', 'options'],
     queryFn: powerPoolLab.options,
@@ -100,6 +107,8 @@ export function PowerPoolLabScreen() {
     delay: draft.delay,
     universe: draft.universe,
     dataset_ids: draft.datasetIds,
+    field_ids: fieldIdsOf(draft),
+    rank_by: draft.fields?.length ? (draft.rankBy ?? null) : null,
     model,
     prompt_id: promptId,
     neutralizations: draft.neutralizations,
@@ -136,12 +145,7 @@ export function PowerPoolLabScreen() {
       {options.isSuccess && models.length === 0 && (
         <Notice tone="warn" title="Add a Key in LLM Integration to use this lab." />
       )}
-      <DatasetsPanel
-        ids={draft.datasetIds}
-        names={names}
-        onChoose={choose}
-        onRemove={(id) => set({ datasetIds: draft.datasetIds.filter((x) => x !== id) })}
-      >
+      <DatasetsPanel {...panel}>
         <Fieldset
           legend="Prompt"
           hint="What the LLM is told before the datasets. Edits in LLM Prompts reach running tasks on their next call."
@@ -185,7 +189,12 @@ export function PowerPoolLabScreen() {
           )}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Metric boxed label="Datasets" value={fmt.int(draft.datasetIds.length)} />
-            <Metric boxed label="Fields" value={fmt.int(plan?.fields)} />
+            <Metric
+              boxed
+              label="Fields"
+              value={fmt.int(plan?.fields)}
+              hint={draft.fields?.length ? 'Chosen, ranked' : 'Every field of the datasets'}
+            />
             <Metric boxed label="LLM Calls" value={fmt.int(plan?.llmCalls)} hint="20 Alphas each" />
             <Metric
               boxed

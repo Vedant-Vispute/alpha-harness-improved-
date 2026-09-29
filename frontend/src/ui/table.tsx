@@ -35,6 +35,7 @@ export function DataTable<T>({
   onSort,
   selected,
   onSelect,
+  onSelectAll,
   loading,
   error,
   empty = 'Nothing to show.',
@@ -54,6 +55,8 @@ export function DataTable<T>({
   /** With `onSelect`, adds a checkbox column. */
   selected?: ReadonlySet<string>
   onSelect?: (key: string, on: boolean) => void
+  /** Adds a checkbox to the header that ticks or clears every row shown. */
+  onSelectAll?: (on: boolean) => void
   loading?: boolean
   /** A failed query: shown in place of the empty state, which would claim there is nothing. */
   error?: unknown
@@ -86,7 +89,21 @@ export function DataTable<T>({
         className="grid border-b border-hairline-strong bg-surface-1 select-none"
         style={{ gridTemplateColumns: template }}
       >
-        {selectable && <div role="columnheader" aria-label="Select" />}
+        {selectable &&
+          (onSelectAll ? (
+            <div role="columnheader" className="flex items-center justify-center">
+              <input
+                type="checkbox"
+                aria-label="Select every row shown"
+                className="size-3.5"
+                disabled={rows.length === 0}
+                checked={rows.length > 0 && rows.every((row) => selected.has(rowKey(row)))}
+                onChange={(e) => onSelectAll(e.target.checked)}
+              />
+            </div>
+          ) : (
+            <div role="columnheader" aria-label="Select" />
+          ))}
         {columns.map((column) => {
           const active = sort?.key === column.key
           const Arrow = sort?.desc ? ArrowDownIcon : ArrowUpIcon

@@ -2,8 +2,10 @@
 
 import { DatabaseIcon, XIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { cn } from '@/lib/cn'
 import { DASH, fmt } from '@/lib/format'
 import { isRegionAgnostic, regionLabel, useScopeOptions } from '@/lib/scope'
+import type { PickedField } from '@/screens/data/dataset-pick'
 import { NeutralizationPicker } from '@/screens/research-labs/neutralization'
 import {
   Button,
@@ -81,58 +83,128 @@ export interface LabPlan {
   warnings: string[]
 }
 
+/** One removable chip: a dataset, or a ranked field. */
+function Chip({
+  label,
+  title,
+  rank,
+  mono,
+  onRemove,
+}: {
+  label: string
+  title: string
+  rank?: number
+  mono?: boolean
+  onRemove: () => void
+}) {
+  return (
+    <span
+      title={title}
+      className="inline-flex h-7 max-w-full items-center gap-1 rounded-sm border border-hairline-strong bg-surface-3 pr-1 pl-2 text-body-compact text-ink"
+    >
+      {rank !== undefined && <span className="num text-ink-subtle">{rank}</span>}
+      <span className={cn('truncate', mono && 'num', rank === undefined && 'pl-1')}>{label}</span>
+      <button
+        type="button"
+        aria-label={`Remove ${label}`}
+        className="shrink-0 rounded-xs p-0.5 text-ink-subtle transition-colors hover:text-ink"
+        onClick={onRemove}
+      >
+        <XIcon className="size-3.5" />
+      </button>
+    </span>
+  )
+}
+
 export function DatasetsPanel({
   ids,
+  fields = [],
+  rankBy,
   names,
   onChoose,
   onRemove,
+  onRemoveField,
+  onUseDatasets,
   children,
 }: {
   ids: string[]
+  /** Single fields chosen instead of whole datasets, in rank order; `ids` are theirs. */
+  fields?: PickedField[]
+  rankBy?: string | null
   names: Map<string, string>
   onChoose: () => void
   onRemove: (id: string) => void
+  onRemoveField?: (id: string) => void
+  /** Drops the chosen fields and keeps their datasets, whole. */
+  onUseDatasets?: () => void
   /** More of what the task is given to work from, under the datasets: the LLM lab's prompt. */
   children?: ReactNode
 }) {
-  const chosen = ids.length > 0
+  const chosen = ids.length > 0 || fields.length > 0
+  const name = (id: string) => names.get(id) ?? id
   return (
     <Panel
-      title="Datasets"
+      title="Datasets and Fields"
       actions={
         chosen && (
           <Button size="sm" onClick={onChoose}>
             <DatabaseIcon />
-            Choose Datasets
+            Choose Datasets or Fields
           </Button>
         )
       }
     >
-      {chosen ? (
+      {fields.length > 0 ? (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-body-compact text-pretty text-ink-muted">
+              <span className="num text-ink">{fmt.int(fields.length)}</span> chosen{' '}
+              {fields.length === 1 ? 'field' : 'fields'}
+              {rankBy ? (
+                <>
+                  , ranked by <span className="text-ink">{rankBy}</span>
+                </>
+              ) : null}
+              . The task uses only these, in this order.
+            </p>
+            {onUseDatasets && (
+              <Button size="sm" variant="ghost" onClick={onUseDatasets}>
+                Use Whole Datasets Instead
+              </Button>
+            )}
+          </div>
+          <ol aria-label="Chosen fields" className="flex max-h-56 flex-wrap gap-1.5 overflow-auto">
+            {fields.map((f, i) => (
+              <li key={f.id} className="max-w-full">
+                <Chip
+                  rank={i + 1}
+                  label={f.id}
+                  title={`${f.id} · ${name(f.dataset)}`}
+                  mono
+                  onRemove={() => onRemoveField?.(f.id)}
+                />
+              </li>
+            ))}
+          </ol>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-caption font-medium text-ink-subtle">From</span>
+            {ids.map((id) => (
+              <Chip key={id} label={name(id)} title={id} onRemove={() => onRemove(id)} />
+            ))}
+          </div>
+        </div>
+      ) : chosen ? (
         <div className="flex flex-wrap gap-1.5">
           {ids.map((id) => (
-            <span
-              key={id}
-              title={id}
-              className="inline-flex h-7 max-w-full items-center gap-1 rounded-sm border border-hairline-strong bg-surface-3 pr-1 pl-3 text-body-compact text-ink"
-            >
-              <span className="truncate">{names.get(id) ?? id}</span>
-              <button
-                type="button"
-                aria-label={`Remove ${names.get(id) ?? id}`}
-                className="shrink-0 rounded-xs p-0.5 text-ink-subtle transition-colors hover:text-ink"
-                onClick={() => onRemove(id)}
-              >
-                <XIcon className="size-3.5" />
-              </button>
-            </span>
+            <Chip key={id} label={name(id)} title={id} onRemove={() => onRemove(id)} />
           ))}
         </div>
       ) : (
-        <Empty title="No datasets chosen" icon={<DatabaseIcon />}>
+        <Empty title="No datasets or fields chosen" icon={<DatabaseIcon />}>
+          Tick whole datasets, or single fields ranked by how you sort them, in the Data Explorer.
           <Button className="mt-2" onClick={onChoose}>
             <DatabaseIcon />
-            Choose Datasets
+            Choose Datasets or Fields
           </Button>
         </Empty>
       )}

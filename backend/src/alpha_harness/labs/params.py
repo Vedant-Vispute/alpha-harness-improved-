@@ -62,6 +62,8 @@ class SearchParams(TaskParams):
     space: dict[str, Any]
     decay: int = 0
     dataset_ids: list[str] = Field(default_factory=list)
+    #: The single fields it was told to use, if it was; the space holds them either way.
+    field_ids: list[str] = Field(default_factory=list)
     n_startup_trials: int = 20
 
 
@@ -83,6 +85,11 @@ class PowerPoolParams(TaskParams):
     neutralizations: list[str]
     universe: str | None = None
     dataset_ids: list[str] = Field(default_factory=list)
+    #: Single fields ticked in the Data Explorer, ranked: every call shows only these, in this
+    #: order, and ``dataset_ids`` are theirs. Empty writes for one whole dataset at a time.
+    field_ids: list[str] = Field(default_factory=list)
+    #: What they were ranked by, as the prompt says it: "Alphas, most first".
+    rank_by: str | None = None
     model: str = ""
     #: A saved prompt from LLM Prompts, re-read on every call; null sends the built-in.
     prompt_id: int | None = None

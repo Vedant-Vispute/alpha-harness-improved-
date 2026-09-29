@@ -320,6 +320,7 @@ async def add_task(body: TemplateTask, state: State) -> AddedTask:
             decay=body.decay,
             cores=body.cores,
             dataset_ids=body.dataset_ids,
+            field_ids=body.field_ids,
             n_startup_trials=startup_trials(len(plan["space"]["fields"]), size, per_round),
         ),
         simulations=size,

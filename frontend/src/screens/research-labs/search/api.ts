@@ -11,6 +11,8 @@ export interface SearchLabRequest {
   delay: number
   universe?: string | null
   dataset_ids: string[]
+  /** Only these fields of the datasets, when any were chosen. */
+  field_ids: string[]
   vector_operators: string[]
   decay: number
   cores: number

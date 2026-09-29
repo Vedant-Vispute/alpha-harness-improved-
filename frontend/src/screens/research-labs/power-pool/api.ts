@@ -13,6 +13,10 @@ export interface PowerPoolRequest {
   delay: number
   universe: string
   dataset_ids: string[]
+  /** Only these fields, ranked, when any were chosen; the prompt lists them in this order. */
+  field_ids: string[]
+  /** How `field_ids` were ranked, as the prompt says it. */
+  rank_by: string | null
   model: string | null
   /** A saved prompt from LLM Prompts; null sends the built-in. */
   prompt_id: number | null

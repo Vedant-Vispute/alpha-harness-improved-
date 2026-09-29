@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from ..db.models import utcnow
 from ..labs import power_pool, search
 from ..labs.launch import (
+    MAX_PICKED_FIELDS,
     NO_SIMULATIONS,
     OPERATORS_UNREAD,
     AddedTask,
@@ -37,6 +38,10 @@ class PowerPoolRequest(BaseModel):
     delay: int = Field(ge=0, le=1)
     universe: str
     dataset_ids: list[str] = Field(default_factory=list, max_length=50)
+    #: Single fields, ranked; the LLM sees only these, in this order.
+    field_ids: list[str] = Field(default_factory=list, max_length=MAX_PICKED_FIELDS)
+    #: How ``field_ids`` were ranked, in words the prompt can use.
+    rank_by: str | None = Field(default=None, max_length=160)
     model: str | None = None
     #: A saved prompt from LLM Prompts; null sends the built-in.
     prompt_id: int | None = None
@@ -153,15 +158,12 @@ async def _plan(body: PowerPoolRequest, state: Any) -> dict[str, Any]:
         neutralizations=neutralizations,
     )
     if universes:
-        for dataset in body.dataset_ids:
-            ctx = await power_pool.context_for(
-                state.catalog, body.region, body.delay, universes, dataset
-            )
+        for ctx, missing in await _contexts(body, state, universes):
             if ctx is None:
-                problems.append(
-                    f"{dataset} is not in the downloaded {body.region} delay {body.delay} catalog."
-                )
+                problems.append(missing)
                 continue
+            if missing:
+                warnings.append(missing)
             fields += len(ctx.fields)
             if prompt is None and info is not None and operators:
                 user, shown = power_pool.user_prompt(
@@ -201,6 +203,35 @@ async def _plan(body: PowerPoolRequest, state: Any) -> dict[str, Any]:
     }
 
 
+async def _contexts(
+    body: PowerPoolRequest, state: Any, universes: list[str]
+) -> list[tuple[power_pool.Context | None, str]]:
+    """What each call can be about, with what is missing from it: one pool of the chosen
+    fields when there are any, otherwise each dataset in turn."""
+    where = f"the downloaded {body.region} delay {body.delay} catalog"
+    if body.field_ids:
+        ctx = await power_pool.chosen_context(
+            state.catalog, body.region, body.delay, universes, body.field_ids, body.rank_by
+        )
+        if ctx is None:
+            return [(None, f"None of the chosen fields is in {where}.")]
+        left = [f for f in dict.fromkeys(body.field_ids) if f not in ctx.own]
+        note = (
+            f"{len(left):,} chosen fields are not in {where} or are grouping fields, so the "
+            f"LLM won't see them: {', '.join(left[:5])}{'…' if len(left) > 5 else ''}."
+            if left
+            else ""
+        )
+        return [(ctx, note)]
+    out: list[tuple[power_pool.Context | None, str]] = []
+    for dataset in body.dataset_ids:
+        ctx = await power_pool.context_for(
+            state.catalog, body.region, body.delay, universes, dataset
+        )
+        out.append((ctx, "" if ctx else f"{dataset} is not in {where}."))
+    return out
+
+
 @router.post("/preview")
 async def preview(body: PowerPoolRequest, state: State) -> PowerPoolPreview:
     """What a task would send. Free: no LLM call, no simulation."""
@@ -225,6 +256,8 @@ async def add_task(body: PowerPoolRequest, state: State) -> AddedTask:
             universes=plan["universes"],
             neutralizations=plan["neutralizations"],
             dataset_ids=body.dataset_ids,
+            field_ids=body.field_ids,
+            rank_by=body.rank_by if body.field_ids else None,
             model=plan["model"],
             prompt_id=body.prompt_id,
             prompt_name=plan["promptName"] if body.prompt_id is not None else None,
