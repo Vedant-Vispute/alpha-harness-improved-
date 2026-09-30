@@ -36,7 +36,9 @@ dev = [
 ]
 
 [tool.ruff]
-target-version = "py314"
+# py313, not py314: the formatter would strip the parentheses from `except (A, B):`, which
+# only 3.14 can parse, and a launcher or checkout run on an older Python dies on import.
+target-version = "py313"
 line-length = 100
 src = [ "src" ]
 lint.select = [

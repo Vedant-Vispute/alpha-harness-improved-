@@ -188,7 +188,7 @@ def slot_version(root: Path, slot: str) -> str | None:
 def read_json(path: Path) -> dict[str, object]:
     try:
         body = json.loads(path.read_text(encoding="utf-8"))
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return {}
     return body if isinstance(body, dict) else {}
 
