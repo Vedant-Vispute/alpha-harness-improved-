@@ -7,8 +7,6 @@ hence background tasks with visible progress.
 None of this spends simulation quota. It is all reading results that already exist.
 """
 
-from __future__ import annotations
-
 import asyncio
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -16,9 +14,9 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from ..brain.filters import AlphaQuery, Filter
-from ..brain.schemas import Alpha, RecordSet
+from ..brain.schemas import QUICK_MODE, Alpha, RecordSet
 from .store import checks_json
-from .yields import checks_of, clean
+from .yields import checks_of, gating_results
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine
@@ -67,15 +65,19 @@ RETURNS_PROGRESS_STEPS = 50
 IMPORT_LIMIT = 100_000
 
 
-def worth_downloading(alpha: Alpha) -> bool:
+def worth_downloading(alpha: Alpha, allowed: frozenset[str]) -> bool:
     """Whether this alpha's daily PnL is worth a request as soon as it lands.
 
-    Only the ones nothing refused. A refused alpha is never charted, correlated or planned
-    with, so its series is a request and ~2,500 rows spent on something no screen reads --
-    and a full day is 5,000 alphas, of which about one in five is worth keeping.
+    Only when every check that decides anything reads one of ``allowed``, chosen in Settings.
+    The default, PASS, WARNING or PENDING, is the ones nothing refused: a refused alpha is
+    rarely charted, correlated or planned with, so its series is a request and ~2,500 rows
+    spent on something no screen reads -- and a full day is 5,000 alphas, of which about one
+    in five is worth keeping. A quick-mode alpha is never submittable, so never downloaded.
     """
-    mode = alpha.settings.simulation_mode if alpha.settings else None
-    return clean(checks_of(checks_json(alpha)), mode)
+    if alpha.settings is not None and alpha.settings.simulation_mode == QUICK_MODE:
+        return False
+    results = gating_results(checks_of(checks_json(alpha)))
+    return bool(results) and results <= allowed
 
 
 def _warn_unreadable(alpha_id: str, pnl: RecordSet, stored: int) -> None:
@@ -109,6 +111,8 @@ class Backfill:
         self._background: set[asyncio.Task[Any]] = set()
         #: Alphas whose daily PnL was asked for in the background, each once per run.
         self._returns_asked: set[str] = set()
+        #: Check results that let an alpha's PnL download as it lands (Settings). Empty: never.
+        self.pnl_results: frozenset[str] = frozenset({"PASS", "WARNING", "PENDING"})
         #: Alphas waiting for the next shared list read, each with what its caller awaits.
         self._landed: dict[str, asyncio.Future[None]] = {}
         self._drainer: asyncio.Task[None] | None = None
@@ -495,7 +499,7 @@ class Backfill:
 
         # Daily PnL for the ones worth opening, downloaded now rather than when a screen
         # first asks. One request each, so it is the Alphas nothing refused, not all of them.
-        self.schedule_returns([a.id for a in complete if worth_downloading(a)])
+        self.schedule_returns([a.id for a in complete if worth_downloading(a, self.pnl_results)])
 
         asked = set(alpha_ids)
         children = list(dict.fromkeys(c for a in complete for c in a.children if c not in asked))

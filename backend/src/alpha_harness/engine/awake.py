@@ -6,8 +6,6 @@ its own tool, not to sleep. Lid-close sleep is not preventable by these APIs and
 cannot reach the Windows host; the Matrix tells the user instead.
 """
 
-from __future__ import annotations
-
 import os
 import platform
 import shutil

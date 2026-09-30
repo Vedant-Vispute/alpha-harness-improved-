@@ -1,7 +1,5 @@
 """Sign-in, session state, and cached platform metadata."""
 
-from __future__ import annotations
-
 from typing import Any
 
 import structlog

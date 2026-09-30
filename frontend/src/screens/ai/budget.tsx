@@ -2,14 +2,16 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { today } from '@/api/core'
 import { fmt } from '@/lib/format'
-import { type LLMKey, type LLMModel, quotaDay } from '@/screens/ai/api'
-import { Badge, Empty, ErrorNotice, LINK, Metric, Panel, Progress, Skeleton } from '@/ui/kit'
+import type { LLMKey, LLMModel } from '@/screens/ai/api'
+import { Empty, ErrorNotice, LINK, Metric, Panel, Progress, Skeleton } from '@/ui/kit'
 import { type Column, DataTable } from '@/ui/table'
 import { useCountdown, useKeys, useModels, useProviderLabel } from './shared'
 
 interface KeyModelRow {
   key: LLMKey
   model: LLMModel
+  /** What this Key may send this model today: the model's limit, or the Key's cap if lower. */
+  allowed: number
   requests: number
   tokens: number
 }
@@ -24,17 +26,14 @@ export function Budget() {
     refetchInterval: 30_000,
   })
   const providerLabel = useProviderLabel()
-  const pacific = useCountdown(keys.data?.resetInSeconds, keys.dataUpdatedAt)
+  const nextReset = useCountdown(keys.data?.resetInSeconds ?? undefined, keys.dataUpdatedAt)
   const eastern = useCountdown(bar.data?.resetsInSeconds, bar.dataUpdatedAt)
 
   if (keys.isError) return <ErrorNotice title="Could not load the budget" error={keys.error} />
   if (!keys.data) return <Skeleton className="h-96" />
 
   const status = keys.data
-  const enabledFor = (provider: string) =>
-    status.keys.filter((k) => k.enabled && k.provider === provider).length
-  const bulkLeft = status.budget.filter((b) => b.bulk).reduce((s, b) => s + b.remainingToday, 0)
-  const day = quotaDay(status.quotaTimezone)
+  const left = status.budget.reduce((s, b) => s + b.remainingToday, 0)
 
   const perKey: KeyModelRow[] = status.keys
     .filter((k) => k.enabled)
@@ -42,10 +41,11 @@ export function Budget() {
       (models.data?.models ?? [])
         .filter((m) => m.provider === k.provider)
         .map((m) => {
-          const usage = k.usage.filter((u) => u.day === day && u.model === m.id)
+          const usage = k.usage.filter((u) => u.model === m.id)
           return {
             key: k,
             model: m,
+            allowed: k.dailyLimit === null ? m.rpd : Math.min(k.dailyLimit, m.rpd),
             requests: usage.reduce((s, u) => s + u.requests, 0),
             tokens: usage.reduce((s, u) => s + u.tokens, 0),
           }
@@ -65,23 +65,23 @@ export function Budget() {
       key: 'model',
       header: 'Model',
       width: 'minmax(160px,1.2fr)',
-      cell: (r) => r.model.label,
+      cell: (r) => <span className="num truncate">{r.model.id}</span>,
     },
     {
       key: 'rpd',
-      header: 'Requests left / RPD',
+      header: 'Requests left today',
       width: 'minmax(200px,1.2fr)',
       cell: (r) => {
-        const left = Math.max(0, r.model.rpd - r.requests)
+        const remaining = Math.max(0, r.allowed - r.requests)
         return (
           <div className="flex w-full items-center gap-2">
             <Progress
               className="flex-1"
-              value={r.model.rpd ? left / r.model.rpd : null}
-              label={`${r.model.label} requests left`}
+              value={remaining / r.allowed}
+              label={`${r.model.id} requests left`}
             />
             <span className="num shrink-0 text-body-compact text-ink-muted">
-              {fmt.int(left)} / {fmt.int(r.model.rpd)}
+              {fmt.int(remaining)} / {fmt.int(r.allowed)}
             </span>
           </div>
         )
@@ -89,17 +89,10 @@ export function Budget() {
     },
     {
       key: 'rpm',
-      header: 'RPM',
-      width: '70px',
+      header: 'Per Minute',
+      width: '90px',
       align: 'right',
       cell: (r) => fmt.int(r.model.rpm),
-    },
-    {
-      key: 'tpm',
-      header: 'TPM',
-      width: '80px',
-      align: 'right',
-      cell: (r) => fmt.compact(r.model.tpm),
     },
     {
       key: 'tokens',
@@ -110,79 +103,19 @@ export function Budget() {
     },
   ]
 
-  const modelColumns: Column<LLMModel>[] = [
-    {
-      key: 'provider',
-      header: 'Provider',
-      width: 'minmax(120px,0.8fr)',
-      cell: (m) => providerLabel(m.provider),
-    },
-    {
-      key: 'model',
-      header: 'Model',
-      width: 'minmax(180px,1.2fr)',
-      cell: (m) => <span title={m.id}>{m.label}</span>,
-    },
-    {
-      key: 'id',
-      header: 'Id',
-      width: 'minmax(160px,1fr)',
-      cell: (m) => <span className="num text-body-compact text-ink-subtle">{m.id}</span>,
-    },
-    {
-      key: 'kind',
-      header: 'Kind',
-      width: '90px',
-      cell: (m) => <span className="text-ink-subtle">{m.kind}</span>,
-    },
-    {
-      key: 'rpm',
-      header: 'RPM',
-      width: '70px',
-      align: 'right',
-      cell: (m) => fmt.int(m.rpm),
-    },
-    {
-      key: 'tpm',
-      header: 'TPM',
-      width: '80px',
-      align: 'right',
-      cell: (m) => fmt.int(m.tpm),
-    },
-    {
-      key: 'rpd',
-      header: 'RPD',
-      width: '80px',
-      align: 'right',
-      cell: (m) => fmt.int(m.rpd),
-    },
-    {
-      key: 'notes',
-      header: 'Notes',
-      width: 'minmax(200px,1fr)',
-      cell: (m) => (
-        <div className="flex min-w-0 gap-1 overflow-hidden">
-          {m.recommended && <Badge>Recommended</Badge>}
-          {m.bulk && <Badge tone="outline">Bulk</Badge>}
-          {m.discovered && <Badge tone="warn">Limits guessed</Badge>}
-        </div>
-      ),
-    },
-  ]
-
   return (
     <div className="flex flex-col gap-3">
       <Panel>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <Metric
             label="Assistant requests left today"
-            value={fmt.int(bulkLeft)}
-            hint="Bulk models, across every enabled Key."
+            value={fmt.int(left)}
+            hint="Every set-up model, across every enabled Key."
           />
           <Metric
-            label="Google AI Studio quota resets in"
-            value={fmt.countdown(pacific)}
-            hint={`00:00 US Pacific (${status.quotaTimezone}). Assistant Keys only.`}
+            label="Next assistant reset in"
+            value={nextReset === undefined ? '—' : fmt.countdown(nextReset)}
+            hint="The soonest a model's day turns over. Each resets at midnight in its own time zone."
           />
           <Metric
             label="BRAIN simulations reset in"
@@ -202,42 +135,43 @@ export function Budget() {
         description="Requests left across every enabled Key, against what those Keys allow in a day."
       >
         {status.budget.length === 0 ? (
-          <Empty title="No budget without an enabled Key">
-            Add a free Key and its daily allowance appears here.{' '}
-            <Link to="/ai/$tab" params={{ tab: 'providers' }} className={LINK}>
-              Choose a provider
+          <Empty title="No budget without a model">
+            Set up a model with its limits, and its daily allowance appears here.{' '}
+            <Link to="/ai/$tab" params={{ tab: 'models' }} className={LINK}>
+              Set up a model
             </Link>
           </Empty>
         ) : (
           <div className="grid grid-cols-1 gap-x-6 gap-y-3 md:grid-cols-2">
-            {status.budget.map((b) => {
-              const total = b.perKeyPerDay * enabledFor(b.provider)
-              return (
-                <div key={`${b.provider}/${b.model}`} className="flex flex-col gap-1.5">
-                  <div className="flex items-center justify-between gap-2 text-body-compact">
-                    <span className="flex min-w-0 items-center gap-2">
-                      <span className="truncate text-ink">{b.label}</span>
-                      <span className="shrink-0 text-ink-subtle">{providerLabel(b.provider)}</span>
-                      {b.bulk && <Badge tone="outline">Bulk</Badge>}
-                    </span>
-                    <span className="num text-ink-muted">
-                      {fmt.int(b.remainingToday)} / {fmt.int(total)}
-                    </span>
-                  </div>
-                  <Progress
-                    value={total ? b.remainingToday / total : null}
-                    label={`${b.label} requests left`}
-                  />
+            {status.budget.map((b) => (
+              <div key={`${b.provider}/${b.model}`} className="flex flex-col gap-1.5">
+                <div className="flex items-center justify-between gap-2 text-body-compact">
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="num truncate text-ink">{b.model}</span>
+                    <span className="shrink-0 text-ink-subtle">{providerLabel(b.provider)}</span>
+                  </span>
+                  <span className="num text-ink-muted">
+                    {fmt.int(b.remainingToday)} / {fmt.int(b.allowedToday)}
+                  </span>
                 </div>
-              )
-            })}
+                <Progress
+                  value={b.allowedToday ? b.remainingToday / b.allowedToday : null}
+                  label={`${b.model} requests left`}
+                />
+                <ResetIn
+                  seconds={b.resetInSeconds}
+                  fetchedAt={keys.dataUpdatedAt}
+                  timeZone={b.resetTimezone}
+                />
+              </div>
+            ))}
           </div>
         )}
       </Panel>
 
       <Panel
         title="Per Key"
-        description="Each enabled Key's own allowance for every model its provider offers. RPM and TPM are per-minute ceilings."
+        description="Each enabled Key's allowance for every model set up for its provider. A Key's own daily cap wins where it is lower."
         bodyClassName="p-0"
       >
         {models.isError ? (
@@ -249,38 +183,29 @@ export function Budget() {
             columns={keyColumns}
             rowKey={(r) => `${r.key.id}/${r.model.id}`}
             loading={models.isLoading}
-            empty="No enabled Keys."
+            empty="No enabled Key has a model set up."
             maxHeight="50vh"
           />
         )}
       </Panel>
-
-      <Panel
-        title="Model limits"
-        description={
-          models.data && (
-            <>
-              {models.data.note} Chat default{' '}
-              <span className="num">{models.data.defaults.chat}</span>, careful work{' '}
-              <span className="num">{models.data.defaults.deep}</span>. Limits are per Key.
-            </>
-          )
-        }
-        bodyClassName="p-0"
-      >
-        {models.isError ? (
-          <ErrorNotice className="m-4" title="Could not load the models" error={models.error} />
-        ) : (
-          <DataTable
-            label="Model limits"
-            rows={models.data?.models ?? []}
-            columns={modelColumns}
-            rowKey={(m) => `${m.provider}/${m.id}`}
-            loading={models.isLoading}
-            maxHeight="60vh"
-          />
-        )}
-      </Panel>
     </div>
+  )
+}
+
+/** One model's countdown to its provider's new day, ticking between refetches. */
+function ResetIn({
+  seconds,
+  fetchedAt,
+  timeZone,
+}: {
+  seconds: number
+  fetchedAt: number
+  timeZone: string
+}) {
+  const left = useCountdown(seconds, fetchedAt)
+  return (
+    <span className="text-body-compact text-ink-subtle">
+      Resets in <span className="num">{fmt.countdown(left)}</span> · midnight {timeZone}
+    </span>
   )
 }

@@ -6,8 +6,6 @@ BRAIN counts them), given a random universe, neutralization and decay, and kept 
 waiting trial until cores are free. Calls never happen inside ``advance``.
 """
 
-from __future__ import annotations
-
 import json
 import random
 import time
@@ -44,7 +42,6 @@ if TYPE_CHECKING:  # pragma: no cover
     import asyncio
 
     from ..db.duck import Catalog
-    from ..llm.registry import ModelInfo
     from .study import Optimizer
 
 log = structlog.get_logger(__name__)
@@ -541,14 +538,9 @@ def memory_text(done: list[Any], waiting: list[Any], thrown: list[Any]) -> str:
     return "\n".join(parts) or "None yet."
 
 
-def budget_for(model: ModelInfo) -> int:
-    return min(40_000, int(model.tpm * 0.6))
-
-
 #: What a model cannot infer from the market line when the region is ALL. The warning about
-#: cross-sectional comparison is BRAIN's own ("Tips for Success",
-#: ``docs/learn/advanced-topics/region-agnostic-alpha``): one expression is translated into
-#: four markets whose currencies, market caps and face values are not on one scale.
+#: cross-sectional comparison is BRAIN's own: one expression is translated into four
+#: markets whose currencies, market caps and face values are not on one scale.
 REGION_AGNOSTIC_BRIEF = """
 This expression runs in USA, Europe, Asia and Global at once, and the alpha is submittable
 where two or more of them hold up. Two fields combine only where their regions overlap, so
@@ -729,7 +721,8 @@ async def _write(optimizer: Optimizer, study_id: int) -> None:
             return await _pause(
                 optimizer,
                 study_id,
-                f"{run.model} is no longer offered. Add a new task with another model.",
+                f"{run.model} is no longer set up. Set it up again under LLM Integration › "
+                "Models, then resume.",
             )
         if not operators:
             return await _pause(
@@ -748,7 +741,7 @@ async def _write(optimizer: Optimizer, study_id: int) -> None:
         prompt_name, system = await _system(optimizer, run)
         memory = await memory_of(optimizer, study_id, dataset)
         offset = int(by.get(dataset, {}).get("offset", 0))
-        user, shown = user_prompt(ctx, operators, run, memory, offset, budget_for(model), system)
+        user, shown = user_prompt(ctx, operators, run, memory, offset, model.prompt_tokens, system)
         entry: dict[str, Any] = {
             "at": utcnow().isoformat(),
             "dataset": dataset,
@@ -762,7 +755,7 @@ async def _write(optimizer: Optimizer, study_id: int) -> None:
             answer = await optimizer.llm.generate(
                 system=system,
                 user=user,
-                model_id=model.id,
+                model_ref=model.ref,
                 response_schema=SCHEMA,
                 temperature=1.0,
             )
@@ -921,7 +914,7 @@ def parse_alphas(text: str) -> list[dict[str, Any]]:
     for candidate in (text, *(m.group(1) for m in FENCE.finditer(text))):
         try:
             payload = json.loads(candidate)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             continue
         if isinstance(payload, dict) and isinstance(payload.get("alphas"), list):
             return [a for a in payload["alphas"] if isinstance(a, dict) and a.get("expression")]

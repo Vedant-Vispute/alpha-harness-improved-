@@ -6,8 +6,6 @@ is pure CPU, so sign-in runs it in a worker thread and a ~1e6-iteration search c
 the event loop.
 """
 
-from __future__ import annotations
-
 import base64
 import hashlib
 import json

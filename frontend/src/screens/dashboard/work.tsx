@@ -164,7 +164,7 @@ export function WorkInFlight() {
 function TasksSummary() {
   const live = useLive((s) => s.tasks)
   const fallback = useQuery({
-    queryKey: ['tasks'],
+    queryKey: ['background-tasks'],
     queryFn: () => tasksApi.list(),
     enabled: live === null,
   })

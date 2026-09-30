@@ -1,12 +1,32 @@
 /** Columns the task tables share, so they cannot drift apart. */
 
+import type { ComponentProps } from 'react'
 import { cn } from '@/lib/cn'
 import { CORE_METRICS, CORE_ORDER, DASH, fmt } from '@/lib/format'
-import type { RankedAlpha } from '@/screens/tasks/api'
-import { MetricBadge, signTone, TEXT_TONE } from '@/ui/kit'
+import type { LabTask, RankedAlpha, TaskStatus } from '@/screens/tasks/api'
+import { type Badge, MetricBadge, signTone, TEXT_TONE } from '@/ui/kit'
 import type { Column, Sort } from '@/ui/table'
 
 export const setting = (r: RankedAlpha, key: string) => String(r.settings?.[key] ?? '')
+
+const STATUS: Record<TaskStatus, { label: string; tone: ComponentProps<typeof Badge>['tone'] }> = {
+  IDLE: { label: 'Not Started', tone: 'outline' },
+  QUEUED: { label: 'Waiting', tone: 'warn' },
+  RUNNING: { label: 'Running', tone: 'profit' },
+  PAUSED: { label: 'Paused', tone: 'muted' },
+  COMPLETE: { label: 'Complete', tone: 'neutral' },
+  FAILED: { label: 'Failed', tone: 'loss' },
+}
+
+/** A task's status in words, wherever it is shown. */
+export function taskStatus(task: LabTask) {
+  if (task.stopping && task.status === 'RUNNING')
+    return { label: 'Stopping', tone: 'warn' as const }
+  // A stop ends the task COMPLETE; "Complete" beside 0 / 626 would claim work never done.
+  if (task.stopping && task.status === 'COMPLETE' && task.simulated < task.target)
+    return { label: 'Stopped', tone: 'muted' as const }
+  return STATUS[task.status] ?? STATUS.IDLE
+}
 
 /** A Sharpe as the tables show it: a badge toned by its sign. */
 export function SharpeCell({ value }: { value: number | null | undefined }) {

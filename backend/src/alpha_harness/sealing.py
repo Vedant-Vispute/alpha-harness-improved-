@@ -10,8 +10,6 @@ has your user account, since the key is readable by it. That is the deliberate t
 tool that must resume polling unattended after a restart without prompting for a passphrase.
 """
 
-from __future__ import annotations
-
 import contextlib
 import os
 import secrets

@@ -157,7 +157,7 @@ const COLUMNS: Column<DataFieldRow>[] = [
   {
     key: 'field_type',
     header: 'Type',
-    width: 'minmax(60px,0.6fr)',
+    width: 'minmax(68px,0.6fr)',
     sortable: true,
     cell: (r) => (
       <span
@@ -203,7 +203,8 @@ const COLUMNS: Column<DataFieldRow>[] = [
   {
     key: 'alpha_count',
     header: 'Alphas',
-    width: 'minmax(68px,0.5fr)',
+    // Wide enough for a 7-digit count: `close` alone passes 700,000.
+    width: 'minmax(92px,0.5fr)',
     align: 'right',
     sortable: true,
     cell: (r) => fmt.int(r.alpha_count),
@@ -211,7 +212,7 @@ const COLUMNS: Column<DataFieldRow>[] = [
   {
     key: 'date_created',
     header: 'Date added',
-    width: 'minmax(80px,0.8fr)',
+    width: 'minmax(108px,0.8fr)',
     align: 'right',
     sortable: true,
     cell: (r) => fmt.date(r.date_created),
@@ -242,9 +243,9 @@ const ADVANCED: (keyof FieldFilterState)[] = [
  * detail sheet.
  */
 function useFittingColumns(): Column<DataFieldRow>[] {
-  const roomForCategory = useMediaQuery('(min-width: 1280px)')
-  const roomForType = useMediaQuery('(min-width: 1152px)')
-  const roomForDataset = useMediaQuery('(min-width: 1024px)')
+  const roomForCategory = useMediaQuery('(min-width: 1340px)')
+  const roomForType = useMediaQuery('(min-width: 1212px)')
+  const roomForDataset = useMediaQuery('(min-width: 1084px)')
   return useMemo(() => {
     const dropped = new Set(
       [
@@ -747,7 +748,7 @@ function FieldFilters({ scope }: { scope: Scope }) {
             variant={filter.region_exclusive ? 'primary' : 'secondary'}
             size="sm"
             aria-pressed={Boolean(filter.region_exclusive)}
-            title={`Only Fields found in ${scope.region} and no Other Synced region`}
+            title={`Only fields found in ${scope.region} and no other Synced Region`}
             onClick={() =>
               set({ region_exclusive: !filter.region_exclusive, region_agnostic: false })
             }

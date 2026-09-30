@@ -5,8 +5,6 @@ Presets are read-only; templates the user saves live in the ``template`` table u
 every lab's task, only runs from the Tasks tab.
 """
 
-from __future__ import annotations
-
 from typing import Any
 
 from fastapi import APIRouter

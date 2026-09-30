@@ -16,8 +16,10 @@ import { Button, Empty, LINK, Notice, Skeleton, Spinner } from '@/ui/kit'
 import { ResizeHandle, useMediaQuery, WIDE } from '@/ui/panels'
 import { CommandMenu } from './command-menu'
 import { Header } from './header'
+import { SettingsDialog } from './settings'
 import { SIDEBAR_WIDTH, Sidebar, useSidebarHidden } from './sidebar'
 import { SignIn } from './sign-in'
+import { InstallingOverlay } from './update'
 
 export function Shell() {
   const query = useQuery({ queryKey: ['today'], queryFn: () => today.get() })
@@ -142,7 +144,10 @@ function Workspace({ you }: { you: Today['you'] }) {
           {/* The docked sidebar exactly, over the page rather than beside it: same top, same
               width, rail or not, so only the page stays where it was. */}
           {peek && (
-            <div className="fixed top-12 bottom-0 left-0 z-40" style={{ width: rail ? 52 : width }}>
+            <div
+              className="fixed top-12 bottom-0 left-0 z-40 shadow-float"
+              style={{ width: rail ? 52 : width }}
+            >
               <Sidebar
                 you={you}
                 collapsed={rail}
@@ -154,6 +159,8 @@ function Workspace({ you }: { you: Today['you'] }) {
         </>
       )}
       <CommandMenu />
+      <SettingsDialog />
+      <InstallingOverlay />
     </div>
   )
 }

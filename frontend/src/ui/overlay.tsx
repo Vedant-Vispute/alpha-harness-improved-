@@ -1,6 +1,7 @@
 /**
  * Floating surfaces on Base UI's headless primitives (focus trap, dismissal, ARIA), styled
- * as lifted Linear surfaces: surface-2/3 with a strong hairline, no shadows.
+ * as lifted Linear surfaces: surface-3/4 with a strong hairline, casting `shadow-float`
+ * onto whatever they cover.
  */
 
 import { Dialog as BDialog } from '@base-ui/react/dialog'
@@ -12,6 +13,9 @@ import type { ReactElement, ReactNode, RefObject } from 'react'
 import { cn } from '@/lib/cn'
 import type { Choice } from '@/lib/scope'
 import { Button } from './kit'
+
+/** Behind every modal: the page dims and blurs, so what floats is the only thing in focus. */
+export const BACKDROP = 'fixed inset-0 z-50 bg-black/60 backdrop-blur-sm'
 
 interface DialogProps {
   open: boolean
@@ -64,10 +68,10 @@ export function Dialog({ open, onOpenChange, className, ...frame }: DialogProps)
   return (
     <BDialog.Root open={open} onOpenChange={(next) => onOpenChange(next)}>
       <BDialog.Portal>
-        <BDialog.Backdrop className="fixed inset-0 z-50 bg-black/60" />
+        <BDialog.Backdrop className={BACKDROP} />
         <BDialog.Popup
           className={cn(
-            'fixed top-1/2 left-1/2 z-50 flex max-h-[85vh] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg border border-hairline-strong bg-surface-3 outline-none',
+            'fixed top-1/2 left-1/2 z-50 flex max-h-[85vh] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg border border-hairline-strong bg-surface-3 shadow-float outline-none',
             className,
           )}
         >
@@ -83,10 +87,10 @@ export function Sheet({ open, onOpenChange, className, container, ...frame }: Di
   return (
     <BDialog.Root open={open} onOpenChange={(next) => onOpenChange(next)}>
       <BDialog.Portal container={container}>
-        <BDialog.Backdrop className="fixed inset-0 z-50 bg-black/50" />
+        <BDialog.Backdrop className={BACKDROP} />
         <BDialog.Popup
           className={cn(
-            'fixed inset-y-0 right-0 z-50 flex w-full max-w-2xl flex-col border-l border-hairline-strong bg-surface-1 outline-none',
+            'fixed inset-y-0 right-0 z-50 flex w-full max-w-2xl flex-col border-l border-hairline-strong bg-surface-1 shadow-float outline-none',
             className,
           )}
         >
@@ -141,7 +145,7 @@ export function Confirm({
 }
 
 const POPUP =
-  'max-w-[calc(100vw-2rem)] rounded-md border border-hairline-strong bg-surface-3 p-1 outline-none'
+  'max-w-[calc(100vw-2rem)] rounded-md border border-hairline-strong bg-surface-3 p-1 shadow-float outline-none'
 const ITEM =
   'flex h-8 min-w-0 cursor-default items-center gap-2 rounded-sm px-2 text-body text-ink-muted outline-none select-none data-[disabled]:text-ink-disabled data-[highlighted]:bg-surface-4 data-[highlighted]:text-ink'
 
@@ -215,6 +219,8 @@ interface MenuItem {
   label: ReactNode
   onClick: () => void
   icon?: ReactNode
+  /** Shown at the row's right edge, as plain text. */
+  shortcut?: string
   danger?: boolean
   disabled?: boolean
 }
@@ -247,6 +253,9 @@ export function Menu({
               >
                 {item.icon}
                 <span className="truncate">{item.label}</span>
+                {item.shortcut && (
+                  <span className="ml-auto shrink-0 pl-6 text-ink-subtle">{item.shortcut}</span>
+                )}
               </BMenu.Item>
             ))}
           </BMenu.Popup>
@@ -262,7 +271,7 @@ export function Tooltip({ content, children }: { content: ReactNode; children: R
       <BTooltip.Trigger render={children} />
       <BTooltip.Portal>
         <BTooltip.Positioner sideOffset={6} className="z-50">
-          <BTooltip.Popup className="max-w-[min(24rem,calc(100vw-2rem))] rounded-xs border border-hairline-strong bg-surface-4 px-2 py-1 text-caption text-pretty break-words text-ink">
+          <BTooltip.Popup className="max-w-[min(24rem,calc(100vw-2rem))] rounded-xs border border-hairline-strong bg-surface-4 px-2 py-1 text-caption shadow-float text-pretty break-words text-ink">
             {content}
           </BTooltip.Popup>
         </BTooltip.Positioner>

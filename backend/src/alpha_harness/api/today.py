@@ -10,8 +10,6 @@ by the platform's own number once the first batch comes back. ``exact`` says whi
 are looking at.
 """
 
-from __future__ import annotations
-
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
@@ -68,8 +66,8 @@ class Assistant(Out):
     enabled_keys: int
     requests_remaining_today: int
     budget: list[LLMBudget]
-    resets_in_seconds: int
-    resets_at: str
+    #: The soonest any set-up model's day turns over, or null with none set up.
+    resets_in_seconds: int | None
     headline: str
 
 
@@ -358,28 +356,33 @@ async def _assistant(state: State, keys: list[Any], enabled: list[Any]) -> dict[
     if enabled:
         status = await state.llm.keys.status(state.llm.registry)
         budget = status["budget"]
-        # Only models with room to work in are worth totalling; a twenty-a-day model is
-        # not a budget anyone plans around.
-        remaining_total = sum(b["remainingToday"] for b in budget if b["bulk"])
+        remaining_total = sum(b["remainingToday"] for b in budget)
 
     return {
         "keys": len(keys),
         "enabledKeys": len(enabled),
         "requestsRemainingToday": remaining_total,
         "budget": budget,
-        "resetsInSeconds": round(seconds_until_reset()),
-        "resetsAt": "midnight Pacific",
-        "headline": _assistant_headline(len(enabled), remaining_total),
+        "resetsInSeconds": min((b["resetInSeconds"] for b in budget), default=None),
+        "headline": _assistant_headline(len(enabled), len(budget), remaining_total),
     }
 
 
-def _assistant_headline(enabled: int, remaining: int) -> str:
+def _assistant_headline(enabled: int, models: int, remaining: int) -> str:
     if enabled == 0:
         return (
             "No assistant key yet. It is free, takes a minute, and it is what explains "
             "the data to you in plain English."
         )
+    if models == 0:
+        return (
+            "The assistant has a key but no model. Set one up in LLM Integration, with the "
+            "limits your provider shows you."
+        )
     if remaining <= 0:
-        return "The assistant has used its free requests for today. It resets at midnight Pacific."
+        return (
+            "The assistant has used its requests for today. Each model's allowance comes back "
+            "at midnight in its own reset time zone."
+        )
     plural = "" if enabled == 1 else "s"
-    return f"{remaining:,} free assistant requests left today across {enabled} key{plural}."
+    return f"{remaining:,} assistant requests left today across {enabled} key{plural}."

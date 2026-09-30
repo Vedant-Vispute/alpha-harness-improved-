@@ -15,6 +15,8 @@ import { PnlChart } from '@/screens/pool/pnl-chart'
 import { labTasks } from '@/screens/tasks/api'
 import {
   Checkbox,
+  Chips,
+  Disclosure,
   Empty,
   ErrorNotice,
   Metric,
@@ -50,6 +52,13 @@ const lift = (d: {
     d.size
   } sources (${fmt.ratio(d.sharpe / mean)}× the average member)`
 }
+
+/** `size` includes the submissions the plan builds on; `candidates` counts only the unsubmitted
+ *  Alphas it chose from, so the two are only comparable once those are taken out. */
+const members = (d: { size: number; locked: number; candidates: number }) =>
+  d.locked
+    ? `${d.size - d.locked} of ${d.candidates} Alphas, beside the ${d.locked} already submitted.`
+    : `${d.size} of ${d.candidates} Alphas.`
 
 export function SubmissionPlannerScreen() {
   const { task } = useSearch({ from: '/tools/submission-planner' })
@@ -136,37 +145,34 @@ export function SubmissionPlannerScreen() {
         title="Alphas to plan over"
         description="Every finished task counts, unless you narrow it."
       >
-        <div className="flex flex-wrap gap-1.5">
-          {usable.map((t) => {
-            const on = selected.includes(t.id)
-            return (
-              <button
-                type="button"
-                key={t.id}
-                aria-pressed={on}
-                onClick={() =>
-                  setPicked((prev: ReadonlySet<number>) => {
-                    const next = new Set<number>(prev.size ? prev : usable.map((u) => u.id))
-                    if (next.has(t.id)) next.delete(t.id)
-                    else next.add(t.id)
-                    // The last one will not come off: nothing selected is nothing to plan,
-                    // and silently reverting to every task reads as the click misfiring.
-                    return next.size ? next : prev
-                  })
-                }
-                className={`rounded-sm border px-2 py-1 text-caption transition-colors ${
-                  on
-                    ? 'border-accent bg-surface-raised text-ink'
-                    : 'border-line text-ink-muted hover:text-ink'
-                }`}
-              >
-                Task {t.id}
-                {t.id === task && <span className="ml-1 text-accent">•</span>}
-                <span className="ml-1.5 tabular-nums text-ink-muted">{t.simulated}</span>
-              </button>
-            )
-          })}
-        </div>
+        {/* Folded: an account holds hundreds of tasks, and their toggles buried the plan. */}
+        <Disclosure
+          summary={
+            selected.length === usable.length
+              ? `All ${fmt.int(usable.length)} finished tasks`
+              : `${fmt.int(selected.length)} of ${fmt.int(usable.length)} finished tasks`
+          }
+        >
+          <Chips
+            label="Tasks to plan over"
+            items={usable.map((t) => ({
+              value: String(t.id),
+              label: (
+                <>
+                  Task {t.id}
+                  {t.id === task && <span className="ml-1 text-primary">•</span>}
+                  <span className="num ml-1.5 text-ink-subtle">{t.simulated}</span>
+                </>
+              ),
+            }))}
+            value={selected.map(String)}
+            onChange={(next) => {
+              // The last one will not come off: nothing selected is nothing to plan, and
+              // silently reverting to every task reads as the click misfiring.
+              if (next.length) setPicked(new Set(next.map(Number)))
+            }}
+          />
+        </Disclosure>
       </Panel>
 
       {plan.isError && <ErrorNotice error={plan.error} />}
@@ -186,11 +192,11 @@ export function SubmissionPlannerScreen() {
         <>
           <Panel
             title="Submit these, in this order"
-            description={
+            description={`${members(data)} ${
               data.escapeUsed
-                ? `${data.size} of ${data.candidates} Alphas. BRAIN accepts all of them — one pair is over 0.50 under a rule explained below.`
-                : `${data.size} of ${data.candidates} Alphas. Every pair inside correlates below 0.50, so BRAIN accepts all of them.`
-            }
+                ? 'BRAIN accepts all of them — one pair is over 0.50 under a rule explained below.'
+                : 'Every pair inside correlates below 0.50, so BRAIN accepts all of them.'
+            }`}
           >
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <Metric

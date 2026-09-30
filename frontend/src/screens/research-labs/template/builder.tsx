@@ -11,7 +11,7 @@ import {
   createContext,
   type DragEvent as ReactDragEvent,
   type ReactNode,
-  useContext,
+  use,
   useEffect,
   useRef,
   useState,
@@ -152,7 +152,7 @@ interface Ctx {
 const BuilderContext = createContext<Ctx | null>(null)
 
 function useBuilder(): Ctx {
-  const ctx = useContext(BuilderContext)
+  const ctx = use(BuilderContext)
   if (!ctx) throw new Error('Template blocks must render inside the builder.')
   return ctx
 }
@@ -251,7 +251,7 @@ export function Builder({
   }
 
   return (
-    <BuilderContext.Provider value={ctx}>
+    <BuilderContext value={ctx}>
       <Panel
         title="Blocks"
         actions={
@@ -291,7 +291,7 @@ export function Builder({
           )}
         </div>
       </Panel>
-    </BuilderContext.Provider>
+    </BuilderContext>
   )
 }
 
@@ -404,7 +404,7 @@ function Floating({
       {trigger}
       <Popover.Portal>
         <Popover.Positioner sideOffset={6} align="start" className="z-50">
-          <Popover.Popup className="max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border border-hairline-strong bg-surface-3 outline-none">
+          <Popover.Popup className="max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border border-hairline-strong bg-surface-3 shadow-float outline-none">
             {children}
           </Popover.Popup>
         </Popover.Positioner>

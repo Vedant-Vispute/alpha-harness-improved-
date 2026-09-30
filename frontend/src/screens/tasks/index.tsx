@@ -15,7 +15,7 @@ import {
   StarIcon,
   Trash2Icon,
 } from 'lucide-react'
-import { type ComponentProps, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { errorMessage } from '@/api/http'
 import { cn } from '@/lib/cn'
@@ -24,8 +24,14 @@ import { useNow } from '@/lib/now'
 import { useRefetchOn } from '@/lib/ws'
 import { DetailSheet } from '@/screens/pool/detail'
 import { MAX_SIMULATIONS } from '@/screens/research-labs/lab-task'
-import { type LabTask, labTasks, type RankedAlpha, type TaskStatus } from '@/screens/tasks/api'
-import { AFTER_COST_HEADER, DELAY, INVESTABILITY, SharpeCell } from '@/screens/tasks/columns'
+import { type LabTask, labTasks, type RankedAlpha } from '@/screens/tasks/api'
+import {
+  AFTER_COST_HEADER,
+  DELAY,
+  INVESTABILITY,
+  SharpeCell,
+  taskStatus,
+} from '@/screens/tasks/columns'
 import { resultsMarkdown } from '@/screens/tasks/copy'
 import { AlphaGroups } from '@/screens/tasks/groups'
 import { SubmittableAlphas } from '@/screens/tasks/submittable'
@@ -57,15 +63,6 @@ import { type Column, DataTable } from '@/ui/table'
 /** Matches `labs.params.SETTINGS_SAMPLER` and `REGION_AGNOSTIC_SAMPLER`. */
 const SETTINGS_SAMPLER = 'settings-sampler'
 const REGION_AGNOSTIC = 'region-agnostic'
-
-const STATUS: Record<TaskStatus, { label: string; tone: ComponentProps<typeof Badge>['tone'] }> = {
-  IDLE: { label: 'Not Started', tone: 'outline' },
-  QUEUED: { label: 'Waiting', tone: 'warn' },
-  RUNNING: { label: 'Running', tone: 'profit' },
-  PAUSED: { label: 'Paused', tone: 'muted' },
-  COMPLETE: { label: 'Complete', tone: 'neutral' },
-  FAILED: { label: 'Failed', tone: 'loss' },
-}
 
 const TOP_COLUMNS: Column<RankedAlpha>[] = [
   {
@@ -555,7 +552,8 @@ function TaskName({ task: t }: { task: LabTask }) {
   const names: string[] = t.datasetNames?.length ? t.datasetNames : t.datasetIds
   const source =
     t.lab === SETTINGS_SAMPLER
-      ? `${t.alphaId ?? DASH} · ${fmt.int(t.markets)} ${t.markets === 1 ? 'Market' : 'Markets'}`
+      ? // A sweep started from a typed expression has no source Alpha: "" not null.
+        `${t.alphaId ? `${t.alphaId} · ` : ''}${fmt.int(t.markets)} ${t.markets === 1 ? 'Market' : 'Markets'}`
       : t.chosenFields > 0
         ? `${fmt.int(t.chosenFields)} chosen fields`
         : t.seeds > 0
@@ -604,10 +602,7 @@ function TaskName({ task: t }: { task: LabTask }) {
 }
 
 function TaskBadge({ task }: { task: LabTask }) {
-  const { label, tone } =
-    task.stopping && task.status === 'RUNNING'
-      ? { label: 'Stopping', tone: 'warn' as const }
-      : (STATUS[task.status] ?? STATUS.IDLE)
+  const { label, tone } = taskStatus(task)
   return <Badge tone={tone}>{label}</Badge>
 }
 

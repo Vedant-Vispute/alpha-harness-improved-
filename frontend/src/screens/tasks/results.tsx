@@ -25,6 +25,7 @@ import {
   metricHeader,
   SETTING_COLUMNS,
   setting,
+  taskStatus,
 } from '@/screens/tasks/columns'
 import { Button, Empty, ErrorNotice, KV, Metric, Page, PageHeader, Panel, Skeleton } from '@/ui/kit'
 import { type Column, DataTable, type Sort } from '@/ui/table'
@@ -160,11 +161,11 @@ export function TaskResultsScreen() {
   const id = Number(taskId)
   const [sort, setSort] = useState<Sort>({ key: 'sharpe', desc: true })
 
-  const tasks = useQuery({ queryKey: ['tasks'], queryFn: labTasks.list })
+  const tasks = useQuery({ queryKey: ['lab-tasks'], queryFn: labTasks.list })
   const task = tasks.data?.tasks.find((t) => t.id === id)
 
   const top = useQuery({
-    queryKey: ['tasks', id, 'results'],
+    queryKey: ['lab-tasks', id, 'results'],
     queryFn: () => labTasks.top(id, LIMIT),
     enabled: Number.isFinite(id),
   })
@@ -220,7 +221,7 @@ export function TaskResultsScreen() {
 
   // The download reports progress through the task registry, so the rows refresh as its
   // broadcasts land rather than on a timer of their own.
-  useRefetchOn('tasks', ['tasks', id, 'results'], 5000)
+  useRefetchOn('tasks', ['lab-tasks', id, 'results'], 5000)
 
   const green = rows.filter((r) => r.submittable || r.pending).length
   const pending = rows.filter((r) => r.pending).length
@@ -233,7 +234,7 @@ export function TaskResultsScreen() {
         // where this task got to.
         description={
           task
-            ? `${task.status}${task.alphaId ? ` · ${task.alphaId}` : ''}`
+            ? `${taskStatus(task).label}${task.alphaId ? ` · ${task.alphaId}` : ''}`
             : 'Every Alpha this task produced'
         }
         actions={

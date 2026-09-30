@@ -15,21 +15,23 @@ there is nothing to hand the request to. Updates then report themselves unavaila
 why, rather than failing at the last step.
 """
 
-from __future__ import annotations
-
 import asyncio
 import json
 import os
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as installed_version
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx2
 import structlog
 from packaging.version import InvalidVersion, Version
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 log = structlog.get_logger(__name__)
 
@@ -57,10 +59,17 @@ REQUEST_FILE = "update-request.json"
 #: the same update again with no explanation.
 ERROR_FILE = "update-error.json"
 
-#: An answer holds for an hour. A *failure* holds for a minute: a laptop that was offline
-#: when it asked should not insist there is no update for the rest of the hour.
-CACHE_SECONDS = 3600.0
-FAILURE_CACHE_SECONDS = 60.0
+#: Hours between scheduled looks at GitHub, from Settings; 0 looks only when asked. Never
+#: under an hour: the anonymous API allows a machine sixty calls an hour, shared with anything
+#: else on it. A failed look waits as long as a good one, so an offline laptop does not spend
+#: the allowance retrying; "Check now" is there for the impatient.
+check_hours = 1
+#: Install a newer release by itself once nothing is simulating, from Settings.
+auto_install = True
+#: However often "Check now" is pressed, GitHub is asked at most this often.
+FORCE_GAP_SECONDS = 60.0
+#: How often the watcher wakes to see whether a look or an install is due.
+WATCH_SECONDS = 60.0
 CHECK_TIMEOUT = 10.0
 #: Release notes are shown in a dialog, not a document.
 NOTES_LIMIT = 4000
@@ -80,8 +89,8 @@ class Release:
 #: Serialises the look at GitHub, so concurrent callers make one call between them.
 _checking = asyncio.Lock()
 
-#: ``(checked at, release, error)`` of the last look at GitHub.
-_cache: tuple[float, Release | None, str | None] | None = None
+#: ``(monotonic time, wall-clock ISO time, release, error)`` of the last look at GitHub.
+_cache: tuple[float, str, Release | None, str | None] | None = None
 
 
 def current() -> str:
@@ -142,21 +151,59 @@ def is_newer(candidate: str, running: str) -> bool:
 async def latest(*, force: bool = False) -> tuple[Release | None, str | None]:
     """The newest published release and why it could not be read, each possibly ``None``.
 
-    Cached for an hour. A failure is cached too: a machine with no route to GitHub should ask
-    once an hour rather than on every poll of the header.
+    The last answer, good or failed, holds for :data:`check_hours`; with checks off, GitHub
+    is asked only when forced, and until then both come back ``None``.
     """
-    global _cache
     # One caller at a time. Several open tabs poll this at once, and without the gate each
     # one that arrives while the cache is cold makes its own call — the anonymous allowance
     # is sixty an hour, and spending it in bursts is how a machine ends up rate limited by
     # its own UI. Whoever waits reads the answer the first one stored.
     async with _checking:
-        if not force and _cache is not None:
-            held = CACHE_SECONDS if _cache[1] is not None else FAILURE_CACHE_SECONDS
-            if time.monotonic() - _cache[0] < held:
-                return _cache[1], _cache[2]
+        if _cache is not None:
+            age = time.monotonic() - _cache[0]
+            fresh = check_hours == 0 or age < check_hours * 3600
+            if (force and age < FORCE_GAP_SECONDS) or (not force and fresh):
+                return _cache[2], _cache[3]
+        elif not force and check_hours == 0:
+            return None, None
 
         return await _ask()
+
+
+def checked_at() -> str | None:
+    """When GitHub was last asked, as an ISO time, or ``None`` if it has not been yet."""
+    return _cache[1] if _cache is not None else None
+
+
+async def watch(
+    idle: Callable[[], Awaitable[bool]], install: Callable[[Release], Awaitable[None]]
+) -> None:
+    """Look for a release on the Settings schedule, and install one by itself when allowed.
+
+    An install closes the app, so it waits for a moment nothing is simulating: a restart
+    mid-run loses nothing, but it would stall every core for the minute it takes. A version
+    whose install already failed is left to the user, or it would be retried forever.
+    """
+    while True:
+        await asyncio.sleep(WATCH_SECONDS)
+        try:
+            release, _ = await latest()
+            if (
+                release is not None
+                and auto_install
+                and is_release()
+                and is_newer(release.version, current())
+                and launcher_home() is not None
+                and pending() is None
+                and _launcher_json(ERROR_FILE).get("version") != release.version
+                and await idle()
+            ):
+                log.warning("update.auto_install", version=release.version)
+                await install(release)
+                return
+        # One failed look or install must not end the watching.
+        except Exception:
+            log.warning("update.watch_failed", exc_info=True)
 
 
 async def _ask() -> tuple[Release | None, str | None]:
@@ -188,7 +235,7 @@ async def _ask() -> tuple[Release | None, str | None]:
     except httpx2.HTTPError as exc:
         problem = f"Could not reach GitHub: {exc}"
 
-    _cache = (time.monotonic(), release, problem)
+    _cache = (time.monotonic(), datetime.now(UTC).isoformat(timespec="seconds"), release, problem)
     return release, problem
 
 
@@ -271,7 +318,7 @@ def _launcher_json(name: str) -> dict[str, Any]:
         return {}
     try:
         body = json.loads((home / name).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return {}
     return body if isinstance(body, dict) else {}
 

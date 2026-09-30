@@ -1,7 +1,5 @@
 """Text going to a model and coming back: a token estimate, a clipped line, a JSON reply."""
 
-from __future__ import annotations
-
 import json
 import re
 from typing import Any
@@ -27,7 +25,7 @@ def loads_or(text: str) -> dict[str, Any]:
     for candidate in (text, *(m.group(1) for m in FENCE.finditer(text))):
         try:
             payload = json.loads(candidate)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             continue
         if isinstance(payload, dict):
             return payload

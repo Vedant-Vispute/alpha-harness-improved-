@@ -5,8 +5,6 @@
 Builds the app without its lifespan, so nothing opens a database or reaches BRAIN.
 """
 
-from __future__ import annotations
-
 import json
 import sys
 

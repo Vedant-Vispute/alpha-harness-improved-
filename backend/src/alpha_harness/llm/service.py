@@ -9,8 +9,6 @@ Rotation chooses by remaining daily budget and believes a ``429`` immediately, b
 retry loop that tries each key in turn burns a request from every key on a bad day.
 """
 
-from __future__ import annotations
-
 import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -24,7 +22,6 @@ from .budget import Ledger
 from .keys import BudgetExhaustedError, KeyStore, LLMError
 from .openai_compat import OpenAICompatible, ProviderError
 from .providers import PROVIDERS
-from .registry import DEFAULT_MODEL, ModelInfo, ModelRegistry
 from .text import estimate_tokens
 
 if TYPE_CHECKING:
@@ -32,6 +29,7 @@ if TYPE_CHECKING:
 
     from ..db.sqlite import Database
     from ..sealing import Sealer
+    from .registry import ModelInfo, ModelRegistry
 
 log = structlog.get_logger(__name__)
 
@@ -94,6 +92,11 @@ def _plain_reason(exc: Exception) -> str | None:
     return None
 
 
+def _rejects_temperature(exc: Exception) -> bool:
+    """A 400 about the temperature: the model takes none but its own default."""
+    return _status(exc) == 400 and "temperature" in str(exc).lower()
+
+
 def _refused(exc: Exception) -> bool:
     """Whether the key was turned away rather than the request: another key may get in."""
     return _status(exc) in (401, 403) or "api_key_invalid" in str(exc).lower()
@@ -133,6 +136,9 @@ class LLMService:
         self.registry = registry
         self.ledger = Ledger(db)
         self.keys = KeyStore(db, sealer, self.ledger)
+        #: Models that refused a temperature. Learned from the refusal, because nothing
+        #: publishes which models take one; forgotten on restart, costing one 400 each.
+        self._default_sampling: set[str] = set()
         self._http = DefaultAsyncHttpxClient(
             timeout=TIMEOUT_SECONDS, limits=httpx2.Limits(keepalive_expiry=KEEPALIVE_SECONDS)
         )
@@ -149,6 +155,18 @@ class LLMService:
             raise LLMError(f"{provider!r} is not a provider this application knows.")
         return OpenAICompatible(spec.base_url, secret, self._http)
 
+    def _model(self, ref: str | None) -> ModelInfo:
+        """The model asked for, or with none named, the set-up one with most to spend."""
+        if not ref:
+            models = self.registry.all()
+            if not models:
+                raise LLMError("No model is set up yet. Set one up under LLM Integration › Models.")
+            return models[0]
+        model = self.registry.get(ref)
+        if model is None:
+            raise LLMError(f"{ref} is not set up. Set it up under LLM Integration › Models.")
+        return model
+
     # -- the one call ----------------------------------------------------
 
     async def generate(
@@ -156,37 +174,30 @@ class LLMService:
         *,
         system: str,
         user: str,
-        model_id: str | None,
+        model_ref: str | None,
         response_schema: dict[str, Any],
         temperature: float,
         thinking: str | None = None,
     ) -> Answer:
-        """Send one prompt, rotating keys by remaining budget.
+        """Send one prompt, rotating keys by remaining budget. ``model_ref`` names the model
+        as :func:`.registry.model_ref` spells it.
 
         ``thinking`` is one of Google's thinking levels. Not a free upgrade: thinking tokens
         are billed against the same per-minute budget as the answer.
         """
-        model = self.registry.get(model_id or DEFAULT_MODEL)
-        if model is None:
-            raise LLMError(f"{model_id!r} is not a known model. Choose one in AI › Budget.")
+        model = self._model(model_ref)
         estimate = estimate_tokens(system) + estimate_tokens(user)
-        if estimate > model.tpm:
-            # No wait fits a request bigger than the whole per-minute budget: say so, rather
-            # than a budget error that asks to try again in 0 seconds, forever.
-            raise LLMError(
-                f"This request is about {estimate:,} tokens, more than {model.label} accepts "
-                f"in a minute ({model.tpm:,}). Use a model with a larger limit or ask less."
-            )
         tried: set[int] = set()
         refusal: LLMError | None = None
         effort = _effort(model, thinking)
         # Google holds the answer to the schema. The others are only asked for a JSON object,
         # which not all of them honour either; the prompt names the keys it needs.
         schema = response_schema if model.provider == "google" else None
+        sampling = None if model.ref in self._default_sampling else temperature
 
         while True:
             try:
-                key_id = await self.keys.choose(model, estimated_tokens=estimate, skip=tried)
+                key_id = await self.keys.choose(model, skip=tried)
             except BudgetExhaustedError as exc:
                 # Every key has been tried: one that was turned away says more than a budget.
                 if refusal is not None:
@@ -196,68 +207,87 @@ class LLMService:
                 raise
             tried.add(key_id)
 
-            row = await self.keys.get(key_id)
-            secret = await self.keys.secret(key_id)
-            client = self._client(model.provider, secret)
-
+            # Settled however this ends: answered and recorded, failed, or retried.
             try:
-                text, usage = await asyncio.wait_for(
-                    client.generate(
-                        model=model.id,
-                        system=system,
-                        user=user,
-                        temperature=temperature,
-                        schema=schema,
-                        reasoning_effort=effort,
-                    ),
-                    timeout=TIMEOUT_SECONDS,
-                )
-            except TimeoutError as exc:
-                await self.keys.mark(key_id, error="Timed out")
-                raise LLMError(
-                    f"{model.label} did not answer within {TIMEOUT_SECONDS:.0f} seconds. "
-                    "Try a smaller question or a lighter model."
-                ) from exc
-            except Exception as exc:
-                limited, daily = _is_rate_limit(exc)
-                await self.keys.mark(key_id, error=str(exc)[:300])
-                if limited:
-                    # Google is the authority: mark this pair spent and rotate rather than
-                    # retrying into a limit we evidently mis-tracked.
-                    await self.ledger.penalise(
-                        key_id, model, daily=daily, cap=row.daily_limit if row else None
+                row = await self.keys.get(key_id)
+                secret = await self.keys.secret(key_id)
+                client = self._client(model.provider, secret)
+
+                try:
+                    text, usage = await asyncio.wait_for(
+                        client.generate(
+                            model=model.id,
+                            system=system,
+                            user=user,
+                            temperature=sampling,
+                            schema=schema,
+                            reasoning_effort=effort,
+                        ),
+                        timeout=TIMEOUT_SECONDS,
                     )
-                    log.warning("llm.rate_limited", key_id=key_id, model=model.id, daily=daily)
-                    continue
-                error = LLMError(_plain_reason(exc) or f"{model.label} could not be reached: {exc}")
-                if _refused(exc):
-                    log.warning("llm.key_refused", key_id=key_id, model=model.id)
-                    refusal = error
-                    continue
-                raise error from exc
+                except TimeoutError as exc:
+                    await self.keys.mark(key_id, error="Timed out")
+                    raise LLMError(
+                        f"{model.id} did not answer within {TIMEOUT_SECONDS:.0f} seconds. "
+                        "Try a smaller question or a lighter model."
+                    ) from exc
+                except Exception as exc:
+                    if sampling is not None and _rejects_temperature(exc):
+                        # The key is fine; the model only wants its own default. Same key again.
+                        log.info("llm.temperature_refused", model=model.id)
+                        self._default_sampling.add(model.ref)
+                        sampling = None
+                        tried.discard(key_id)
+                        continue
+                    limited, daily = _is_rate_limit(exc)
+                    await self.keys.mark(key_id, error=str(exc)[:300])
+                    if limited:
+                        # Google is the authority: mark this pair spent and rotate rather than
+                        # retrying into a limit we evidently mis-tracked.
+                        await self.ledger.penalise(
+                            key_id, model, daily=daily, cap=row.daily_limit if row else None
+                        )
+                        log.warning("llm.rate_limited", key_id=key_id, model=model.id, daily=daily)
+                        continue
+                    error = LLMError(
+                        _plain_reason(exc) or f"{model.id} could not be reached: {exc}"
+                    )
+                    if _refused(exc):
+                        log.warning("llm.key_refused", key_id=key_id, model=model.id)
+                        refusal = error
+                        continue
+                    raise error from exc
 
-            prompt = int(usage.get("prompt_tokens") or 0)
-            output = int(usage.get("completion_tokens") or 0)
-            reported = int(usage.get("total_tokens") or 0)
-            # Google reports no breakdown: its thinking is only what the total holds beyond
-            # the prompt and the answer.
-            thought = int(
-                (usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0
-            ) or max(0, reported - prompt - output)
-            total = reported or estimate
-            await self.ledger.record(key_id, model.id, total)
-            await self.keys.mark(key_id)
+                prompt = int(usage.get("prompt_tokens") or 0)
+                output = int(usage.get("completion_tokens") or 0)
+                reported = int(usage.get("total_tokens") or 0)
+                # Google reports no breakdown: its thinking is only what the total holds beyond
+                # the prompt and the answer.
+                thought = int(
+                    (usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0
+                ) or max(0, reported - prompt - output)
+                total = reported or estimate
+                await self.ledger.record(key_id, model, total)
+                await self.keys.mark(key_id)
 
-            return Answer(
-                text=text.strip(),
-                model=model.id,
-                prompt_tokens=prompt,
-                output_tokens=output,
-                thinking_tokens=thought,
-                total_tokens=total,
-            )
+                return Answer(
+                    text=text.strip(),
+                    model=model.id,
+                    prompt_tokens=prompt,
+                    output_tokens=output,
+                    thinking_tokens=thought,
+                    total_tokens=total,
+                )
+            finally:
+                self.ledger.settled(key_id, model)
 
     # -- health ----------------------------------------------------------
+
+    async def _listed(self, provider: str, key_id: int) -> list[str]:
+        secret = await self.keys.secret(key_id)
+        # Anthropic pages its list twenty at a time; Google refuses unknown parameters.
+        query = {"limit": 1000} if provider == "anthropic" else {}
+        return await self._client(provider, secret).models(**query)
 
     async def check_key(self, key_id: int) -> dict[str, Any]:
         """Confirm a key works, without spending a generation request.
@@ -267,14 +297,27 @@ class LLMService:
         """
         row = await self.keys.get(key_id)
         provider = str(getattr(row, "provider", "google") or "google")
-        secret = await self.keys.secret(key_id)
         try:
-            names = await self._client(provider, secret).models()
+            names = await self._listed(provider, key_id)
         # Any provider failure is the key test's answer, stored and shown to the user.
         except Exception as exc:  # noqa: BLE001
             await self.keys.mark(key_id, error=str(exc)[:300])
             return {"keyId": key_id, "ok": False, "error": str(exc)[:300]}
 
         await self.keys.mark(key_id)
-        added = self.registry.merge_discovered(names, provider)
-        return {"keyId": key_id, "ok": True, "models": len(names), "newModels": added}
+        return {"keyId": key_id, "ok": True, "models": len(names)}
+
+    async def offered(self, provider: str) -> dict[str, Any]:
+        """The model ids a provider's keys can reach, to pick from when setting one up.
+
+        Asked of the first enabled key, live: the list is only a convenience, so a failure
+        says why and leaves the user to type the id instead.
+        """
+        rows = [r for r in await self.keys.list_keys() if r.enabled and r.provider == provider]
+        if not rows:
+            return {"models": [], "error": "Add a Key for this provider first."}
+        try:
+            return {"models": await self._listed(provider, rows[0].id), "error": None}
+        # The reason is shown beside the field where the id can still be typed.
+        except Exception as exc:  # noqa: BLE001
+            return {"models": [], "error": str(exc)[:300]}

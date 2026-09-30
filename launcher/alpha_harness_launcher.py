@@ -14,8 +14,6 @@ Deliberately standard library only: it is frozen separately from the app and mus
 working when the venv it manages does not.
 """
 
-from __future__ import annotations
-
 import ctypes
 import json
 import os
@@ -188,7 +186,7 @@ def slot_version(root: Path, slot: str) -> str | None:
 def read_json(path: Path) -> dict[str, object]:
     try:
         body = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return {}
     return body if isinstance(body, dict) else {}
 

@@ -9,8 +9,6 @@ trading days, counting a day an Alpha did not trade as zero: once it has started
 keeps an equal share of capital whether or not its market was open.
 """
 
-from __future__ import annotations
-
 from bisect import bisect_left
 from collections import Counter
 from dataclasses import asdict

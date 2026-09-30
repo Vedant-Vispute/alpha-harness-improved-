@@ -4,8 +4,6 @@ One connection carries every topic. Server-to-client only — commands go over R
 the client needs no request/response correlation, just a topic switch.
 """
 
-from __future__ import annotations
-
 import asyncio
 import contextlib
 

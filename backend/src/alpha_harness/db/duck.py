@@ -10,8 +10,6 @@ serialised behind a lock, all off the event loop. Reads take their own cursor in
 MVCC lets run beside a write, so a long correlation read never stalls a sync.
 """
 
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import re

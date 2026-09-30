@@ -12,8 +12,6 @@ the universe, a field for each FIELD tag from that universe's own fields, a valu
 variable tag, an operator for each choice block, and the neutralization.
 """
 
-from __future__ import annotations
-
 import math
 import re
 from dataclasses import dataclass

@@ -1,219 +1,186 @@
-"""Which models exist, and what each one costs you.
+"""The models the user has set up, and the limits they gave each one.
 
-Three limits apply at once on the AI Studio free tier, and they are not equally
-important:
+Nothing here is built in. Which models a provider offers and what its free tier allows
+change every few weeks, and a table transcribed into the code is wrong by the time anyone
+reads it. So the user names the model, picked from what their key lists or typed, and the
+requests per minute and per day their provider shows them.
 
-* **RPM** — requests per minute. Recovers in sixty seconds; briefly annoying.
-* **TPM** — tokens per minute. Also recovers in sixty seconds.
-* **RPD** — requests per day. **This is the one that ends your session.** It does not
-  recover until midnight Pacific, and it varies by a factor of twenty-five across the
-  roster: twenty a day on Gemini 3.8 Flash, five hundred on 3.5 Flash Lite.
-
-That last point drives the design: every model carries its daily budget where it is chosen,
-the Lite models are marked for bulk work, and someone who picks the newest model because it
-sounds best does not get twenty questions and then silence.
-
-**Nothing here is authoritative except as a starting point.** Google publishes no endpoint
-for free-tier quotas, so the numbers below are transcribed and *will* drift; correcting one
-is a one-line edit here.
+Requests per day is the limit that ends a session: it does not come back until the
+provider's day resets, at midnight in the time zone the user names for the model, because
+providers do not agree on one. Tokens per minute is not tracked at all, because no count
+made here would match the provider's.
 """
 
-from __future__ import annotations
-
-from typing import Literal
+from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
+from pydantic import computed_field
 from pydantic.dataclasses import dataclass
+from sqlalchemy import delete, select
+from sqlalchemy.dialects.sqlite import insert
 
+from ..db.models import LLMModel
 from ..schemas import WIRE, Out
+from . import providers
+from .keys import LLMError
+
+if TYPE_CHECKING:
+    from ..db.sqlite import Database
 
 log = structlog.get_logger(__name__)
+
+#: Tokens one Power Pool prompt may spend on fields when its model names no ceiling.
+DEFAULT_PROMPT_TOKENS = 40_000
+
+
+def model_ref(provider: str, model_id: str) -> str:
+    """How a request names one set-up model: ids repeat across providers, so both.
+
+    Provider ids never hold a colon; model ids can (``…:free``), so the first one splits.
+    """
+    return f"{provider}:{model_id}"
 
 
 @dataclass(frozen=True, slots=True, config=WIRE)
 class ModelInfo:
-    """One model and its free-tier budget, as the screens show it."""
+    """One model and the limits its user gave it. Each key gets these limits in full."""
 
     id: str
-    label: str
-    #: "text" for generation, "embedding", or "open" for the Gemma family.
-    kind: Literal["text", "embedding", "open"]
-    rpm: int
-    tpm: int
-    rpd: int
-    #: True for a model with a daily budget large enough to work in.
-    bulk: bool = False
-    recommended: bool = False
-    #: Set when the model came from the API rather than the built-in table, meaning its
-    #: limits are guesses rather than transcribed.
-    discovered: bool = False
     #: Whose key answers for this model. A key only ever serves its own provider.
-    provider: str = "google"
+    provider: str
+    rpm: int
+    rpd: int
+    #: The IANA time zone whose midnight starts this model's new day at its provider.
+    reset_timezone: str
+    #: The most tokens one Power Pool prompt may spend, or None for the default.
+    max_prompt_tokens: int | None = None
 
+    @computed_field
+    @property
+    def ref(self) -> str:
+        return model_ref(self.provider, self.id)
 
-class ModelDefaults(Out):
-    chat: str
-    deep: str
+    @property
+    def prompt_tokens(self) -> int:
+        return self.max_prompt_tokens or DEFAULT_PROMPT_TOKENS
 
 
 class LLMModels(Out):
     models: list[ModelInfo]
-    defaults: ModelDefaults
+    #: What a model without its own prompt ceiling gets.
+    default_prompt_tokens: int
     note: str
 
 
-#: Transcribed from the AI Studio free-tier rate limits. Expect to correct these.
-BUILTIN: tuple[ModelInfo, ...] = (
-    ModelInfo(
-        "gemini-3.8-flash",
-        "Gemini 3.8 Flash",
-        "text",
-        rpm=5,
-        tpm=250_000,
-        rpd=20,
-        recommended=True,
-    ),
-    ModelInfo(
-        "gemini-3.7-flash",
-        "Gemini 3.7 Flash",
-        "text",
-        rpm=5,
-        tpm=250_000,
-        rpd=20,
-    ),
-    ModelInfo(
-        "gemini-3.6-flash",
-        "Gemini 3.6 Flash",
-        "text",
-        rpm=5,
-        tpm=250_000,
-        rpd=20,
-    ),
-    ModelInfo(
-        "gemini-3.5-flash",
-        "Gemini 3.5 Flash",
-        "text",
-        rpm=5,
-        tpm=250_000,
-        rpd=20,
-    ),
-    ModelInfo(
-        "gemini-3.5-flash-lite",
-        "Gemini 3.5 Flash Lite",
-        "text",
-        rpm=15,
-        tpm=250_000,
-        rpd=500,
-        bulk=True,
-        recommended=True,
-    ),
-    ModelInfo(
-        "gemini-3.1-flash-lite",
-        "Gemini 3.1 Flash Lite",
-        "text",
-        rpm=15,
-        tpm=250_000,
-        rpd=500,
-        bulk=True,
-    ),
-    ModelInfo(
-        "gemma-4-31b-it",
-        "Gemma 4 31B",
-        "open",
-        rpm=30,
-        tpm=16_000,
-        rpd=14_400,
-        bulk=True,
-    ),
-    ModelInfo(
-        "gemma-4-26b-a4b-it",
-        "Gemma 4 26B",
-        "open",
-        rpm=30,
-        tpm=16_000,
-        rpd=14_400,
-        bulk=True,
-    ),
-)
-
-#: For a model discovered from the API with no published limits. The *most* restrictive real
-#: row, so an unknown model cannot silently burn a day's quota.
-UNKNOWN_LIMITS = {"rpm": 5, "tpm": 250_000, "rpd": 20}
-
-DEFAULT_MODEL = "gemini-3.5-flash-lite"
-#: For a single hard question where quality matters more than the daily budget.
-DEEP_MODEL = "gemini-3.8-flash"
+def _info(row: LLMModel) -> ModelInfo:
+    return ModelInfo(
+        id=row.model,
+        provider=row.provider,
+        rpm=row.requests_per_minute,
+        rpd=row.requests_per_day,
+        reset_timezone=row.reset_timezone,
+        max_prompt_tokens=row.max_prompt_tokens,
+    )
 
 
 class ModelRegistry:
-    """The model roster: the table above, plus whatever the API turns out to offer."""
+    """The set-up models, held in memory and written through to the database."""
 
-    def __init__(self) -> None:
-        self._models: dict[str, ModelInfo] = {m.id: m for m in BUILTIN}
-        # Imported late: providers describes itself in terms of ModelInfo, so importing
-        # it at module level would be a cycle.
-        from .providers import provider_models
+    def __init__(self, db: Database) -> None:
+        self.db = db
+        self._models: dict[str, ModelInfo] = {}
 
-        for model in provider_models():
-            self._models.setdefault(model.id, model)
+    async def load(self) -> None:
+        async with self.db.session() as session:
+            rows = (await session.scalars(select(LLMModel))).all()
+        self._models = {info.ref: info for info in map(_info, rows)}
 
     # -- reading ---------------------------------------------------------
 
-    def get(self, model_id: str) -> ModelInfo | None:
-        return self._models.get(model_id)
+    def get(self, ref: str) -> ModelInfo | None:
+        """A model by its :func:`model_ref`. A bare id, as tasks from before refs still
+        hold, is found when only one provider has it."""
+        if found := self._models.get(ref):
+            return found
+        named = [m for m in self._models.values() if m.id == ref]
+        return named[0] if len(named) == 1 else None
 
-    def all(self, kind: str | None = None) -> list[ModelInfo]:
-        """Every model, richest daily budget first — because that is what runs out."""
-        models = [m for m in self._models.values() if kind is None or m.kind == kind]
-        return sorted(models, key=lambda m: (-m.rpd, -m.rpm, m.id))
+    def all(self) -> list[ModelInfo]:
+        """Every model, richest daily budget first, because that is what runs out."""
+        return sorted(self._models.values(), key=lambda m: (-m.rpd, -m.rpm, m.ref))
 
     def roster(self) -> LLMModels:
         return LLMModels(
             models=self.all(),
-            defaults=ModelDefaults(chat=DEFAULT_MODEL, deep=DEEP_MODEL),
+            default_prompt_tokens=DEFAULT_PROMPT_TOKENS,
             note=(
-                "Requests per day is the limit that ends a session — it does not reset "
-                "until midnight Pacific, and it varies twenty-five-fold across these "
-                "models. Adding a second API key doubles it."
+                "Requests per day is the limit that ends a session: it does not come back "
+                "until the provider's day resets. Limits apply to each Key, so a second "
+                "account's Key doubles them."
             ),
         )
 
     # -- editing ---------------------------------------------------------
 
-    def merge_discovered(self, names: list[str], provider: str) -> list[str]:
-        """Add models the API reports that we have never heard of, for a provider with no
-        roster here: OpenAI's moves too fast to transcribe.
+    async def set(
+        self,
+        provider: str,
+        model_id: str,
+        rpm: int,
+        rpd: int,
+        reset_timezone: str,
+        max_prompt_tokens: int | None = None,
+    ) -> ModelInfo:
+        """Set a model up, or change the limits of one already set up."""
+        model_id = model_id.strip()
+        try:
+            ZoneInfo(reset_timezone)
+        except ZoneInfoNotFoundError, ValueError:
+            raise LLMError(f"{reset_timezone!r} is not a time zone this machine knows.") from None
+        if provider not in providers.PROVIDERS:
+            raise LLMError(f"{provider!r} is not a provider this application knows.")
+        if not model_id:
+            raise LLMError("Name the model: pick one from the list or type its ID.")
+        if rpm < 1 or rpd < 1:
+            raise LLMError("Both limits have to be at least one request.")
+        if max_prompt_tokens is not None and max_prompt_tokens < 1:
+            raise LLMError("Max prompt tokens has to be at least one, or left empty.")
+        limits = {
+            "requests_per_minute": rpm,
+            "requests_per_day": rpd,
+            "reset_timezone": reset_timezone,
+            "max_prompt_tokens": max_prompt_tokens,
+        }
+        # One statement, so two saves of the same model at once cannot both insert it.
+        statement = (
+            insert(LLMModel)
+            .values(provider=provider, model=model_id, **limits)
+            .on_conflict_do_update(index_elements=["provider", "model"], set_=limits)
+        )
+        async with self.db.session() as session:
+            await session.execute(statement)
+            await session.commit()
+        info = ModelInfo(
+            id=model_id,
+            provider=provider,
+            rpm=rpm,
+            rpd=rpd,
+            reset_timezone=reset_timezone,
+            max_prompt_tokens=max_prompt_tokens,
+        )
+        self._models[info.ref] = info
+        log.info("llm.model.set", model=info.ref, rpm=rpm, rpd=rpd, tz=reset_timezone)
+        return info
 
-        A provider with a transcribed roster keeps it. Its model list also holds speech,
-        image and video models, and ones retired for new keys, none of which can answer.
-        Discovered limits are unknown, so they get the most restrictive real budget and are
-        flagged ``discovered`` rather than passing a guess off as a measurement.
-        """
-        if any(m.provider == provider and not m.discovered for m in self._models.values()):
-            return []
-        added: list[str] = []
-        for raw in names:
-            model_id = raw.removeprefix("models/")
-            if model_id in self._models:
-                continue
-            kind = (
-                "embedding"
-                if "embedding" in model_id
-                else "open"
-                if "gemma" in model_id
-                else "text"
+    async def remove(self, provider: str, model_id: str) -> None:
+        ref = model_ref(provider, model_id)
+        if ref not in self._models:
+            raise LLMError(f"{model_id} is not set up for {providers.get(provider).label}.")
+        async with self.db.session() as session:
+            await session.execute(
+                delete(LLMModel).where(LLMModel.provider == provider, LLMModel.model == model_id)
             )
-            self._models[model_id] = ModelInfo(
-                id=model_id,
-                label=model_id.replace("-", " ").title(),
-                kind=kind,
-                discovered=True,
-                provider=provider,
-                rpm=UNKNOWN_LIMITS["rpm"],
-                tpm=UNKNOWN_LIMITS["tpm"],
-                rpd=UNKNOWN_LIMITS["rpd"],
-            )
-            added.append(model_id)
-        if added:
-            log.info("llm.registry.discovered", models=added)
-        return added
+            await session.commit()
+        del self._models[ref]
+        log.info("llm.model.removed", model=ref)

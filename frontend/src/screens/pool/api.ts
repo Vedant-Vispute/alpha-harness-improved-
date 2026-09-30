@@ -4,6 +4,7 @@
  * submits an alpha.
  */
 
+import { queryOptions } from '@tanstack/react-query'
 import type { components } from '@/api/generated'
 import { http, qs } from '@/api/http'
 import type { AlphaCheck, Scope } from '@/api/types'
@@ -83,6 +84,11 @@ export const pool = {
     http.get<SubmittableResponse>(
       `/api/vault/submittable${qs({ region: scope.region, delay: scope.delay, universe: scope.universe, instrument_type: scope.instrumentType, limit })}`,
     ),
+  /** Every market at once: the sidebar's count, and where an empty market points instead. */
+  everywhere: queryOptions({
+    queryKey: ['pool', 'submittable-count'],
+    queryFn: () => http.get<SubmittableResponse>('/api/vault/submittable?limit=1'),
+  }),
   /** Re-runs the submission checks on BRAIN without submitting. */
   check: (alphaId: string) =>
     http.get<{ is?: { checks?: AlphaCheck[] } }>(

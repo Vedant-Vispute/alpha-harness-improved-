@@ -4,8 +4,6 @@ A task waits in Tasks for free cores and may use more than one day's allowance b
 is done.
 """
 
-from __future__ import annotations
-
 from typing import Any
 
 from fastapi import APIRouter
@@ -111,7 +109,7 @@ async def preview(body: SearchRequest, state: State) -> Preview:
 
 @router.post("/tasks", status_code=201)
 async def add_task(body: SearchRequest, state: State) -> AddedTask:
-    """Add the search to Tasks, queued to run."""
+    """Add the search to Tasks, not started. Running it is the Tasks route's job."""
     if body.simulations < 1:
         raise refuse(422, "no_simulations", NO_SIMULATIONS)
     plan = await _plan(body, state)
@@ -132,10 +130,8 @@ async def add_task(body: SearchRequest, state: State) -> AddedTask:
             dataset_ids=body.dataset_ids,
             field_ids=body.field_ids,
             n_startup_trials=startup_trials(len(plan["space"]["fields"]), size, per_round),
-            queued_at=now.isoformat(),
         ),
         simulations=size,
         batch_size=per_round,
         template_source="# Search Lab writes its own expressions; there is no template.",
-        run=True,
     )

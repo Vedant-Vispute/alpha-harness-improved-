@@ -6,8 +6,6 @@ exists. Correlations are slow, rate-limited jobs, so their answers are kept in
 ``brain_cache`` until the user refreshes.
 """
 
-from __future__ import annotations
-
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import datetime

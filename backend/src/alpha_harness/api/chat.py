@@ -5,8 +5,6 @@ answer, a sentence in someone's own words does not. What comes back is a list of
 fields, checked against the catalogue, ready to hand to a lab that runs them.
 """
 
-from __future__ import annotations
-
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Query

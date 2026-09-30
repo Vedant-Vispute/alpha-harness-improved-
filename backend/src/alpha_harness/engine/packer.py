@@ -2,16 +2,13 @@
 
 ``POST /simulations`` accepts an array of 2-10 simulation objects, but every child of one
 batch must agree on ``type``, ``instrumentType``, ``region``, ``delay`` and ``language``;
-universe, neutralization, decay, truncation and expression may differ (see
-``docs/wqb-documentation/consultant-information/multi-alpha-simulation.md``).
+universe, neutralization, decay, truncation and expression may differ.
 
 That constraint is the whole reason this module exists: throughput is not "80 at a time"
 but "8 batches of up to 10 that happen to share a 5-tuple", so a sweep varying region or
 delay fragments into small batches while one varying universe and expression packs
 perfectly. Pure by design — no database, no HTTP.
 """
-
-from __future__ import annotations
 
 import itertools
 from collections import defaultdict
@@ -54,8 +51,8 @@ class BatchKey:
         """Concurrent cores one simulation with this key can occupy, at most.
 
         GLB counts two: BRAIN gives that region 2 of the 8 slots per simulation, so four
-        run at once (``docs/ANNOUNCEMENTS.md``, 2025-09-23). A batch is one simulation to
-        BRAIN, so its children do not multiply this.
+        run at once (BRAIN announcement, 2025-09-23). A batch is one simulation to BRAIN,
+        so its children do not multiply this.
 
         A region-agnostic one costs the sum of its own children's quota, which varies with
         the regions its fields reach; :data:`RA_SLOTS` reserves the usual three, so two run
@@ -197,6 +194,7 @@ def allocate_slots(
     demand: dict[str, int],
     quotas: dict[str, int],
     in_flight: dict[str, int] | None = None,
+    lend: bool = False,
 ) -> dict[str, int]:
     """Divide free slots between tasks that want them.
 
@@ -206,6 +204,12 @@ def allocate_slots(
 
     Allocation is round-robin rather than proportional, so a large sweep cannot take every
     slot while a single manual experiment waits behind it.
+
+    With ``lend``, slots still free once every task has its own share go round-robin to
+    tasks with more work than that, so a one-core task does not leave seven idle while
+    nothing else wants them. A task at quota 0 is paused or finished and borrows nothing.
+    Nothing is taken back mid-batch: a task that starts later waits for borrowed batches
+    to come back, a few minutes at most.
     """
     if free_slots <= 0:
         return {}
@@ -222,15 +226,29 @@ def allocate_slots(
             headroom[task] = capped
 
     allocation: dict[str, int] = defaultdict(int)
+    granted = _round_robin(allocation, headroom, free_slots)
+    if lend and granted < free_slots:
+        beyond = {
+            task: wanted - allocation[task]
+            for task, wanted in demand.items()
+            if quotas.get(task, 1) > 0 and wanted > allocation[task]
+        }
+        _round_robin(allocation, beyond, free_slots - granted)
+
+    return {task: n for task, n in allocation.items() if n > 0}
+
+
+def _round_robin(allocation: dict[str, int], headroom: dict[str, int], free: int) -> int:
+    """Grant up to ``free`` slots, one per task per pass, within ``headroom``. Returns how many."""
     granted = 0
     # Deterministic order so the same queue always allocates the same way.
     tasks = sorted(headroom)
-    while granted < free_slots and headroom:
+    while granted < free:
         progressed = False
         for task in tasks:
-            if granted >= free_slots:
+            if granted >= free:
                 break
-            if headroom.get(task, 0) <= 0:
+            if headroom[task] <= 0:
                 continue
             allocation[task] += 1
             headroom[task] -= 1
@@ -238,8 +256,7 @@ def allocate_slots(
             progressed = True
         if not progressed:
             break
-
-    return dict(allocation)
+    return granted
 
 
 def demand_by_task(items: Sequence[WorkItem], max_batch: int) -> dict[str, int]:

@@ -6,11 +6,13 @@
 
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { DnaIcon, ListChecksIcon, PlusIcon, WandSparklesIcon, XIcon } from 'lucide-react'
+import { DnaIcon, ListChecksIcon, WandSparklesIcon, XIcon } from 'lucide-react'
 import { useEffect, useMemo } from 'react'
 import { ApiError } from '@/api/http'
 import { DASH, fmt } from '@/lib/format'
-import { marketKey, useScopeOptions } from '@/lib/scope'
+import { useCores } from '@/lib/preferences'
+import { marketKey, regionLabel, useScopeOptions } from '@/lib/scope'
+import { AddTaskButtons, useAddTask } from '@/screens/research-labs/add-task'
 import {
   type EvolutionRequest,
   evolutionLab,
@@ -18,12 +20,7 @@ import {
   type SeedRow,
 } from '@/screens/research-labs/evolution/api'
 import { MAX_SEEDS, useSeedPick } from '@/screens/research-labs/evolution/seed-pick'
-import {
-  MAX_SIMULATIONS,
-  simulationsValid,
-  useAddTask,
-  useLabPreview,
-} from '@/screens/research-labs/lab-task'
+import { MAX_SIMULATIONS, simulationsValid, useLabPreview } from '@/screens/research-labs/lab-task'
 import { NeutralizationPicker } from '@/screens/research-labs/neutralization'
 import { CoresSetting, SimulationsSetting } from '@/screens/research-labs/task-settings'
 import {
@@ -80,13 +77,14 @@ export function EvolutionLabScreen() {
     universe: draft.universe,
   })
 
+  const cores = useCores(draft.cores)
   const body: EvolutionRequest = {
     region: draft.region,
     delay: draft.delay,
     universe: draft.universe,
     alpha_ids: draft.seedIds,
     neutralizations: draft.neutralizations,
-    cores: draft.cores,
+    cores,
     population: draft.population,
     mutation_rate: draft.mutationRate,
     simulations: draft.simulations ?? 0,
@@ -155,14 +153,14 @@ export function EvolutionLabScreen() {
   const markets = useMemo(() => {
     const items = (options.data?.markets ?? []).map((m) => ({
       value: marketKey(m),
-      label: `${m.region} · D${m.delay} · ${m.universe} (${fmt.int(m.alphas)})`,
+      label: `${regionLabel(m.region)} · D${m.delay} · ${m.universe} (${fmt.int(m.alphas)})`,
     }))
     return items.some((m) => m.value === current)
       ? items
       : [
           {
             value: current,
-            label: `${draft.region} · D${draft.delay} · ${draft.universe}`,
+            label: `${regionLabel(draft.region)} · D${draft.delay} · ${draft.universe}`,
           },
           ...items,
         ]
@@ -182,7 +180,9 @@ export function EvolutionLabScreen() {
 
   const maxSimulations = options.data?.maxSimulations ?? MAX_SIMULATIONS
   const simulations = draft.simulations
-  const add = useAddTask((count: number) => evolutionLab.addTask({ ...body, simulations: count }))
+  const add = useAddTask(() =>
+    evolutionLab.addTask({ ...body, simulations: draft.simulations ?? 0 }),
+  )
   const ready =
     plan !== undefined &&
     planned &&
@@ -250,20 +250,7 @@ export function EvolutionLabScreen() {
 
   return (
     <Page>
-      <PageHeader
-        title="Evolution Lab"
-        actions={
-          <Button
-            variant="primary"
-            disabled={!ready}
-            loading={add.isPending}
-            onClick={() => simulations !== null && add.mutate(simulations)}
-          >
-            <PlusIcon />
-            Add Task
-          </Button>
-        }
-      />
+      <PageHeader title="Evolution Lab" actions={<AddTaskButtons add={add} disabled={!ready} />} />
       {options.isError && (
         <ErrorNotice error={options.error} title="Could not load the lab's options" />
       )}
@@ -359,7 +346,7 @@ export function EvolutionLabScreen() {
       <Panel title="Settings">
         <div className="flex flex-col gap-4">
           <div className="flex flex-wrap items-start gap-x-8 gap-y-4">
-            <CoresSetting value={draft.cores} onChange={(cores) => set({ cores })} />
+            <CoresSetting value={cores} onChange={(next) => set({ cores: next })} />
             <SimulationsSetting
               value={simulations}
               max={maxSimulations}

@@ -32,7 +32,7 @@ export const searchLab = {
   options: () => http.get<SearchLabOptions>(`${B}/options`),
   /** Free; queues nothing. */
   preview: (body: SearchLabRequest) => http.post<SearchLabPreview>(`${B}/preview`, body),
-  /** Adds the search to Tasks, queued to run. */
-  runTask: (body: SearchLabRequest & { simulations: number }) =>
+  /** Adds the search to Tasks, not started. */
+  addTask: (body: SearchLabRequest & { simulations: number }) =>
     http.post<Schemas['AddedTask']>(`${B}/tasks`, body),
 }

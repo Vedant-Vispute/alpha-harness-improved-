@@ -6,11 +6,9 @@ proof-of-work — should happen rarely. The flow is always:
     restore the cookie jar -> GET /authentication -> still valid? done.
                                                   -> expired? solve captcha, sign in.
 
-The captcha is required on sign-in (``docs/wqb-api/02-authentication.md``), and repeated
-failures lock the account, so sign-in is never attempted speculatively.
+The captcha is required on sign-in, and repeated failures lock the account, so sign-in
+is never attempted speculatively.
 """
-
-from __future__ import annotations
 
 import asyncio
 import time
@@ -166,8 +164,8 @@ class Authenticator:
         """Close a completed identity verification: ``POST /authentication/persona``.
 
         A POST back to the 401's ``Location``: the inquiry as a query parameter, no body and
-        no captcha (``docs/wqb-api/02-authentication.md``). ``None`` means the platform did
-        not accept it and the caller should fall back to a full sign-in.
+        no captcha. ``None`` means the platform did not accept it and the caller should fall
+        back to a full sign-in.
         """
         try:
             r = await self.endpoints.client.request(

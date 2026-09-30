@@ -10,8 +10,6 @@ it with the id the instant the response lands. A crash between the two leaves a
 ``PENDING`` row, which :meth:`reconcile` surfaces rather than silently discards.
 """
 
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import time
@@ -39,9 +37,9 @@ from .lifecycle import (
     cancel_after_lost_race,
     describe_fields,
     extract_simulation_id,
+    finish,
     read_outcome,
     record_launch,
-    remember,
     serialise,
     transition,
 )
@@ -63,6 +61,14 @@ DEFAULT_POLL_SECONDS = 3.0
 PENDING_GRACE_SECONDS = 120.0
 #: How often stale sends are looked for after startup.
 SWEEP_SECONDS = 60.0
+#: How long one simulation may answer every read with a server error, while BRAIN answers
+#: everything else, before it is given up on. BRAIN occasionally loses one: it then can
+#: neither report on it nor cancel it, and waiting on it holds a core for good.
+LOST_AFTER_SECONDS = 30 * 60
+LOST = (
+    "BRAIN answered every read of this simulation with a server error for 30 minutes while "
+    "answering everything else, so it is no longer waited on."
+)
 
 
 class SimulationTracker:
@@ -88,9 +94,11 @@ class SimulationTracker:
         #: simulation that produced the alpha.
         self._on_alpha = on_alpha
         self._task: asyncio.Task[None] | None = None
-        # record_id -> monotonic time of the next allowed poll. In memory only; losing
-        # it just means we poll once immediately after a restart.
-        self._next_poll: dict[int, float] = {}
+        #: Platform id -> monotonic time of its next allowed read, batch children included.
+        #: In memory only; losing it just means one immediate read after a restart.
+        self._next_poll: dict[str, float] = {}
+        #: Platform id -> monotonic time its reads started failing with a server error.
+        self._failing_since: dict[str, float] = {}
         #: Adopted rows this process is sending right now. Their ``created_at`` is when
         #: they were queued, so without this the stale-send check could orphan one
         #: mid-request.
@@ -236,16 +244,16 @@ class SimulationTracker:
             raise SubmissionFailed("Cancelled while it was being sent.", record_id=record_id)
 
         log.info("sim.running", record_id=record_id, platform_id=platform_id)
-        self.watch(record_id, response.retry_after)
+        self.watch(platform_id, response.retry_after)
         await self.notify()
 
-    def watch(self, record_id: int, delay: float | None = None) -> None:
-        """Start polling a record after ``delay``, the 201's Retry-After if it sent one.
+    def watch(self, platform_id: str, delay: float | None = None) -> None:
+        """Read a simulation next after ``delay``, the 201's Retry-After if it sent one.
 
         Used by the batch engine after it records a parent id, so a freshly submitted
         batch is picked up without waiting for a sweep.
         """
-        self._next_poll[record_id] = time.monotonic() + (delay or 0.0)
+        self._next_poll[platform_id] = time.monotonic() + (delay or 0.0)
 
     # -- cancellation ----------------------------------------------------
 
@@ -266,23 +274,30 @@ class SimulationTracker:
             return False
         if not record.platform_id:
             # Queued or mid-submit. The send's own id write loses to this mark and then
-            # cancels the simulation on BRAIN itself.
-            await self._mark(
+            # cancels the simulation on BRAIN itself. Never from RUNNING: that means the id
+            # landed after the read above, the send already won, and only BRAIN can stop it.
+            if await self._mark(
                 record_id,
                 SimStatus.CANCELLED,
                 message="Cancelled before BRAIN returned an id.",
-            )
-            return False
+                from_=[s for s in ACTIVE if s != SimStatus.RUNNING],
+            ):
+                return False
+            record = await self.get(record_id)
+            if record is None or not record.platform_id or SimStatus(record.status).terminal:
+                return False
 
-        ok = await self.endpoints.cancel_simulation(record.platform_id)
-        log.info("sim.cancelled", record_id=record_id, platform_id=record.platform_id, ok=ok)
+        platform_id = record.platform_id
+        ok = await self.endpoints.cancel_simulation(platform_id)
+        log.info("sim.cancelled", record_id=record_id, platform_id=platform_id, ok=ok)
         if not ok:
             # Refused: it already finished, or BRAIN lost it. Marking it CANCELLED would
             # hide a result that exists, so the next poll records what really happened.
-            self.watch(record_id)
+            self.watch(platform_id)
             return False
         await self._mark(record_id, SimStatus.CANCELLED, finished=True)
-        self._next_poll.pop(record_id, None)
+        self._next_poll.pop(platform_id, None)
+        self._failing_since.pop(platform_id, None)
         return ok
 
     # -- reads -----------------------------------------------------------
@@ -346,17 +361,17 @@ class SimulationTracker:
         Once stale they are marked ``ORPHANED``, and :meth:`reconcile_orphans` matches
         them to the alpha they produced, or queues them again when none appears.
         """
-        resumed = 0
+        # Nothing to schedule: a simulation with no read due yet is read at once.
         async with self.db.session() as session:
-            running = await session.scalars(
-                select(SimulationRecord.id).where(
-                    SimulationRecord.status == SimStatus.RUNNING,
-                    SimulationRecord.platform_id.is_not(None),
+            resumed = (
+                await session.scalar(
+                    select(func.count()).where(
+                        SimulationRecord.status == SimStatus.RUNNING,
+                        SimulationRecord.platform_id.is_not(None),
+                    )
                 )
+                or 0
             )
-            for record_id in running:
-                self._next_poll[record_id] = time.monotonic()
-                resumed += 1
 
         # A batch's RUNNING children carry no id of their own until the parent is read
         # back. The parent's id is the handle, so they are left for the engine to expand.
@@ -446,15 +461,12 @@ class SimulationTracker:
         if not records:
             return
 
-        now = time.monotonic()
         changed = False
         for record in records:
             if not record.platform_id:
                 continue
             if record.is_batch and record.child_ids:
                 # Fanned out: the engine polls its children and finishes it.
-                continue
-            if now < self._next_poll.get(record.id, 0.0):
                 continue
             if await self._poll_one(record):
                 changed = True
@@ -463,35 +475,21 @@ class SimulationTracker:
             await self.notify()
 
     async def _poll_one(self, record: SimulationRecord) -> bool:
-        """One status read. Returns True if anything changed."""
+        """One status read, if one is due. Returns True if anything changed."""
         if record.platform_id is None:
             raise ValueError(f"simulation record {record.id} has no platform id to poll")
-        try:
-            response = await self.endpoints.read_simulation(record.platform_id)
-        except BrainError as exc:
-            # Transport hiccups are expected; back off and try again rather than
-            # declaring a running simulation dead.
-            log.warning("sim.poll_failed", record_id=record.id, error=str(exc))
-            self._next_poll[record.id] = time.monotonic() + DEFAULT_POLL_SECONDS
+        read = await self.read(record.platform_id)
+        if read is None:
             return False
-
-        outcome = read_outcome(response.status, response.body, response.retry_after)
+        outcome, _ = read
         match outcome.kind:
             case "unauthorized":
                 log.warning("sim.poll_unauthenticated", record_id=record.id)
-                self._next_poll[record.id] = time.monotonic() + 10.0
                 await self._on_unauthorized()
                 return False
             case "retry":
-                # A 403, 429 or 5xx is not a result: treating it as one would close a
-                # running simulation with no alpha and stop polling it.
-                log.warning("sim.poll_error", record_id=record.id, status=response.status)
-                self._next_poll[record.id] = time.monotonic() + (outcome.delay or 15.0)
                 return False
             case "pending":
-                self._next_poll[record.id] = time.monotonic() + (
-                    outcome.delay or DEFAULT_POLL_SECONDS
-                )
                 if outcome.progress is None or outcome.progress == record.progress:
                     return False
                 async with self.db.session() as session:
@@ -506,6 +504,67 @@ class SimulationTracker:
             case "gone" | "finished":
                 return await self._apply_terminal(record, outcome)
 
+    async def read(self, platform_id: str) -> tuple[Outcome, dict[str, Any]] | None:
+        """Read one simulation if a read is due: what it means, and the body it came in.
+
+        The only place a simulation is read, whether polled alone here or read by the batch
+        engine as a child, so both keep the same schedule and the same lost-simulation rule.
+        Returns ``None`` while the next read is not due. The next read is scheduled here,
+        and a simulation that has finished or fanned out is forgotten.
+        """
+        if time.monotonic() < self._next_poll.get(platform_id, 0.0):
+            return None
+        try:
+            response = await self.endpoints.read_simulation(platform_id)
+        except BrainError as exc:
+            # Transport hiccups are expected: back off rather than declare a running
+            # simulation dead. The lost clock stays where it was — this says nothing about
+            # the simulation either way.
+            log.warning("sim.poll_failed", platform_id=platform_id, error=str(exc))
+            self._next_poll[platform_id] = time.monotonic() + DEFAULT_POLL_SECONDS
+            return Outcome("retry"), {}
+
+        body: dict[str, Any] = response.body if isinstance(response.body, dict) else {}
+        outcome = read_outcome(response.status, response.body, response.retry_after)
+        if outcome.kind != "retry" or response.status < 500:
+            self._failing_since.pop(platform_id, None)
+        elif await self._lost(platform_id):
+            log.warning("sim.lost", platform_id=platform_id)
+            outcome, body = Outcome("gone", SimStatus.ERROR, message=LOST), {}
+
+        now = time.monotonic()
+        match outcome.kind:
+            case "pending":
+                self._next_poll[platform_id] = now + (outcome.delay or DEFAULT_POLL_SECONDS)
+            case "retry":
+                # A 403, 429 or 5xx is not a result: treating it as one would close a
+                # running simulation with no alpha and stop polling it.
+                log.warning("sim.poll_error", platform_id=platform_id, status=response.status)
+                self._next_poll[platform_id] = now + (outcome.delay or 15.0)
+            case "unauthorized":
+                self._next_poll[platform_id] = now + 10.0
+            case "fanout" | "gone" | "finished":
+                self._next_poll.pop(platform_id, None)
+                self._failing_since.pop(platform_id, None)
+        return outcome, body
+
+    async def _lost(self, platform_id: str) -> bool:
+        """Whether BRAIN has lost this simulation rather than being down altogether.
+
+        Only once its reads have failed for :data:`LOST_AFTER_SECONDS`, and only if BRAIN
+        still answers the cheapest read there is: in an outage every simulation fails the
+        same way, and giving up on them would throw away results that are still coming.
+        """
+        now = time.monotonic()
+        if now - self._failing_since.setdefault(platform_id, now) < LOST_AFTER_SECONDS:
+            return False
+        try:
+            await self.endpoints.get_auth()
+        except BrainError:
+            return False
+        self._failing_since.pop(platform_id, None)
+        return True
+
     async def _hand_over_children(self, record: SimulationRecord, outcome: Outcome) -> bool:
         """A multi-simulation has dispatched its children: the engine reads them from here.
 
@@ -515,7 +574,6 @@ class SimulationTracker:
         would draw a concurrency 429. Either way polling stops for good, restarts included,
         because ``child_ids`` is on disk.
         """
-        self._next_poll.pop(record.id, None)
         done = outcome.platform_status == SimulationStatus.COMPLETE
         finished: dict[str, Any] = (
             {"status": SimStatus.COMPLETE, "finished_at": utcnow()} if done else {}
@@ -536,30 +594,16 @@ class SimulationTracker:
 
     async def _apply_terminal(self, record: SimulationRecord, outcome: Outcome) -> bool:
         """Write a finished simulation's outcome."""
-        alpha_id = outcome.alpha_id
         async with self.db.session() as session:
-            won = await transition(
-                session,
-                record.id,
-                from_=ACTIVE,
-                status=outcome.status,
-                platform_status=str(outcome.platform_status) if outcome.platform_status else None,
-                alpha_id=alpha_id,
-                message=outcome.message,
-                progress=1.0 if outcome.status == SimStatus.COMPLETE else record.progress,
-                finished_at=utcnow(),
-            )
-
-            # Without this, re-running an identical alpha spends daily quota to recreate
-            # something that already exists. Batch parents are excluded: their payload is
-            # the array, not an alpha.
-            if won and alpha_id and not record.is_batch:
-                await remember(session, record, alpha_id)
-
-        self._next_poll.pop(record.id, None)
-        log.info("sim.finished", record_id=record.id, status=str(outcome.status), alpha_id=alpha_id)
-        if alpha_id:
-            self.alpha_landed(alpha_id)
+            landed = await finish(session, record, outcome)
+        log.info(
+            "sim.finished",
+            record_id=record.id,
+            status=str(outcome.status),
+            alpha_id=outcome.alpha_id,
+        )
+        if landed:
+            self.alpha_landed(landed)
         return True
 
     def alpha_landed(self, alpha_id: str) -> None:
@@ -581,15 +625,17 @@ class SimulationTracker:
         message: str | None = None,
         finished: bool = True,
         from_: Iterable[SimStatus] = ACTIVE,
-    ) -> None:
+    ) -> bool:
+        """Whether the row moved: the compare-and-set loses to anything that got there first."""
         values: dict[str, Any] = {"status": status}
         if message is not None:
             values["message"] = message
         if finished:
             values["finished_at"] = utcnow()
         async with self.db.session() as session:
-            await transition(session, record_id, from_=from_, **values)
+            moved = await transition(session, record_id, from_=from_, **values)
         await self.notify()
+        return bool(moved)
 
     async def notify(self) -> None:
         """Push what is pending or running now; the batch engine announces through this too."""

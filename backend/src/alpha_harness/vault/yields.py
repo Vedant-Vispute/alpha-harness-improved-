@@ -12,10 +12,10 @@ Only *finished* simulations count in the denominator. Counting queued work would
 every lab look worse the moment it was funded.
 """
 
-from __future__ import annotations
-
 import asyncio
 import json
+import re
+from collections import Counter
 from itertools import accumulate
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -111,11 +111,20 @@ def checks_of(checks_json: str | None) -> list[dict[str, Any]]:
         return []
     try:
         checks = json.loads(checks_json)
-    except (json.JSONDecodeError, TypeError):
+    except json.JSONDecodeError, TypeError:
         return []
     if not isinstance(checks, list):
         return []
     return without_quota_checks([c for c in checks if isinstance(c, dict)])
+
+
+def gating_results(checks: list[dict[str, Any]]) -> set[str]:
+    """The results of the checks that decide anything: every one but :data:`IGNORED_CHECKS`."""
+    return {
+        str(c.get("result", "")).upper()
+        for c in checks
+        if str(c.get("name", "")).upper() not in IGNORED_CHECKS
+    }
 
 
 def verdict(checks: list[dict[str, Any]], simulation_mode: str | None = None) -> Verdict | None:
@@ -133,11 +142,7 @@ def verdict(checks: list[dict[str, Any]], simulation_mode: str | None = None) ->
     """
     if simulation_mode == QUICK_MODE:
         return "refused"
-    results = {
-        str(c.get("result", "")).upper()
-        for c in checks
-        if str(c.get("name", "")).upper() not in IGNORED_CHECKS
-    }
+    results = gating_results(checks)
     if not results:
         return None
     if results & REFUSING:
@@ -199,14 +204,10 @@ async def submittable(
             params.append(value)
 
     # Every row is judged, never a Sharpe-ordered head of the table: a scan capped at a
-    # few hundred rows hid every submittable alpha ranked below it. Parsed once per row,
-    # off the event loop, because at tens of thousands of alphas that takes seconds.
-    every = await alphas.catalog.query(
-        f"SELECT a.alpha_id, a.checks, a.simulation_mode FROM alpha a "  # noqa: S608
-        f"WHERE {' AND '.join(clauses)} AND a.checks IS NOT NULL",
-        params,
+    # few hundred rows hid every submittable alpha ranked below it.
+    ready_ids, pending, near = await _tally(
+        alphas, f"{' AND '.join(clauses)} AND a.checks IS NOT NULL", params
     )
-    ready_ids, pending, near = await asyncio.to_thread(_tally, every)
     total = len(ready_ids)
     placeholders = ", ".join("?" for _ in ready_ids)
     ready = (
@@ -231,7 +232,8 @@ async def submittable(
     picks = await asyncio.to_thread(
         independent,
         order,
-        {a: series_of(days[a]) for a in order if a in days},
+        # One market here, so one region: the profile holds a single series.
+        {a: {"": pnl} for a in order if a in days and (pnl := series_of(days[a]))},
         SHORTLIST,
         SHORTLIST_MAX_CORRELATION,
     )
@@ -276,6 +278,15 @@ async def submittable(
         "shortlist": [entry(by_id[a]) for a in picks],
         "alphas": [entry(row) for row in chosen],
         "total": total,
+        #: Where the submittable Alphas are, most first: a screen showing one market that has
+        #: none can point at the markets that do.
+        "markets": [
+            {"instrumentType": i, "region": r, "delay": d, "universe": u, "count": n}
+            for (i, r, d, u), n in Counter(
+                (row["instrument_type"], row["region"], row["delay"], row["universe"])
+                for row in ready
+            ).most_common()
+        ],
         #: Still being judged by the platform. Shown so an empty list reads as
         #: "not yet" rather than "never".
         "pending": pending,
@@ -332,31 +343,70 @@ PLATFORM_ALPHA_URL = "https://platform.worldquantbrain.com/alpha/"
 SPARK_POINTS = 120
 
 
-def _tally(rows: list[dict[str, Any]]) -> tuple[list[str], int, int]:
-    """Submittable ids, promising count and near-miss count, reading each row's JSON once.
+#: alpha_id → ((hash of its checks, simulation mode), verdict, near miss). A verdict changes only
+#: with those two, and parsing every row's JSON on every call cost seconds at 50k Alphas.
+_JUDGED: dict[str, tuple[tuple[int, str | None], Verdict | None, bool]] = {}
+#: Past this many unjudged rows, one scan beats an IN list.
+_RESCAN = 500
+
+
+async def _tally(alphas: AlphaVault, where: str, params: list[Any]) -> tuple[list[str], int, int]:
+    """Submittable ids, promising count and near-miss count, judging only rows not seen as-is.
 
     Judged by :func:`verdict`. A near miss is one or two fixable failures and nothing else
     wrong.
     """
+    keys = await alphas.catalog.query(
+        f"SELECT a.alpha_id, hash(a.checks) AS h, a.simulation_mode FROM alpha a WHERE {where}",  # noqa: S608
+        params,
+    )
+    stale = [
+        str(k["alpha_id"])
+        for k in keys
+        if (seen := _JUDGED.get(str(k["alpha_id"]))) is None
+        or seen[0] != (k["h"], k["simulation_mode"])
+    ]
+    columns = "a.alpha_id, a.checks, a.simulation_mode, hash(a.checks) AS h"
+    if len(stale) > _RESCAN:
+        rows = await alphas.catalog.query(f"SELECT {columns} FROM alpha a WHERE {where}", params)  # noqa: S608
+    elif stale:
+        marks = ", ".join("?" for _ in stale)
+        rows = await alphas.catalog.query(
+            f"SELECT {columns} FROM alpha a WHERE a.alpha_id IN ({marks})",  # noqa: S608
+            stale,
+        )
+    else:
+        rows = []
+    # Off the event loop: a cold start parses every row's JSON, which takes seconds.
+    await asyncio.to_thread(_judge, rows)
+
     ready: list[str] = []
     pending = near = 0
+    for k in keys:
+        # Absent only if the Alpha was deleted between the two reads.
+        if (judged := _JUDGED.get(str(k["alpha_id"]))) is None:
+            continue
+        _, found, is_near = judged
+        if found == "submittable":
+            ready.append(str(k["alpha_id"]))
+        elif found == "pending":
+            pending += 1
+        near += is_near
+    return ready, pending, near
+
+
+def _judge(rows: list[dict[str, Any]]) -> None:
     for row in rows:
         checks = checks_of(row.get("checks"))
         found = verdict(checks, row.get("simulation_mode"))
-        if found == "submittable":
-            ready.append(str(row["alpha_id"]))
-        elif found == "pending":
-            pending += 1
-        elif found == "refused":
-            failed = {
-                name
-                for c in checks
-                if str(c.get("result", "")).upper() in REFUSING
-                and (name := str(c.get("name", "")).upper()) not in IGNORED_CHECKS
-            }
-            if failed <= FIXABLE_CHECKS and len(failed) <= 2:
-                near += 1
-    return ready, pending, near
+        failed = {
+            name
+            for c in checks
+            if str(c.get("result", "")).upper() in REFUSING
+            and (name := str(c.get("name", "")).upper()) not in IGNORED_CHECKS
+        }
+        near = found == "refused" and failed <= FIXABLE_CHECKS and len(failed) <= 2
+        _JUDGED[str(row["alpha_id"])] = ((row["h"], row.get("simulation_mode")), found, near)
 
 
 def _sparkline(values: list[float]) -> list[float]:
@@ -425,8 +475,7 @@ def stability_order(rows: list[dict[str, Any]]) -> list[str]:
 def lab_of(task: str) -> str:
     """Which lab a task name belongs to.
 
-    Task names carry their lab and their day (``sweep-2026-09-08-1``), because quotas and
-    progress are keyed by task while yield is judged per lab across many days.
+    Task names are the lab and then a stamp (``settings-sampler-260922115019156223``),
+    because quotas and progress are keyed by task while yield is judged per lab across days.
     """
-    head = task.split("-", 1)[0]
-    return head or "manual"
+    return re.split(r"-\d", task, maxsplit=1)[0] or "manual"

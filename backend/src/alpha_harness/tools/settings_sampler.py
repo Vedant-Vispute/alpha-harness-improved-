@@ -6,8 +6,6 @@ maxTrade/maxPosition pair. A market only counts when every data field the expres
 is downloaded there, so a two-field Alpha is judged on the intersection.
 """
 
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import math
@@ -39,8 +37,7 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-#: Parks a written simulation outside every count until a core is free.
-PENDING_SEND = "Waiting for cores."
+PENDING_SEND = scheduler.PENDING_SEND
 
 #: Which regions accept Max Position is not in any schema, so it is measured. It changes only
 #: when BRAIN adds a market, so the answer keeps for a day.

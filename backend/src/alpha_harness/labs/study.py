@@ -18,8 +18,6 @@ Restart safety: the Optuna study is rebuilt from the trial rows, never persisted
 separately, so trials stay joinable to the simulations that produced them.
 """
 
-from __future__ import annotations
-
 import asyncio
 import contextlib
 from datetime import timedelta
@@ -100,6 +98,9 @@ class Optimizer:
         #: number. Lost on restart, which :func:`_tell_many` handles by replaying.
         self.open_trials: dict[int, dict[int, Any]] = {}
         self._locks: dict[int, asyncio.Lock] = {}
+        #: Cores no running task holds, while Settings lends them; 0 otherwise. Set each
+        #: tick by :func:`scheduler.start_waiting`, read by :func:`scheduler.advance`.
+        self.lendable_cores = 0
         self._task: asyncio.Task[None] | None = None
 
     # -- lifecycle -------------------------------------------------------
@@ -252,7 +253,10 @@ class Optimizer:
                 or t.alpha_id
                 for t in open_trials
             ]
-            saved = await self.alphas.by_ids([a for a in wanted if a])
+            # A region-agnostic result is scored as its family: it has no statistics of its own.
+            saved = await self.alphas.with_families(
+                await self.alphas.by_ids([a for a in wanted if a])
+            )
         #: (live optuna trial | None, stored row, values | None, summary)
         finished: list[tuple[Any, Trial, list[float] | None, dict[str, Any]]] = []
         started: list[int] = []
@@ -304,6 +308,18 @@ class Optimizer:
                 continue
             if record.finished_at is not None and utcnow() - record.finished_at < VAULT_WAIT:
                 continue  # The tracker stores it moments after it finishes.
+            if stored_alpha is not None and stored_alpha.get("sim_type") == "RA_PARENT":
+                # Asking BRAIN would not help: a parent has no statistics, and its children
+                # have had the wait above to arrive.
+                finished.append(
+                    (
+                        live.get(trial.number),
+                        trial,
+                        None,
+                        {"error": "Fewer than two of its regions came back with scores."},
+                    )
+                )
+                continue
 
             try:
                 alpha = await self.endpoints.get_alpha(alpha_id)

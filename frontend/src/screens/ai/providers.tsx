@@ -1,4 +1,4 @@
-/** Providers as cards: pick one, then add its free API key in a popup. */
+/** Providers as cards: pick one, add its API key in a popup, then set up a model for it. */
 
 import { useMutation } from '@tanstack/react-query'
 import { ExternalLinkIcon, PlusIcon } from 'lucide-react'
@@ -8,6 +8,7 @@ import { fmt } from '@/lib/format'
 import { type LLMKey, type LLMProvider, llm } from '@/screens/ai/api'
 import { Badge, Button, Empty, ErrorNotice, Field, Input, Notice, Panel, Skeleton } from '@/ui/kit'
 import { Dialog } from '@/ui/overlay'
+import { ModelSetupForm } from './models'
 import { useInvalidateKeys, useKeys, useModels, useProviders } from './shared'
 
 /** Enough to work with for a day, small enough that forgetting it is not expensive. */
@@ -37,9 +38,7 @@ export function Providers() {
 
   const card = (p: LLMProvider) => {
     const keyCount = keys.data?.keys.filter((k) => k.provider === p.id).length ?? 0
-    // Google lists no models of its own: they are in the shared roster.
-    const modelCount =
-      p.models.length || (models.data?.models ?? []).filter((m) => m.provider === p.id).length
+    const modelCount = (models.data?.models ?? []).filter((m) => m.provider === p.id).length
     return (
       <button
         key={p.id}
@@ -67,13 +66,15 @@ export function Providers() {
               <span className="num">{fmt.int(keyCount)}</span> {keyCount === 1 ? 'Key' : 'Keys'}
             </Badge>
           ) : (
-            <span className="text-ink-subtle">No Key yet</span>
+            <span className="text-ink-subtle">No key yet</span>
           )}
-          {modelCount > 0 && (
+          {modelCount > 0 ? (
             <span className="text-ink-subtle">
               <span className="num">{fmt.int(modelCount)}</span>{' '}
-              {modelCount === 1 ? 'model' : 'models'}
+              {modelCount === 1 ? 'model' : 'models'} set up
             </span>
+          ) : (
+            keyCount > 0 && models.isSuccess && <Badge tone="warn">No model set up</Badge>
           )}
         </div>
       </button>
@@ -88,8 +89,8 @@ export function Providers() {
       {paid.length > 0 && (
         <section className="flex flex-col gap-3 border-hairline border-t pt-5">
           <div className="flex flex-col gap-1">
-            <h3 className="text-title text-ink">Bring your own key</h3>
-            <p className="max-w-prose text-body-compact text-ink-subtle">{data.paidNote}</p>
+            <h3 className="text-title text-ink">Bring Your Own Key</h3>
+            <p className="text-body-compact text-pretty text-ink-subtle">{data.paidNote}</p>
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {paid.map(card)}
@@ -101,7 +102,10 @@ export function Providers() {
   )
 }
 
-/** Opens for one provider. The key is cleared as soon as it is sent; only its last characters come back. */
+/**
+ * Opens for one provider. The key is cleared as soon as it is sent; only its last characters
+ * come back. Adding it leads straight on to setting up a model, which the Key is useless without.
+ */
 function AddKeyDialog({
   provider,
   onClose,
@@ -110,10 +114,14 @@ function AddKeyDialog({
   onClose: () => void
 }) {
   const invalidate = useInvalidateKeys()
+  const models = useModels()
   const [key, setKey] = useState('')
   const [label, setLabel] = useState('')
   const [cap, setCap] = useState(DEFAULT_CAP)
   const [added, setAdded] = useState<LLMKey | null>(null)
+  // Remounts the model form after each save, so the next model starts from a blank form.
+  const [saves, setSaves] = useState(0)
+  const setUp = (models.data?.models ?? []).filter((m) => m.provider === provider?.id)
 
   const paid = provider?.paid ?? false
   const capped = Number.parseInt(cap, 10)
@@ -142,6 +150,7 @@ function AddKeyDialog({
     setLabel('')
     setCap(DEFAULT_CAP)
     setAdded(null)
+    setSaves(0)
     add.reset()
   }
   const close = () => {
@@ -159,10 +168,10 @@ function AddKeyDialog({
         added ? (
           <>
             <Button variant="ghost" onClick={reset}>
-              Add another
+              Add another Key
             </Button>
-            <Button variant="primary" onClick={close}>
-              Done
+            <Button variant={setUp.length > 0 ? 'primary' : 'ghost'} onClick={close}>
+              {setUp.length > 0 ? 'Done' : 'Set up later'}
             </Button>
           </>
         ) : (
@@ -185,10 +194,27 @@ function AddKeyDialog({
     >
       {provider &&
         (added ? (
-          <Notice title="Key added">
-            {provider.label} Key <span className="num text-ink">{added.hint}</span>
-            {added.label && <> labelled “{added.label}”</>} is in the pool.
-          </Notice>
+          <div className="flex flex-col gap-4">
+            <Notice title="Key added">
+              {provider.label} Key <span className="num text-ink">{added.hint}</span>
+              {added.label && <> labelled “{added.label}”</>} is in the pool.{' '}
+              {setUp.length > 0 ? (
+                <>
+                  Set up for {provider.label}:{' '}
+                  <span className="num text-ink">{setUp.map((m) => m.id).join(', ')}</span>. This
+                  Key gets the same limits. Add another model below, or you are done.
+                </>
+              ) : (
+                'Next, set up a model for it: the assistant cannot use the Key without one.'
+              )}
+            </Notice>
+            <h3 className="text-title text-ink">Set up a model</h3>
+            <ModelSetupForm
+              key={saves}
+              provider={provider}
+              onSaved={() => setSaves((n) => n + 1)}
+            />
+          </div>
         ) : (
           <form
             id="llm-add-key"
@@ -229,12 +255,12 @@ function AddKeyDialog({
             {provider.paid && (
               <Field
                 label="Daily request cap"
-                hint="Alpha Harness stops at this many requests a day on this key, and starts again at midnight Pacific. You can change it later."
+                hint="Alpha Harness stops at this many requests a day on this key, and starts again when each model's day resets. You can change it later."
               >
                 <Input
                   type="number"
                   min={1}
-                  step={10}
+                  step={1}
                   value={cap}
                   onChange={(e) => setCap(e.target.value)}
                   aria-invalid={!capReady}

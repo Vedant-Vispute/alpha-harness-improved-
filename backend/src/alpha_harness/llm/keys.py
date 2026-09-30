@@ -8,8 +8,7 @@ Keys are sealed with the same sealer as the BRAIN password and never leave the b
 UI only receives a masked hint.
 """
 
-from __future__ import annotations
-
+import asyncio
 import hashlib
 from typing import TYPE_CHECKING, Any
 
@@ -18,7 +17,7 @@ from sqlalchemy import select
 
 from ..db.models import ApiKey, utcnow
 from . import providers
-from .budget import Headroom, Ledger, seconds_until_reset
+from .budget import Headroom, Ledger, model_reset
 
 if TYPE_CHECKING:
     from ..db.sqlite import Database
@@ -59,23 +58,23 @@ class NoKeysError(LLMError):
 class BudgetExhaustedError(LLMError):
     """Every key is out of budget for this model."""
 
-    def __init__(self, model: str, states: list[Headroom]) -> None:
+    def __init__(self, model: ModelInfo, states: list[Headroom]) -> None:
         daily = [s for s in states if s.blocked_by == "requests_per_day"]
         if daily and len(daily) == len(states):
-            hours = seconds_until_reset() / 3600
+            hours = model_reset(model) / 3600
             message = (
-                f"Every key has used its daily allowance of {model}. It resets in about "
-                f"{hours:.0f} hours (midnight Pacific). Switch to a model with a larger "
-                "daily budget, or add another key."
+                f"Every key has used its daily allowance of {model.id}. It resets in about "
+                f"{hours:.0f} hours (midnight, {model.reset_timezone}). Switch to a model with "
+                "a larger daily budget, or add another key."
             )
         else:
             wait = min((s.retry_after for s in states), default=60.0)
             message = (
-                f"Every key is at its per-minute limit for {model}. Try again in about "
+                f"Every key is at its per-minute limit for {model.id}. Try again in about "
                 f"{wait:.0f} seconds."
             )
         super().__init__(message)
-        self.model = model
+        self.model = model.id
         self.states = states
         self.retry_after = min((s.retry_after for s in states), default=60.0)
         self.daily = bool(daily) and len(daily) == len(states)
@@ -120,6 +119,9 @@ class KeyStore:
         self.db = db
         self.sealer = sealer
         self.ledger = ledger
+        # ponytail: one lock for every model; per-model locks if choosing ever shows up in a
+        # profile. Held only for local reads, milliseconds.
+        self._choosing = asyncio.Lock()
 
     # -- storage ---------------------------------------------------------
 
@@ -239,14 +241,23 @@ class KeyStore:
 
     # -- rotation --------------------------------------------------------
 
-    async def choose(self, model: ModelInfo, *, estimated_tokens: int, skip: set[int]) -> int:
-        """The key with the most daily budget left for this model, other than those in
-        ``skip``: the ones this request has already tried.
+    async def choose(self, model: ModelInfo, *, skip: set[int]) -> int:
+        """Take a request slot on the key with the most daily budget left for this model,
+        other than those in ``skip``: the ones this request has already tried.
 
         Most-remaining-first rather than round-robin, with ties broken on key id so the
         choice is reproducible. A key whose last call failed goes after the rest, so a dead
         one costs a round trip only when nothing else is left.
+
+        Reading the budget and taking the slot happen under one lock: the reads can wait on
+        the database, and two callers reading between them would both take the last slot.
         """
+        async with self._choosing:
+            key_id = await self._pick(model, skip)
+            self.ledger.sent(key_id, model)
+            return key_id
+
+    async def _pick(self, model: ModelInfo, skip: set[int]) -> int:
         # Provider first, budget second. A Groq key cannot answer for a Gemini model, so
         # offering it would spend a retry to learn something already known.
         rows = [r for r in await self.list_keys() if r.enabled and r.provider == model.provider]
@@ -254,15 +265,12 @@ class KeyStore:
             raise NoKeysError(model.provider)
 
         states: list[Headroom] = [
-            await self.ledger.allows(
-                row.id, model, estimated_tokens=estimated_tokens, cap=row.daily_limit
-            )
-            for row in rows
+            await self.ledger.headroom(row.id, model, cap=row.daily_limit) for row in rows
         ]
 
         usable = [s for s in states if s.available and s.key_id not in skip]
         if not usable:
-            raise BudgetExhaustedError(model.id, states)
+            raise BudgetExhaustedError(model, states)
 
         failing = {r.id for r in rows if r.last_error}
         best = max(usable, key=lambda s: (s.key_id not in failing, s.daily_remaining, -s.key_id))
@@ -271,37 +279,37 @@ class KeyStore:
     async def status(self, registry: ModelRegistry) -> dict[str, Any]:
         """Keys, their health, and what budget remains — the whole picture in one call."""
         rows = await self.list_keys()
-        usage = await self.ledger.usage([r.id for r in rows])
+        models = registry.all()
+        usage = await self.ledger.usage(
+            {r.id: r.provider for r in rows}, {(m.provider, m.id): m for m in models}
+        )
         by_key: dict[int, list[dict[str, Any]]] = {}
         for entry in usage:
             by_key.setdefault(int(entry["keyId"]), []).append(entry)
 
         configured_providers = {r.provider for r in rows}
-        text_models = registry.all("text")
         budget: list[dict[str, Any]] = []
-        for model in text_models:
+        for model in models:
             if model.provider not in configured_providers:
                 continue
             usable = [r for r in rows if r.enabled and r.provider == model.provider]
             remaining = 0
-            # Per key, because a paid key's ceiling is the user's own and two of them need
-            # not agree. For the free providers every key shares the model's number and this
-            # collapses back to it.
-            # Starts at the model's own number so a model whose keys are all disabled still
-            # shows what it would allow, rather than a ceiling of zero.
-            per_key = model.rpd
+            allowed = 0
+            # Per key, because a paid key's cap is its owner's own and two of them need not
+            # agree. For the free providers every key shares the model's number.
             for row in usable:
                 state = await self.ledger.headroom(row.id, model, cap=row.daily_limit)
                 remaining += state.daily_remaining
-                per_key = max(per_key, state.requests_per_day)
+                allowed += state.requests_per_day
             budget.append(
                 {
                     "model": model.id,
-                    "label": model.label,
+                    "ref": model.ref,
                     "provider": model.provider,
-                    "perKeyPerDay": per_key,
+                    "allowedToday": allowed,
                     "remainingToday": remaining,
-                    "bulk": model.bulk,
+                    "resetTimezone": model.reset_timezone,
+                    "resetInSeconds": round(model_reset(model)),
                 }
             )
 
@@ -309,6 +317,6 @@ class KeyStore:
             "keys": [serialise(r, by_key.get(r.id, [])) for r in rows],
             "enabled": sum(1 for r in rows if r.enabled),
             "budget": budget,
-            "resetInSeconds": round(seconds_until_reset()),
-            "quotaTimezone": "America/Los_Angeles",
+            # The soonest any model's day turns over; each budget row carries its own.
+            "resetInSeconds": min((b["resetInSeconds"] for b in budget), default=None),
         }

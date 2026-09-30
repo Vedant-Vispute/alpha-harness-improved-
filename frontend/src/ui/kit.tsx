@@ -8,6 +8,7 @@ import { Checkbox as BaseCheckbox } from '@base-ui/react/checkbox'
 import { mergeProps } from '@base-ui/react/merge-props'
 import { Radio } from '@base-ui/react/radio'
 import { RadioGroup } from '@base-ui/react/radio-group'
+import { Switch as BaseSwitch } from '@base-ui/react/switch'
 import { Toggle } from '@base-ui/react/toggle'
 import { ToggleGroup } from '@base-ui/react/toggle-group'
 import { useRender } from '@base-ui/react/use-render'
@@ -327,6 +328,40 @@ export function Checkbox({
         </label>
       )}
     </span>
+  )
+}
+
+/** An on/off setting that takes effect at once, unlike a Checkbox, which is a choice in a form
+ *  submitted later. On reads in the same lavender as a checked box. */
+export function Switch({
+  checked,
+  onChange,
+  disabled,
+  ...props
+}: {
+  checked: boolean
+  onChange: (checked: boolean) => void
+  disabled?: boolean | undefined
+  'aria-label'?: string | undefined
+  'aria-labelledby'?: string | undefined
+  'aria-describedby'?: string | undefined
+}) {
+  return (
+    <BaseSwitch.Root
+      checked={checked}
+      disabled={disabled}
+      onCheckedChange={onChange}
+      className={cn(
+        'relative inline-flex h-5 w-9 shrink-0 items-center rounded-pill border p-0.5 transition-colors',
+        'border-(--field-border) bg-surface-3',
+        'data-[checked]:border-(--btn-primary-bg) data-[checked]:bg-(--btn-primary-bg)',
+        'data-[disabled]:border-(--field-border-disabled) data-[disabled]:opacity-60',
+        !disabled && 'cursor-pointer hover:border-(--field-border-hover)',
+      )}
+      {...props}
+    >
+      <BaseSwitch.Thumb className="size-3.5 rounded-pill bg-ink-muted transition-transform data-[checked]:translate-x-4 data-[checked]:bg-(--btn-primary-text)" />
+    </BaseSwitch.Root>
   )
 }
 

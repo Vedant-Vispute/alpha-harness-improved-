@@ -12,10 +12,15 @@ export const useProviders = () =>
   })
 export const useModels = () => useQuery({ queryKey: ['ai', 'models'], queryFn: llm.models })
 
+/** After a Key or a model changes: everything that shows models or what is left of them. */
 export function useInvalidateKeys() {
   const queryClient = useQueryClient()
   return () => {
     void queryClient.invalidateQueries({ queryKey: ['ai', 'keys'] })
+    void queryClient.invalidateQueries({ queryKey: ['ai', 'models'] })
+    void queryClient.invalidateQueries({ queryKey: ['ai', 'chat', 'options'] })
+    void queryClient.invalidateQueries({ queryKey: ['ai', 'offered'] })
+    void queryClient.invalidateQueries({ queryKey: ['power-pool-lab', 'options'] })
     void queryClient.invalidateQueries({ queryKey: ['today'] })
   }
 }

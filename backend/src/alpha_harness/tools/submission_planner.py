@@ -25,8 +25,6 @@ differ by a tenth or two, so that window cannot rank them. The last fifth report
 choose.
 """
 
-from __future__ import annotations
-
 from bisect import bisect_left
 from datetime import date
 from typing import TYPE_CHECKING, Any

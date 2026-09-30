@@ -11,8 +11,6 @@ term statistics are better drawn from the whole catalog than from one slice. Nar
 market stays the caller's job.
 """
 
-from __future__ import annotations
-
 import re
 from typing import TYPE_CHECKING
 

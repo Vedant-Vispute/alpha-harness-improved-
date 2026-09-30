@@ -8,8 +8,6 @@ dicts: bulk reads where validating every row costs too much (``list_data_fields_
 open-ended or undocumented blobs the callers read selectively.
 """
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -35,7 +33,7 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-# Endpoints pinned to a non-default Accept version (docs/wqb-api/03-conventions.md).
+# Endpoints pinned to a non-default Accept version.
 V_SETTINGS_SCHEMA = "4.0"  # OPTIONS /simulations
 #: GET /data-fields with all four scope params. Unpaginated in practice: tens of thousands
 #: of rows arrive in one response.
@@ -146,7 +144,7 @@ class BrainEndpoints:
 
         ``actions.POST.settings.children`` is the common tree; each type's
         ``settings.children`` overrides it, and region, universe, delay and neutralization
-        live only there (``docs/wqb-api/schemas/simulation.md``, "Merging rule").
+        live only there.
 
         The region-agnostic tree is folded into the same schema rather than kept apart:
         ``universe``, ``delay`` and ``neutralization`` are keyed *by region*, so it only adds
@@ -306,7 +304,7 @@ class BrainEndpoints:
     async def list_data_fields_all(self, **params: Any) -> list[BulkField]:
         """Every field in one scope, in one request.
 
-        Needs all four scope parameters and ``version=3.0`` (``docs/wqb-api/endpoints/data.md``).
+        Needs all four scope parameters and ``version=3.0``.
         The body is taken as bytes and decoded by msgspec: a market is ~40 MB, and the
         standard library's parser spent that on the event loop.
         """

@@ -12,6 +12,7 @@ import { errorMessage } from '@/api/http'
 import { cn } from '@/lib/cn'
 import { DASH, fmt, isNum } from '@/lib/format'
 import { useDebounced } from '@/lib/use-debounced'
+import { DetailSheet } from '@/screens/pool/detail'
 import { AlphaActionsMenu, AstInspector, OpenInBrain, RecheckButton } from '@/screens/pool/shared'
 import {
   Badge,
@@ -56,6 +57,7 @@ export function AlphaScreen() {
   const key = ['alpha', alphaId, 'page']
   const page = useQuery({ queryKey: key, queryFn: () => api.page(alphaId), retry: false })
   const [refreshing, setRefreshing] = useState(false)
+  const [stored, setStored] = useState(false)
 
   const refresh = async () => {
     setRefreshing(true)
@@ -80,7 +82,16 @@ export function AlphaScreen() {
         Alphas
       </Link>
       {page.isPending && <Skeleton className="h-[40rem]" label={`Loading ${alphaId} from BRAIN`} />}
-      {page.isError && <ErrorNotice error={page.error} title={`Could not load ${alphaId}`} />}
+      {page.isError && (
+        <>
+          <ErrorNotice error={page.error} title={`Could not load ${alphaId}`} />
+          {/* This screen reads BRAIN; the vault's own copy still opens while BRAIN is away. */}
+          <Button className="w-fit" variant="secondary" onClick={() => setStored(true)}>
+            Show the stored copy
+          </Button>
+          <DetailSheet alphaId={stored ? alphaId : null} onClose={() => setStored(false)} />
+        </>
+      )}
       {page.data && (
         // Keyed so moving to another Alpha remounts: a still-running correlation or
         // comparison otherwise stored its result, spinner and error on the new Alpha.

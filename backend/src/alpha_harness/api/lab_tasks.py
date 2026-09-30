@@ -6,8 +6,6 @@ continued, cloned or removed. It is never stopped: anything that would have ende
 pauses it instead, to be resumed where it left off or cloned fresh.
 """
 
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import json

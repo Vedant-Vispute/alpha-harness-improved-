@@ -10,8 +10,6 @@ passed is queued again: by then a simulation BRAIN accepted would have finished,
 likeliest story is that the request never ran.
 """
 
-from __future__ import annotations
-
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta

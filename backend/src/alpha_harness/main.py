@@ -9,8 +9,8 @@ The frontend talks to this over HTTP + WebSocket only.
 Credentials never leave the backend.
 """
 
-from __future__ import annotations
-
+import asyncio
+import contextlib
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -35,6 +35,7 @@ from .api import (
     llm,
     portfolio,
     power_pool_lab,
+    preferences,
     prompts,
     quarter,
     region_agnostic_lab,
@@ -102,9 +103,18 @@ def create_app() -> FastAPI:
         state = AppState()
         app.state.harness = state
         await state.startup()
+
+        async def install(release: updates.Release) -> None:
+            updates.request(release.version, wheel_url=release.wheel_url)
+            await stop_server(getattr(app.state, "server", None))
+
+        watcher = asyncio.create_task(updates.watch(state.engine.idle, install), name="updates")
         try:
             yield
         finally:
+            watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watcher
             await state.shutdown()
 
     app = FastAPI(
@@ -165,6 +175,7 @@ def create_app() -> FastAPI:
     app.include_router(region_agnostic_lab.router)
     app.include_router(chat.router)
     app.include_router(update.router)
+    app.include_router(preferences.router)
     app.include_router(ws.router)
 
     @app.get("/api/health", tags=["meta"])

@@ -5,8 +5,6 @@ local vault, and nothing reads them from the environment: seeding them from a fi
 let a checked-out repository sign in as its owner.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from pathlib import Path
 

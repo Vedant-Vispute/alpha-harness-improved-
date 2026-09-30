@@ -8,6 +8,7 @@ import { toast } from 'sonner'
 import { errorMessage } from '@/api/http'
 import type { Scope } from '@/api/types'
 import { fmt } from '@/lib/format'
+import { REGION_AGNOSTIC, regionLabel } from '@/lib/scope'
 import { useDebounced } from '@/lib/use-debounced'
 import { useRefetchOn } from '@/lib/ws'
 import {
@@ -69,10 +70,13 @@ const COLUMNS: Column<AlphaRow>[] = [
   {
     key: 'market',
     header: 'Region · Universe',
-    width: '170px',
+    width: '190px',
     cell: (r) => (
       <span className="num text-ink-subtle">
-        {r.region ?? '—'} · {r.universe ?? '—'} · D{r.delay ?? '—'}
+        {r.region ?? '—'}
+        {/* A region-agnostic seed's figures are one region's: name it. */}
+        {r.standingRegion && <span className="text-ink"> → {r.standingRegion}</span>} ·{' '}
+        {r.universe ?? '—'} · D{r.delay ?? '—'}
       </span>
     ),
   },
@@ -474,9 +478,16 @@ function SeedPickBar({ market }: { market: Scope }) {
         boxed
         size="sm"
         label="Market"
-        value={`${market.region} · D${market.delay} · ${market.universe}`}
+        value={`${regionLabel(market.region)} · D${market.delay} · ${market.universe}`}
       />
-      <span className="flex-1" />
+      {market.region === REGION_AGNOSTIC ? (
+        <span className="min-w-60 flex-1 text-body-compact text-pretty text-ink-subtle">
+          Each region-agnostic Alpha shows the region it is scored on: its second-best, since BRAIN
+          submits one only when two regions pass.
+        </span>
+      ) : (
+        <span className="flex-1" />
+      )}
       {count > MAX_SEEDS && (
         <span className="text-body-compact text-status-warning">
           At most {fmt.int(MAX_SEEDS)} seeds.

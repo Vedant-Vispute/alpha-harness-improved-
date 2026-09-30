@@ -40,20 +40,20 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
       # The pnpm version comes from `packageManager` in the frontend's package.json. Said
       # here because the action looks in the repository root by default, and this repository
       # keeps no package.json there — naming a version inline instead would be a second
       # place to keep in step with the lockfile.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           package_json_file: frontend/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version-file: frontend/.node-version
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
@@ -95,34 +95,20 @@ jobs:
           print(f"version {raw}, prerelease {parsed.is_prerelease}")
           PY
 
-      # The same gate as `lefthook run check`, so a tag cannot ship what a commit could not.
-      # Run against the committed lockfile, before anything is stamped: measured, uv is happy
-      # to sync a pyproject whose version has moved off uv.lock, but gating the tree exactly
-      # as it sits in git does not depend on it staying happy.
+      # The ci.yml gate itself, so a tag cannot ship what a commit could not. Run against the
+      # committed lockfile, before anything is stamped: measured, uv is happy to sync a
+      # pyproject whose version has moved off uv.lock, but gating the tree exactly as it sits
+      # in git does not depend on it staying happy.
       - run: cd backend && uv sync --frozen
-      - run: cd backend && uv run ruff check . && uv run ruff format --check . && uv run basedpyright
-      # The launcher sits outside the package, so the line above does not reach it — and it
-      # is the one file here that ships to users as a binary nothing else can check.
-      - run: cd backend && uv run ruff check ../launcher && uv run ruff format --check ../launcher
-      - run: cd frontend && pnpm install --frozen-lockfile && pnpm check
+      - run: cd frontend && pnpm install --frozen-lockfile
+      - run: uvx lefthook@2.1.14 run check
 
       # Into the package, so one wheel serves the whole app with no Node at runtime.
       - run: cd frontend && pnpm build
 
-      # Only now, and only for the artefacts.
+      # Only now, and only for the artefacts. `--frozen` leaves uv.lock exactly as it was gated.
       - name: Stamp the version into pyproject
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import os, pathlib
-          path = pathlib.Path("backend/pyproject.toml")
-          text = path.read_text(encoding="utf-8")
-          old = 'version = "0.0.0.dev0"'
-          if old not in text:
-              raise SystemExit(f"::error::{old!r} not found in pyproject.toml")
-          path.write_text(text.replace(old, f'version = "{os.environ["VERSION"]}"', 1), encoding="utf-8")
-          PY
-          grep -m1 '^version' backend/pyproject.toml
+        run: cd backend && uv version --frozen "$VERSION"
 
       - run: cd backend && uv build --wheel
       # With hashes: the launcher installs every dependency through this file, and uv refuses
@@ -130,7 +116,7 @@ jobs:
       # in it (`--no-emit-project`) and stays unhashed, so this covers the PyPI leg only.
       - run: cd backend && uv export --frozen --no-dev --no-emit-project -o dist/constraints.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheel
           path: backend/dist/*
@@ -143,21 +129,21 @@ jobs:
     env:
       VERSION: ${{ needs.wheel.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
-
+      - uses: actions/checkout@v7
       # Pinned, not `latest`: this binary ships inside the exe, so an upstream release must
-      # never change what a re-run of an old tag produces.
-      - name: Fetch uv.exe
-        shell: bash
+      # never change what a re-run of an old tag produces. The action checks its checksum,
+      # and the same uv runs the Python that freezes the launcher below.
+      - id: uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.12.18"
+          python-version: "3.14"
+      - name: Bundle uv.exe
+        shell: pwsh
         env:
-          UV_VERSION: "0.12.17"
+          UV_PATH: ${{ steps.uv.outputs.uv-path }}
         run: |
-          curl -fsSL -o uv.zip \
-            "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-pc-windows-msvc.zip"
-          unzip -j uv.zip uv.exe -d launcher/
+          Copy-Item $env:UV_PATH launcher/uv.exe
           ./launcher/uv.exe --version
 
       # A fresh machine installs exactly the version this launcher shipped with; the in-app
@@ -170,7 +156,7 @@ jobs:
       - name: Stamp the version
         shell: bash
         run: |
-          python - <<'PY'
+          uv run --no-project python - <<'PY'
           import os, pathlib
           path = pathlib.Path("launcher/alpha_harness_launcher.py")
           text = path.read_text(encoding="utf-8")
@@ -182,7 +168,6 @@ jobs:
           print(new)
           PY
 
-      - run: pip install pyinstaller==6.22.3
       - name: Build AlphaHarness.exe
         shell: bash
         run: |
@@ -190,13 +175,13 @@ jobs:
           # Windows however bash-shaped the step looks.
           # --icon: the tray reads the running exe's own icon, so this is what puts our
           # mark in the notification area rather than Windows' generic one.
-          pyinstaller --onefile --windowed --name AlphaHarness \
+          uvx --from pyinstaller==6.22.3 pyinstaller --onefile --windowed --name AlphaHarness \
             --add-binary "launcher/uv.exe;." \
             --icon launcher/mark.ico \
             --distpath dist \
             launcher/alpha_harness_launcher.py
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: launcher
           path: dist/AlphaHarness.exe
@@ -205,11 +190,11 @@ jobs:
     needs: [wheel, launcher]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: release
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.version && format('v{0}', inputs.version) || github.ref_name }}
           generate_release_notes: true

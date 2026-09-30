@@ -91,7 +91,7 @@ function poolColumn(by: ReadonlyMap<string, PowerPoolRow>): Column<RankedAlpha> 
 function useWorkflowJob() {
   const live = useLive((s) => s.tasks)
   const polled = useQuery({
-    queryKey: ['tasks', 'background'],
+    queryKey: ['background-tasks'],
     queryFn: tasks.list,
     enabled: live == null,
     refetchInterval: 3000,

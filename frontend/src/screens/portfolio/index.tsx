@@ -85,7 +85,8 @@ function metricColumns<T>(
       key: m.key,
       header: m.label,
       align: 'right',
-      width,
+      // "39.23 bps" is the widest figure; at the shared width it wrapped onto two lines.
+      width: m.key === 'margin' ? 'minmax(100px,1fr)' : width,
       cell: (row) => {
         const value = get(row)?.[m.key]
         return (
@@ -100,7 +101,7 @@ function metricColumns<T>(
 function useSyncTask() {
   const live = useLive((s) => s.tasks)
   const polled = useQuery({
-    queryKey: ['portfolio', 'tasks'],
+    queryKey: ['background-tasks'],
     queryFn: tasks.list,
     enabled: live == null,
     refetchInterval: 3000,
@@ -469,7 +470,15 @@ function MembersTable({
       key: 'pyramid',
       header: 'Pyramid',
       width: '128px',
-      cell: (m) => <span className="mono-metric">{m.pyramids.join(', ') || DASH}</span>,
+      // One line like Classifications: an Alpha in three pyramids wrapped out of its row.
+      cell: (m) => {
+        const pyramids = m.pyramids.join(', ')
+        return (
+          <span className="mono-metric truncate" title={pyramids}>
+            {pyramids || DASH}
+          </span>
+        )
+      },
     },
     { key: 'universe', header: 'Universe', width: '96px', cell: (m) => m.universe ?? DASH },
     {
@@ -491,7 +500,7 @@ function MembersTable({
         )
       },
     },
-    ...metricColumns<PortfolioMember>((m) => m, 'minmax(96px,1fr)'),
+    ...metricColumns<PortfolioMember>((m) => m),
   ]
   return (
     <DataTable

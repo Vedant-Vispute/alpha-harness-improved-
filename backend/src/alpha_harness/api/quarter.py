@@ -1,12 +1,9 @@
 """The quarter BRAIN judges a consultant on.
 
-Levels are evaluated quarterly against three criteria, two of which are countable here
-(``docs/learn/consultant-information/brain-genius``): signals submitted in the quarter, and
-pyramids formulated in it. The third, combined Alpha performance, is BRAIN's own arithmetic
-and is not guessed at.
+Levels are evaluated quarterly against three criteria, two of which are countable here:
+signals submitted in the quarter, and pyramids formulated in it. The third, combined Alpha
+performance, is BRAIN's own arithmetic and is not guessed at.
 """
-
-from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta

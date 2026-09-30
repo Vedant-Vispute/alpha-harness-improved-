@@ -13,8 +13,6 @@ says by how much — so a sampler that understands constraints prefers a nearly-
 over a badly-failing one.
 """
 
-from __future__ import annotations
-
 import math
 from dataclasses import dataclass
 from typing import Any

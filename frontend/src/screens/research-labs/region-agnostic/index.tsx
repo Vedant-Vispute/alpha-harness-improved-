@@ -5,19 +5,21 @@
  */
 
 import { useQuery } from '@tanstack/react-query'
-import { PlusIcon } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { fmt } from '@/lib/format'
+import { useCores } from '@/lib/preferences'
 import { REGION_AGNOSTIC, useScopeOptions } from '@/lib/scope'
+import { useProviderLabel } from '@/screens/ai/shared'
 import type { PickedField } from '@/screens/data/dataset-pick'
 import { PromptPicker, useChosenPrompt } from '@/screens/prompts/picker'
+import { AddTaskButtons, useAddTask } from '@/screens/research-labs/add-task'
 import {
   fieldIdsOf,
   MAX_SIMULATIONS,
   simulationsValid,
-  useAddTask,
   useLabMarket,
   useLabPreview,
 } from '@/screens/research-labs/lab-task'
@@ -63,7 +65,8 @@ interface RegionAgnosticDraft {
   regions: string[]
   /** BRAIN's region-agnostic universe size; each region's universe follows from it. */
   size?: Size
-  cores: number
+  /** `null` until chosen in the form: until then Settings' default applies. */
+  cores: number | null
   simulations: number | null
   model: string | null
   promptId: number | null
@@ -81,7 +84,7 @@ const useDraft = create<RegionAgnosticDraft>()(
       rankBy: null,
       regions: ['USA', 'EUR', 'ASI', 'GLB'],
       size: 'LARGE',
-      cores: 4,
+      cores: null,
       simulations: null,
       model: null,
       promptId: null,
@@ -115,8 +118,10 @@ export function RegionAgnosticLabScreen() {
   }, [draft.universe, firstUniverse])
 
   const models = options.data?.models ?? []
+  const providerLabel = useProviderLabel()
+  const cores = useCores(draft.cores)
   const model =
-    draft.model && models.some((m) => m.id === draft.model)
+    draft.model && models.some((m) => m.ref === draft.model)
       ? draft.model
       : (options.data?.defaultModel ?? null)
   const promptId = useChosenPrompt(PROMPT_KIND, draft.promptId ?? null)
@@ -144,7 +149,7 @@ export function RegionAgnosticLabScreen() {
     model,
     prompt_id: promptId,
     neutralizations: draft.neutralizations,
-    cores: draft.cores,
+    cores,
     simulations: draft.simulations ?? 0,
   }
   const { preview, current } = useLabPreview('region-agnostic-lab', body, regionAgnosticLab.preview)
@@ -162,21 +167,22 @@ export function RegionAgnosticLabScreen() {
       <PageHeader
         title="Region Agnostic Lab"
         description="Region-agnostic fields, written into Alphas by an LLM and run as ordinary simulations in every region that carries them: the same settings but the region, ten to a core. Results come back grouped by Alpha, a row per region."
-        actions={
-          <Button
-            variant="primary"
-            disabled={!ready}
-            loading={add.isPending}
-            onClick={() => add.mutate()}
-          >
-            <PlusIcon />
-            Add Task
-          </Button>
-        }
+        actions={<AddTaskButtons add={add} disabled={!ready} />}
       />
       {options.isError && <ErrorNotice error={options.error} title="Could not load the options" />}
       {options.isSuccess && models.length === 0 && (
-        <Notice tone="warn" title="Add a Key in LLM Integration to use this lab." />
+        <Notice
+          tone="warn"
+          title="This lab needs a model"
+          action={
+            <Button size="sm" render={<Link to="/ai/$tab" params={{ tab: 'models' }} />}>
+              Set up a model
+            </Button>
+          }
+        >
+          Add a Key in LLM Integration and set up a model for it, with the limits your provider
+          shows you.
+        </Notice>
       )}
       <DatasetsPanel {...panel}>
         <div className="flex flex-col gap-4">
@@ -262,14 +268,14 @@ export function RegionAgnosticLabScreen() {
               <Select
                 label="Model"
                 items={models.map((m) => ({
-                  value: m.id,
-                  label: `${m.label} · ${fmt.int(m.remainingToday)} left today`,
+                  value: m.ref,
+                  label: `${m.id} · ${providerLabel(m.provider)} · ${fmt.int(m.remainingToday)} left today`,
                 }))}
                 value={model}
                 onChange={(v) => set({ model: v })}
               />
             </Fieldset>
-            <CoresSetting value={draft.cores} onChange={(cores) => set({ cores })} />
+            <CoresSetting value={cores} onChange={(next) => set({ cores: next })} />
             <SimulationsSetting
               value={draft.simulations}
               max={maxSimulations}

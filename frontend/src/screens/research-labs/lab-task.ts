@@ -1,9 +1,8 @@
-/** What the labs share around a task: its draft, market and datasets, its preview, adding it. */
+/** What the labs share around a task: its draft, market and datasets, and its preview. */
 
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { useEffect, useMemo } from 'react'
-import { toast } from 'sonner'
 import { catalog } from '@/api/catalog'
 import type { Scope } from '@/api/types'
 import { DEFAULT_SCOPE, useScope } from '@/lib/scope'
@@ -23,7 +22,8 @@ export interface LabDraft {
   fields?: PickedField[]
   /** How `fields` were ranked: "Alphas, most first". */
   rankBy?: string | null
-  cores: number
+  /** `null` until chosen in the form: until then Settings' default applies. */
+  cores: number | null
   /** `null` until the user assigns them: a task always has simulations chosen on purpose. */
   simulations: number | null
   decay: number
@@ -40,7 +40,7 @@ export const LAB_DEFAULTS: LabDraft = {
   datasetIds: [],
   fields: [],
   rankBy: null,
-  cores: 4,
+  cores: null,
   simulations: null,
   decay: 0,
   vectorOperators: null,
@@ -157,32 +157,13 @@ export function useLabPreview<Body, Plan>(
   return { preview: query, current: settled === key && !query.isFetching }
 }
 
-/** Adds a task, then offers the way to it. */
-export function useAddTask<Value = void>(
-  add: (value: Value) => Promise<unknown>,
-  done = 'Task Added',
-) {
-  const navigate = useNavigate()
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: add,
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['lab-tasks'] })
-      void queryClient.invalidateQueries({ queryKey: ['today'] })
-      toast.success(done, {
-        action: { label: 'Open Tasks', onClick: () => void navigate({ to: '/tasks' }) },
-      })
-    },
-  })
-}
-
 /** `vec_avg` until the user chooses vector operators. */
 export function vectorOperatorsOf(draft: LabDraft, available: string[] | undefined): string[] {
   return draft.vectorOperators ?? (available?.includes('vec_avg') ? ['vec_avg'] : [])
 }
 
 /** The market and settings both labs send to preview a task. */
-export function labBody(draft: LabDraft, vectorOperators: string[]) {
+export function labBody(draft: LabDraft, vectorOperators: string[], cores: number) {
   return {
     region: draft.region,
     delay: draft.delay,
@@ -192,7 +173,7 @@ export function labBody(draft: LabDraft, vectorOperators: string[]) {
     vector_operators: vectorOperators,
     neutralizations: draft.neutralizations,
     decay: draft.decay,
-    cores: draft.cores,
+    cores,
   }
 }
 

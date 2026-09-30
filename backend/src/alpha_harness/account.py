@@ -7,8 +7,6 @@ The session cookie jar is persisted deliberately: signing in costs a proof-of-wo
 and counts against a lockout budget, so a backend restart must not trigger a new one.
 """
 
-from __future__ import annotations
-
 import asyncio
 import json
 from datetime import timedelta
@@ -251,7 +249,7 @@ class AuthService:
                 return None
             try:
                 return json.loads(self.sealer.open(row.cookies_sealed, context=COOKIE_CONTEXT))
-            except (SealError, ValueError):
+            except SealError, ValueError:
                 log.warning("session.cookies_unreadable")
                 return None
 

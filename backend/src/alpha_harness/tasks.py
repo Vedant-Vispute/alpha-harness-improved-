@@ -7,8 +7,6 @@ Deliberately in-memory: a task is a thing happening *now*, and a task list that 
 the work it describes would be worse than none.
 """
 
-from __future__ import annotations
-
 import asyncio
 import time
 import uuid

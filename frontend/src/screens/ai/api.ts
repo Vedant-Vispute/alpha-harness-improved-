@@ -26,6 +26,19 @@ export interface AddKeyRequest {
   daily_limit?: number | null
 }
 
+export type OfferedModels = Schemas['OfferedModels']
+
+export interface SetModelRequest {
+  provider: string
+  model: string
+  requests_per_minute: number
+  requests_per_day: number
+  /** IANA time zone whose midnight starts the provider's new day for this model. */
+  reset_timezone: string
+  /** Most tokens one Power Pool prompt may use; null for the default. */
+  max_prompt_tokens: number | null
+}
+
 export type KeyCheck = Schemas['KeyWorks'] | Schemas['KeyFailed']
 export type Reasoning = Schemas['ChatOptions']['defaultReasoning']
 export type ChatOptions = Schemas['ChatOptions']
@@ -76,6 +89,14 @@ export interface DownloadedScope {
 export const llm = {
   providers: () => http.get<LLMProvidersResponse>('/api/llm/providers'),
   models: () => http.get<LLMModels>('/api/llm/models'),
+  /** Sets a model up, or changes its limits. 400 llm_error when the id is another provider's. */
+  setModel: (body: SetModelRequest) => http.put<LLMModel>('/api/llm/models', body),
+  /** Query parameters, because model ids carry slashes. */
+  removeModel: (provider: string, model: string) =>
+    http.del<void>(`/api/llm/models${qs({ provider, model })}`),
+  /** Asked live of the provider's first enabled Key. */
+  offered: (provider: string) =>
+    http.get<OfferedModels>(`/api/llm/providers/${encodeURIComponent(provider)}/models`),
   keys: () => http.get<LLMKeyStatus>('/api/llm/keys'),
   /** 400 llm_error for a duplicate key. */
   addKey: (body: AddKeyRequest) => http.post<LLMKey>('/api/llm/keys', body),
@@ -102,9 +123,6 @@ export const chat = {
   say: (body: ChatSayRequest) => http.post<ChatReply>('/api/chat', body),
   downloadedScopes: () => http.get<DownloadedScope[]>('/api/catalog/scopes'),
 }
-
-/** Today's day in the quota's timezone, as usage rows spell it. */
-export const quotaDay = (timeZone: string) => new Date().toLocaleDateString('en-CA', { timeZone })
 
 /** The extra facts a 429 llm_budget_exhausted carries: when to retry, and what is left. */
 export function budgetDetail(error: unknown): string | null {

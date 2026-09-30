@@ -8,8 +8,6 @@ Nothing here raises HTTP errors: a problem is returned as a sentence, and the ro
 decides whether it blocks.
 """
 
-from __future__ import annotations
-
 import random
 from typing import TYPE_CHECKING, Any
 
@@ -102,7 +100,7 @@ async def account_operators(state: Any, *, refresh: bool) -> list[dict[str, Any]
     if refresh or not cached:
         try:
             return await state.metadata.refresh_operators()
-        except (BrainError, ValidationError):
+        except BrainError, ValidationError:
             return cached or []
     return cached
 

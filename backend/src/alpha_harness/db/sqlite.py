@@ -14,9 +14,9 @@ with no default: nothing writes that one, so it blocks every insert into its tab
 is dropped because nothing reads it either.
 """
 
-from __future__ import annotations
-
-from contextlib import asynccontextmanager
+import re
+import sqlite3
+from contextlib import asynccontextmanager, closing
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -85,6 +85,35 @@ class Database:
 
     async def dispose(self) -> None:
         await self._engine.dispose()
+
+
+#: Snapshots kept, one per version that started against this database.
+SNAPSHOTS_KEPT = 3
+
+
+def snapshot(path: Path, version: str) -> Path | None:
+    """Copy the database aside the first time ``version`` starts, before it migrates.
+
+    Migration can drop columns, and falling back to the previous build restores its code
+    but not this file. SQLite's backup API rather than a file copy, which can tear a WAL
+    database. Returns the new snapshot, or ``None`` when there was nothing to do.
+    """
+    if not path.exists():
+        return None
+    folder = path.parent / "backups"
+    target = folder / f"{path.stem}-before-{re.sub(r'[^\w.+-]', '_', version)}.db"
+    if target.exists():
+        return None
+    folder.mkdir(mode=0o700, exist_ok=True)
+    partial = target.with_suffix(".partial")
+    with closing(sqlite3.connect(path)) as source, closing(sqlite3.connect(partial)) as copy:
+        source.backup(copy)
+    partial.replace(target)
+    older = sorted(folder.glob(f"{path.stem}-before-*.db"), key=lambda p: p.stat().st_mtime)
+    for stale in older[:-SNAPSHOTS_KEPT]:
+        stale.unlink()
+    log.info("db.snapshot", path=str(target))
+    return target
 
 
 # --- migration -------------------------------------------------------------------

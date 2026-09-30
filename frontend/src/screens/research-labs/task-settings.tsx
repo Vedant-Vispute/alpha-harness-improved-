@@ -4,6 +4,7 @@ import { DatabaseIcon, XIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { cn } from '@/lib/cn'
 import { DASH, fmt } from '@/lib/format'
+import { useCores } from '@/lib/preferences'
 import { isRegionAgnostic, regionLabel, useScopeOptions } from '@/lib/scope'
 import type { PickedField } from '@/screens/data/dataset-pick'
 import { NeutralizationPicker } from '@/screens/research-labs/neutralization'
@@ -233,6 +234,7 @@ export function SettingsPanel({
   error: unknown
 }) {
   const simulations = draft.simulations
+  const cores = useCores(draft.cores)
   const showVector = (plan?.fields.vector ?? 0) > 0 || (plan?.leftOut.vector ?? 0) > 0
   // BRAIN's own legal list for this market, which is wider than the four a lab searches by
   // default — picking any of them is what tells the lab to search those instead.
@@ -247,7 +249,7 @@ export function SettingsPanel({
     <Panel title="Settings">
       <div className="flex flex-col gap-4">
         <div className="flex flex-wrap items-start gap-x-8 gap-y-4">
-          <CoresSetting value={draft.cores} onChange={(cores) => set({ cores })} />
+          <CoresSetting value={cores} onChange={(next) => set({ cores: next })} />
           <SimulationsSetting
             value={simulations}
             max={maxSimulations}

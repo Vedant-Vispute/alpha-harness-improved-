@@ -6,8 +6,7 @@ correlation is Pearson over daily PnL on the days both Alphas traded, over BRAIN
 window, which :mod:`tools.submission_planner` already reproduces to four decimals.
 
 Which Alphas this applies to is BRAIN's own call, read off its ``POWER_POOL_CORRELATION``
-check (``vault.yields.is_power_pool``). Two rules then decide eligibility, both from
-``docs/learn/consultant-information/getting-started-power-pool-alphas``:
+check (``vault.yields.is_power_pool``). Two rules then decide eligibility, both BRAIN's:
 
 - Power Pool Correlation must be below the planner's :data:`CEILING`.
 - Above it, the Alpha needs a Sharpe at least :data:`ESCAPE` times that of **every**
@@ -22,8 +21,6 @@ Scope is the region, and only the region. Measured against BRAIN's own endpoint:
 candidate is correlated against TOP500 and TOP2000 members alike, and a USA **D0** candidate
 against the USA D1 pool. Delay and universe are not part of the bucket.
 """
-
-from __future__ import annotations
 
 from bisect import bisect_left
 from typing import TYPE_CHECKING, Any

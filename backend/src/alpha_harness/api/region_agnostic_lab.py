@@ -27,7 +27,6 @@ from ..labs.launch import (
     synced_universes,
 )
 from ..labs.params import REGION_AGNOSTIC_SAMPLER, RegionAgnosticParams
-from ..llm.registry import DEFAULT_MODEL
 from ..llm.text import estimate_tokens
 from ..schemas import Out
 from .deps import State, refuse
@@ -114,11 +113,10 @@ async def options(
     state: State, delay: Annotated[int, Query(ge=0, le=1)] = 1
 ) -> RegionAgnosticOptions:
     models = await llm_models(state)
-    ids = [m["id"] for m in models]
     return RegionAgnosticOptions.model_validate(
         {
             "models": models,
-            "defaultModel": DEFAULT_MODEL if DEFAULT_MODEL in ids else (ids[0] if ids else None),
+            "defaultModel": models[0]["ref"] if models else None,
             "sizes": power_pool.RA_UNIVERSES,
             "regions": await _regions(state, delay),
             "maxSimulations": search.MAX_SIMULATIONS,
@@ -137,11 +135,15 @@ async def _plan(body: RegionAgnosticRequest, state: Any) -> dict[str, Any]:
             "Choose datasets or fields in the Data Explorer's All Regions market: tick whole "
             "datasets in More filters, or single fields in the table."
         )
-    models = {m["id"]: m for m in await llm_models(state)}
-    model_id = body.model or DEFAULT_MODEL
-    info = state.llm.registry.get(model_id)
-    if model_id not in models or info is None:
-        problems.append(f"{model_id} can't run: no enabled Key for it. Add one in LLM Integration.")
+    models = {m["ref"]: m for m in await llm_models(state)}
+    ref = body.model or next(iter(models), "")
+    info = state.llm.registry.get(ref)
+    if not ref:
+        problems.append("No model is set up. Set one up under LLM Integration › Models.")
+    elif info is None:
+        problems.append(f"{ref} is not set up. Set it up under LLM Integration › Models.")
+    elif info.ref not in models:
+        problems.append(f"{info.id} can't run: no enabled Key for it. Add one in LLM Integration.")
 
     offered = {r["region"]: r for r in await _regions(state, body.delay)}
     regions = [r for r in dict.fromkeys(body.regions) if r in offered]
@@ -213,7 +215,7 @@ async def _plan(body: RegionAgnosticRequest, state: Any) -> dict[str, Any]:
                 )
             if info is not None and operators:
                 user, shown = power_pool.user_prompt(
-                    ctx, operators, run, "None yet.", 0, power_pool.budget_for(info), system
+                    ctx, operators, run, "None yet.", 0, info.prompt_tokens, system
                 )
                 prompt = {
                     "name": prompt_name,
@@ -223,17 +225,18 @@ async def _plan(body: RegionAgnosticRequest, state: Any) -> dict[str, Any]:
                 }
                 if ctx.fields and shown < min(10, len(ctx.fields)):
                     problems.append(
-                        f"The prompt does not fit {info.label}'s tokens per minute. "
-                        "Choose another model."
+                        f"Only {shown} of the fields fit in {info.id}'s "
+                        f"{info.prompt_tokens:,} prompt tokens, too few to work with. Raise its "
+                        "Max Prompt Tokens, or choose fewer fields."
                     )
     # Each written Alpha is a simulation per region, so a call fills more of the target.
     per_call = power_pool.PER_CALL * max(1, len(markets))
     calls = -(-body.simulations // per_call)
-    if model_id in models and calls > models[model_id]["remainingToday"]:
+    left = models[info.ref]["remainingToday"] if info and info.ref in models else None
+    if info is not None and left is not None and calls > left:
         warnings.append(
-            f"About {calls:,} LLM calls; {model_id} has "
-            f"{models[model_id]['remainingToday']:,} left today, "
-            "so the task waits for the reset at midnight Pacific."
+            f"About {calls:,} LLM calls; {info.id} has {left:,} left today, "
+            f"so the task waits for its day to reset at midnight, {info.reset_timezone}."
         )
     return {
         "fields": fields,
@@ -245,7 +248,7 @@ async def _plan(body: RegionAgnosticRequest, state: Any) -> dict[str, Any]:
         "problems": problems,
         "warnings": warnings,
         "run": run,
-        "model": model_id,
+        "model": info.ref if info else ref,
         "promptName": prompt_name,
         "system": system,
     }

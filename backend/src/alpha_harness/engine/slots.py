@@ -10,8 +10,6 @@ of a platform id, and :class:`~alpha_harness.engine.tracker.SimulationTracker` p
 parent until it lists its children.
 """
 
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import dataclasses
@@ -43,11 +41,10 @@ from .lifecycle import (
     cancel_after_lost_race,
     describe_fields,
     extract_simulation_id,
+    finish,
     hash_payload,
     new_record,
-    read_outcome,
     record_launch,
-    remember,
     transition,
 )
 from .packer import (
@@ -60,7 +57,6 @@ from .packer import (
     match_children,
     pack,
 )
-from .tracker import DEFAULT_POLL_SECONDS
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -122,6 +118,10 @@ class BatchEngine:
         #: send would fail the same way, and work must never be rejected for it.
         self._session_lost = False
         self._task: asyncio.Task[None] | None = None
+        #: Lend cores no task holds to tasks with more work than their own (Settings).
+        self.lend_idle_cores = False
+        #: Ask the OS not to sleep while work is pending (Settings).
+        self.keep_awake = True
         #: Set when the daily cap is hit. Nothing is submitted until it clears, because
         #: retrying before the US-Eastern reset cannot succeed.
         self._daily_limit_hit = False
@@ -130,9 +130,6 @@ class BatchEngine:
         self._enqueue_lock = asyncio.Lock()
         #: Reads finished batches back beside the scheduling round; at most one at a time.
         self._expansion: asyncio.Task[None] | None = None
-        #: Child platform id -> monotonic time its next read is due. Losing it on restart
-        #: only means one immediate read, as with the tracker's own schedule.
-        self._child_next_read: dict[str, float] = {}
         #: Child platform id -> (body, outcome) of a finished child not yet written to its
         #: row, because its batch still has children running.
         self._child_results: dict[str, tuple[dict[str, Any], Outcome]] = {}
@@ -163,6 +160,16 @@ class BatchEngine:
             self._task = None
         self._awake.release()
         log.info("engine.stopped")
+
+    def set_keep_awake(self, on: bool) -> None:
+        """Turned off, the machine may sleep at once rather than at the next check."""
+        self.keep_awake = on
+        if not on:
+            self._awake.release()
+
+    async def idle(self) -> bool:
+        """Nothing out on BRAIN and nothing about to be sent: safe to restart the app."""
+        return not await self._busy()
 
     def configure_from_permissions(self, permissions: list[str]) -> None:
         """Batching needs MULTI_SIMULATION; without it every batch is a single run.
@@ -448,7 +455,7 @@ class BatchEngine:
             try:
                 await self.tick()
                 if rounds % AWAKE_TICKS == 0:
-                    self._awake.hold(await self._busy())
+                    self._awake.hold(self.keep_awake and await self._busy())
                 rounds += 1
             except Exception:
                 log.exception("engine.tick_failed")
@@ -540,7 +547,9 @@ class BatchEngine:
 
         quotas = await self.quotas()
         demand = demand_by_task(items, self.max_batch)
-        allocation = allocate_slots(free, demand=demand, quotas=quotas, in_flight=in_flight)
+        allocation = allocate_slots(
+            free, demand=demand, quotas=quotas, in_flight=in_flight, lend=self.lend_idle_cores
+        )
         if not allocation:
             return 0
 
@@ -752,12 +761,12 @@ class BatchEngine:
                 self.db, self.endpoints, parent_id, platform_id, children=record_ids
             ):
                 log.warning("engine.batch_cancel_refused", parent=parent_id)
-                self.tracker.watch(parent_id)
+                self.tracker.watch(platform_id)
                 return True
             log.info("engine.batch_cancelled_after_send", parent=parent_id)
             return False
 
-        self.tracker.watch(parent_id, response.retry_after)
+        self.tracker.watch(platform_id, response.retry_after)
         log.info(
             "engine.batch_running",
             parent=parent_id,
@@ -981,7 +990,6 @@ class BatchEngine:
         await self._mark_expanded(parent.id)
         for child_id in child_ids:
             self._child_results.pop(child_id, None)
-            self._child_next_read.pop(child_id, None)
         log.info(
             "engine.batch_expanded",
             parent=parent.id,
@@ -993,23 +1001,19 @@ class BatchEngine:
     async def _read_children(self, child_ids: list[str]) -> bool:
         """Read each unfinished child that is due. Returns True if the session was refused.
 
-        Finished outcomes are kept in memory until their batch is expanded, so a child
-        that cannot be attributed yet is not read again. A restart loses them, which costs
-        one more read each — nothing is decided from memory alone.
+        Read through the tracker, so a child keeps the same schedule and lost-simulation rule
+        as a simulation sent alone: one BRAIN has lost ends as an error rather than holding
+        its batch's core for good. Finished outcomes are kept in memory until their batch is
+        expanded, so a child that cannot be attributed yet is not read again. A restart loses
+        them, which costs one more read each — nothing is decided from memory alone.
         """
         for child_id in child_ids:
             if child_id in self._child_results:
                 continue
-            if time.monotonic() < self._child_next_read.get(child_id, 0.0):
+            read = await self.tracker.read(child_id)
+            if read is None:
                 continue
-            try:
-                response = await self.endpoints.read_simulation(child_id)
-            except BrainError as exc:
-                log.warning("engine.child_read_failed", child=child_id, error=str(exc))
-                self._child_next_read[child_id] = time.monotonic() + DEFAULT_POLL_SECONDS
-                continue
-
-            outcome = read_outcome(response.status, response.body, response.retry_after)
+            outcome, body = read
             match outcome.kind:
                 case "unauthorized":
                     self._on_session_lost()
@@ -1017,11 +1021,8 @@ class BatchEngine:
                 case "pending" | "retry":
                     # Still simulating, or the read was refused for now: either way the alpha is
                     # coming, and closing the row now would throw it away.
-                    self._child_next_read[child_id] = time.monotonic() + (
-                        outcome.delay or DEFAULT_POLL_SECONDS
-                    )
+                    continue
                 case "fanout":
-                    body = response.body if isinstance(response.body, dict) else {}
                     self._child_results[child_id] = (
                         body,
                         Outcome(
@@ -1031,7 +1032,6 @@ class BatchEngine:
                         ),
                     )
                 case "gone" | "finished":
-                    body = response.body if isinstance(response.body, dict) else {}
                     self._child_results[child_id] = (body, outcome)
         return False
 
@@ -1049,41 +1049,23 @@ class BatchEngine:
             for record in records:
                 found = resolved.get(record.id)
                 if found is None:
-                    await transition(
-                        session,
-                        record.id,
-                        from_=ACTIVE,
-                        status=child_status,
-                        message=fallback_message
-                        or "BRAIN did not report a result for this simulation.",
-                        finished_at=utcnow(),
+                    message = (
+                        fallback_message or "BRAIN did not report a result for this simulation."
+                    )
+                    await finish(
+                        session, record, Outcome("finished", child_status, message=message)
                     )
                     continue
 
                 outcome = outcomes[found["platform_id"]]
-                message = outcome.message
                 if found.get("positional"):
                     note = "Matched to this request by submission order."
-                    message = f"{message} {note}" if message else note
-
-                won = await transition(
-                    session,
-                    record.id,
-                    from_=ACTIVE,
-                    platform_id=found["platform_id"],
-                    alpha_id=outcome.alpha_id,
-                    status=outcome.status,
-                    platform_status=str(outcome.platform_status)
-                    if outcome.platform_status
-                    else None,
-                    message=message,
-                    progress=1.0,
-                    finished_at=utcnow(),
-                )
-
-                if won and outcome.alpha_id:
-                    await remember(session, record, outcome.alpha_id)
-                    landed.append(outcome.alpha_id)
+                    joined = f"{outcome.message} {note}" if outcome.message else note
+                    outcome = dataclasses.replace(outcome, message=joined)
+                if alpha_id := await finish(
+                    session, record, outcome, platform_id=found["platform_id"]
+                ):
+                    landed.append(alpha_id)
 
         # The tracker polls only the parent, which carries no alpha of its own. Without
         # this hand-off no batched alpha would reach the vault, so nothing batched could

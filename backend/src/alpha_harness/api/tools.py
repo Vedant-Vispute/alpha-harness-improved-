@@ -8,8 +8,6 @@ Neither simulates on its own: previews only read, and queueing hands work to the
 like any lab.
 """
 
-from __future__ import annotations
-
 import asyncio
 import json
 from typing import Any, Literal, Self
@@ -274,7 +272,9 @@ class PlannedPortfolio(Out):
 
 
 class PlanRequest(BaseModel):
-    task_ids: list[int] = Field(min_length=1, max_length=50, alias="taskIds")
+    # The screen plans over every task by default, and an account passes 50 within weeks. The
+    # ids only fill an IN list, so the bound is SQLite's 32,766 parameters, not the search.
+    task_ids: list[int] = Field(min_length=1, max_length=10_000, alias="taskIds")
 
     model_config = {"populate_by_name": True}
 

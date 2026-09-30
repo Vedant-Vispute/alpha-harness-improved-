@@ -1,7 +1,5 @@
 """The alpha vault: every alpha you have run, its checks, and its daily returns."""
 
-from __future__ import annotations
-
 import itertools
 from datetime import timedelta
 from typing import Annotated, Any, Literal
@@ -84,11 +82,20 @@ class SubmittableAlpha(Out):
     brain_url: str
 
 
+class SubmittableMarket(Out):
+    instrument_type: str
+    region: str
+    delay: int
+    universe: str
+    count: int
+
+
 class SubmittableResponse(Out):
     #: At most five distinct Alphas that held up in the test years, most stable first.
     shortlist: list[SubmittableAlpha]
     alphas: list[SubmittableAlpha]
     total: int
+    markets: list[SubmittableMarket]
     #: Still being judged by the platform.
     pending: int
     #: Failing one or two fixable checks.
@@ -131,6 +138,8 @@ class AlphaRow(Out):
     pyramids: list[str] = Field(default_factory=list)
     train_sharpe: float | None = None
     test_sharpe: float | None = None
+    #: Picking seeds only: the region a region-agnostic Alpha's figures come from.
+    standing_region: str | None = None
 
 
 class AlphaPage(Out):

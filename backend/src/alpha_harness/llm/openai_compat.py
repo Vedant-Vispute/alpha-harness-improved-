@@ -4,8 +4,6 @@ Built on the OpenAI SDK, which also streams. Google's endpoint is its OpenAI-com
 one, which holds the answer to a JSON schema and takes a reasoning effort.
 """
 
-from __future__ import annotations
-
 import asyncio
 from typing import TYPE_CHECKING, Any
 
@@ -50,7 +48,7 @@ class OpenAICompatible:
         model: str,
         system: str,
         user: str,
-        temperature: float,
+        temperature: float | None,
         schema: dict[str, Any] | None,
         reasoning_effort: ReasoningEffort = None,
     ) -> tuple[str, dict[str, Any]]:
@@ -77,7 +75,7 @@ class OpenAICompatible:
         model: str,
         system: str,
         user: str,
-        temperature: float,
+        temperature: float | None,
         schema: dict[str, Any] | None,
         reasoning_effort: ReasoningEffort,
     ) -> tuple[str, dict[str, Any]]:
@@ -94,7 +92,7 @@ class OpenAICompatible:
             completion = await self._sdk.chat.completions.create(
                 model=model,
                 messages=messages,
-                temperature=temperature,
+                temperature=temperature if temperature is not None else omit,
                 response_format=response_format,
                 reasoning_effort=reasoning_effort if reasoning_effort is not None else omit,
             )
@@ -103,13 +101,14 @@ class OpenAICompatible:
         text = completion.choices[0].message.content if completion.choices else None
         return text or "", completion.usage.model_dump() if completion.usage else {}
 
-    async def models(self) -> list[str]:
+    async def models(self, **query: object) -> list[str]:
         """Model ids this key can reach. Not billed against the generation quota."""
         try:
-            page = await self._sdk.models.list()
+            page = await self._sdk.models.list(extra_query=query or None)
         except APIStatusError as exc:
             raise ProviderError(exc.status_code, _detail(exc.response)) from exc
-        return [model.id for model in page.data]
+        # Google's ids come back as ``models/gemini-…``; its chat endpoint takes either.
+        return sorted({model.id.removeprefix("models/") for model in page.data})
 
 
 def _detail(response: httpx2.Response) -> str:

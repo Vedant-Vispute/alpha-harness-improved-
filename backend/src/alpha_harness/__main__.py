@@ -1,7 +1,5 @@
 """``alpha-harness``: the backend and its built UI in one process, opened in the browser."""
 
-from __future__ import annotations
-
 import asyncio
 import webbrowser
 

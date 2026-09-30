@@ -1,32 +1,37 @@
 /**
- * Search Lab: choose datasets, cores and simulations, then run the search as a task in
+ * Search Lab: choose datasets, cores and simulations, then run the search now or add it to
  * Tasks. It writes one- and two-operator Alphas from the datasets' fields, steering towards
  * the best Sharpe.
  */
 
 import { useQuery } from '@tanstack/react-query'
-import { PlayIcon } from 'lucide-react'
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { today } from '@/api/core'
+import { useCores } from '@/lib/preferences'
+import { AddTaskButtons, useAddTask } from '@/screens/research-labs/add-task'
 import {
   LAB_DEFAULTS,
   type LabDraft,
   labBody,
   MAX_SIMULATIONS,
   simulationsValid,
-  useAddTask,
   useLabMarket,
   useLabPreview,
   vectorOperatorsOf,
 } from '@/screens/research-labs/lab-task'
 import { type SearchLabRequest, searchLab } from '@/screens/research-labs/search/api'
 import { DatasetsPanel, SettingsPanel } from '@/screens/research-labs/task-settings'
-import { Button, ErrorNotice, Page, PageHeader } from '@/ui/kit'
+import { ErrorNotice, Page, PageHeader } from '@/ui/kit'
 
 /** The Search Lab's choices, kept between visits. */
 const useSearchLab = create<LabDraft>()(
-  persist(() => LAB_DEFAULTS, { name: 'alpha-harness-search-lab' }),
+  persist(() => LAB_DEFAULTS, {
+    name: 'alpha-harness-search-lab',
+    // Version 1 leaves cores unchosen, so Settings' default for new tasks applies.
+    version: 1,
+    migrate: (stored) => ({ ...(stored as LabDraft), cores: null }),
+  }),
 )
 
 export function SearchLabScreen() {
@@ -48,24 +53,22 @@ export function SearchLabScreen() {
     simulations: stored.simulations ?? (unspoken > 0 ? Math.min(unspoken, maxSimulations) : null),
   }
   const vectorOperators = vectorOperatorsOf(draft, options.data?.vector)
-  const body: SearchLabRequest = labBody(draft, vectorOperators)
+  const cores = useCores(draft.cores)
+  const body: SearchLabRequest = labBody(draft, vectorOperators, cores)
   const { preview, current } = useLabPreview('search-lab', body, searchLab.preview, {
     enabled: chosen && options.isSuccess,
   })
   const plan = chosen ? preview.data : undefined
 
-  const add = useAddTask(
-    (count: number) => searchLab.runTask({ ...body, simulations: count }),
-    'Task running',
-  )
+  const add = useAddTask(() => searchLab.addTask({ ...body, simulations: draft.simulations ?? 0 }))
   const ready =
     plan !== undefined &&
     current &&
     plan.problems.length === 0 &&
     simulationsValid(draft.simulations, maxSimulations)
-  // What stops Run Task that no panel below already says.
+  // What stops both buttons that no panel below already says.
   const blocked = !chosen
-    ? 'Choose datasets to run.'
+    ? 'Choose datasets first.'
     : draft.simulations === null
       ? 'Enter the simulations to run.'
       : null
@@ -81,16 +84,11 @@ export function SearchLabScreen() {
                 {blocked}
               </span>
             )}
-            <Button
-              variant="primary"
+            <AddTaskButtons
+              add={add}
               disabled={!ready}
-              loading={add.isPending}
-              aria-describedby={blocked ? 'run-task-blocked' : undefined}
-              onClick={() => draft.simulations !== null && add.mutate(draft.simulations)}
-            >
-              <PlayIcon />
-              Run Task
-            </Button>
+              describedBy={blocked ? 'run-task-blocked' : undefined}
+            />
           </>
         }
       />

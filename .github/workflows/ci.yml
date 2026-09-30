@@ -1,0 +1,36 @@
+# Every push to main and every pull request runs the local gate. It calls
+# lefthook rather than repeating its jobs, so this workflow cannot drift from `lefthook.yml`.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      # The pnpm version comes from `packageManager` in the frontend's package.json.
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: frontend/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: frontend/.node-version
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: cd backend && uv sync --frozen
+      - run: cd frontend && pnpm install --frozen-lockfile
+      # `gate` itself calls a bare `lefthook`, which is not on PATH here, so its two stages
+      # run as steps. Pinned to the version the hooks are written against.
+      - run: uvx lefthook@2.1.14 run check
+      - run: uvx lefthook@2.1.14 run build

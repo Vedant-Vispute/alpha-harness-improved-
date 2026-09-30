@@ -6,14 +6,14 @@
  * printed in full before anything is queued: a consultant should be able to read what will run.
  */
 
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
-import { PlusIcon, UnlinkIcon } from 'lucide-react'
+import { UnlinkIcon } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { toast } from 'sonner'
-import { errorMessage } from '@/api/http'
 import { cn } from '@/lib/cn'
 import { DASH, fmt } from '@/lib/format'
+import { useCores } from '@/lib/preferences'
+import { AddTaskButtons, useAddTask } from '@/screens/research-labs/add-task'
 import { CoresSetting } from '@/screens/research-labs/task-settings'
 import {
   Button,
@@ -53,12 +53,13 @@ interface Held {
 export function CorrelationBreakerScreen() {
   const search = useSearch({ from: '/tools/correlation-breaker' })
   const navigate = useNavigate()
-  const queryClient = useQueryClient()
   // The URL owns which Alpha is open, so a link from the Alpha screen is shareable.
   const alphaId = search.alpha ?? ''
   const [draft, setDraft] = useState(alphaId)
   const [chosen, setChosen] = useState<ReadonlySet<string>>(new Set())
-  const [cores, setCores] = useState(1)
+  /** `null` until chosen here: until then Settings' default for new tasks applies. */
+  const [chosenCores, setCores] = useState<number | null>(null)
+  const cores = useCores(chosenCores)
 
   useEffect(() => setDraft(search.alpha ?? ''), [search.alpha])
 
@@ -87,15 +88,7 @@ export function CorrelationBreakerScreen() {
     })
   }
 
-  const add = useMutation({
-    mutationFn: () => correlationBreaker.addTask({ alphaId, recipes: [...chosen], cores }),
-    onSuccess: (task) => {
-      toast.success(`Queued ${task.name}`)
-      void queryClient.invalidateQueries({ queryKey: ['tasks'] })
-      void navigate({ to: '/tasks' })
-    },
-    onError: (e) => toast.error('Could not add task', { description: errorMessage(e) }),
-  })
+  const add = useAddTask(() => correlationBreaker.addTask({ alphaId, recipes: [...chosen], cores }))
 
   const toggle = (id: string) =>
     setChosen((prev) => {
@@ -109,17 +102,7 @@ export function CorrelationBreakerScreen() {
       <PageHeader
         title="Correlation Breaker"
         description="Re-shape an Alpha that is already in the Production Pool"
-        actions={
-          <Button
-            variant="primary"
-            disabled={chosen.size === 0}
-            loading={add.isPending}
-            onClick={() => add.mutate()}
-          >
-            <PlusIcon />
-            Add Task
-          </Button>
-        }
+        actions={<AddTaskButtons add={add} disabled={chosen.size === 0} />}
       />
 
       <Panel title="Alpha">

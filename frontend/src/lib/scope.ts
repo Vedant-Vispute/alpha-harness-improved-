@@ -31,9 +31,9 @@ export const isRegionAgnostic = (scope: { region: string }): boolean =>
 
 /**
  * The regions a region-agnostic simulation is translated into: "data fields in a Region
- * Agnostic Alpha are translated into GLB, USA, EUR, and ASI Alphas"
- * (`docs/learn/advanced-topics/region-agnostic-alpha`). Nowhere else can one run, so asking
- * whether a field exists region-agnostically is a question only these four markets can act on.
+ * Agnostic Alpha are translated into GLB, USA, EUR, and ASI Alphas". Nowhere else can one
+ * run, so asking whether a field exists region-agnostically is a question only these four
+ * markets can act on.
  */
 export const RA_MARKETS: readonly string[] = ['USA', 'EUR', 'ASI', 'GLB']
 

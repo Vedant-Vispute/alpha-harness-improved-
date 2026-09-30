@@ -75,7 +75,13 @@
   --color-white: var(--white);
   --color-black: var(--black);
 
-  /* Elevation by surface steps, not shadow. */
+  /* In-flow elevation is a surface step. Only what floats over the page casts a shadow, and
+     it is this one: Tailwind's scale is dropped so no other can slip in. */
+  --shadow-*: initial;
+  --shadow-float:
+    0 8px 24px -6px color-mix(in oklab, var(--black) 70%, transparent),
+    0 2px 6px color-mix(in oklab, var(--black) 45%, transparent);
+
   --color-canvas: var(--spec-canvas);
   --color-surface-1: var(--spec-surface-1);
   --color-surface-2: var(--spec-surface-2);

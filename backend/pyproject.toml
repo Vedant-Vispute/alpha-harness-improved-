@@ -1,6 +1,6 @@
 [build-system]
 build-backend = "uv_build"
-requires = [ "uv-build>=0.12.13,<0.13.0" ]
+requires = [ "uv-build>=0.12.18,<0.13.0" ]
 
 [project]
 name = "alpha-harness"
@@ -20,10 +20,10 @@ dependencies = [
     "packaging>=26.3",
     "pyarrow>=25.0.1",
     "pydantic>=2.13.5",
-    "sqlalchemy[asyncio]>=2.0.52",
+    "sqlalchemy[asyncio]>=2.0.54",
     "structlog>=26.1.0",
     "tzdata>=2026.4",
-    "uvicorn[standard]>=0.52.4",
+    "uvicorn[standard]>=0.53.0",
 ]
 scripts.alpha-harness = "alpha_harness.__main__:main"
 
@@ -31,14 +31,12 @@ scripts.alpha-harness = "alpha_harness.__main__:main"
 dev = [
     "basedpyright>=1.40.1",
     "pyproject-fmt>=2.29.4",
-    "pyrefly>=1.3.0",
-    "ruff>=0.16.7",
+    "pyrefly>=1.3.1",
+    "ruff>=0.16.8",
 ]
 
 [tool.ruff]
-# py313, not py314: the formatter would strip the parentheses from `except (A, B):`, which
-# only 3.14 can parse, and a launcher or checkout run on an older Python dies on import.
-target-version = "py313"
+target-version = "py314"
 line-length = 100
 src = [ "src" ]
 lint.select = [

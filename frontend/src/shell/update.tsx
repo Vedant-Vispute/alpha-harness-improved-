@@ -7,12 +7,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { DownloadIcon, LoaderCircleIcon, TriangleAlertIcon } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
+import { create } from 'zustand'
 import { update } from '@/api/core'
 import { errorMessage } from '@/api/http'
 import { Button, ErrorNotice } from '@/ui/kit'
 import { Dialog } from '@/ui/overlay'
 
-/** The backend caches GitHub for an hour, so asking more often than this only costs a hop. */
+/** Reads the backend's last answer; GitHub itself is asked only as often as Settings allow. */
 const POLL_MS = 15 * 60 * 1000
 /** How often the overlay knocks while the backend is down being replaced. */
 const RECONNECT_MS = 1500
@@ -67,8 +68,32 @@ function Installing({ version }: { version: string }) {
   )
 }
 
-/** One polling policy for the shared `['update']` query, so both badges cannot disagree. */
-function useUpdateStatus() {
+/** The version being installed, once Update was pressed anywhere, for the one overlay. */
+const useInstalling = create<{ version: string | null }>(() => ({ version: null }))
+
+/** Holds the screen while an update installs, whichever button started it. Mounted once. */
+export function InstallingOverlay() {
+  const version = useInstalling((s) => s.version)
+  return version === null ? null : <Installing version={version} />
+}
+
+/** Hands the install to the launcher; the overlay takes the screen until the new one answers. */
+export function useApplyUpdate() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: update.apply,
+    onSuccess: (started) => {
+      // The backend is about to stop answering, so every other query is about to fail. Take
+      // the screen before they do and wait for the new one, rather than leaving a dead page
+      // behind a toast that says everything is fine.
+      useInstalling.setState({ version: started.version })
+      void queryClient.invalidateQueries({ queryKey: ['update'] })
+    },
+  })
+}
+
+/** One polling policy for the shared `['update']` query, so every reader agrees. */
+export function useUpdateStatus() {
   return useQuery({
     queryKey: ['update'],
     queryFn: () => update.status(),
@@ -190,25 +215,11 @@ function LauncherNotice({
 
 /** ``collapsed`` is the sidebar's icon rail, where there is room for a button but not a word. */
 export function UpdateBadge({ collapsed = false }: { collapsed?: boolean }) {
-  const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
   const status = useUpdateStatus()
-
-  const [installing, setInstalling] = useState<string | null>(null)
-  const apply = useMutation({
-    mutationFn: update.apply,
-    onSuccess: (started) => {
-      // The backend is about to stop answering, so every other query is about to fail. Take
-      // the screen before they do and wait for the new one, rather than leaving a dead page
-      // behind a toast that says everything is fine.
-      setOpen(false)
-      setInstalling(started.version)
-      void queryClient.invalidateQueries({ queryKey: ['update'] })
-    },
-  })
+  const apply = useApplyUpdate()
 
   const data = status.data
-  if (installing !== null) return <Installing version={installing} />
   // An update installs the wheel and never AlphaHarness.exe, so a launcher change — the
   // system tray, say — reaches nobody until they fetch the exe themselves. Nothing else in
   // the app can say so: from inside, an out-of-date launcher looks exactly like a current one.

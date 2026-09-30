@@ -1,7 +1,7 @@
 ---
 version: alpha
 name: Alpha Harness Workstation
-description: "The design system of Alpha Harness, a local-first quant workstation for WorldQuant BRAIN. A near-black canvas with a four-step surface ladder, hairline rules and no shadows; one chromatic accent, lavender, reserved for execution, focus and selection; every other hue earned by data — profit, loss, core status, operator category. Type is a six-step scale that stops at 20px for everything but the Dashboard's one sentence, because the screens are dense grids of figures rather than pages of prose. Figures are mono and tabular wherever they can be compared. Nothing decorative: if a colour appears, a number or a state put it there."
+description: "The design system of Alpha Harness, a local-first quant workstation for WorldQuant BRAIN. A near-black canvas with a four-step surface ladder, hairline rules, and a shadow only under what floats; one chromatic accent, lavender, reserved for execution, focus and selection; every other hue earned by data — profit, loss, core status, operator category. Type is a six-step scale that stops at 20px for everything but the Dashboard's one sentence, because the screens are dense grids of figures rather than pages of prose. Figures are mono and tabular wherever they can be compared. Nothing decorative: if a colour appears, a number or a state put it there."
 
 colors:
   primary: "#5e6ad2"
@@ -400,7 +400,26 @@ it, with each layout persisted per id in `localStorage`.
 
 ## Elevation & Depth
 
-Elevation is a surface step, never a shadow. There are no shadows in this system.
+Elevation in the page is a surface step, never a shadow. The one shadow in the system belongs to
+what floats over the page — tooltips, menus, select and builder popovers, dialogs, sheets, the
+command menu, Settings, the peeking sidebar and toasts — and it is always the same one,
+`shadow-float`:
+
+```text
+0 8px 24px -6px  black 70%    the soft drop onto whatever it covers
+0 2px 6px        black 45%    the contact shadow along its edge
+```
+
+Both mix `--black` over transparent in oklab. The canvas is near-black, so a shadow as faint as a
+light theme's would vanish; these darken a surface-1 row under a tooltip from 31 to 14 at its edge,
+fading back over about 12px. It says "this is above the page and can be dismissed", which a
+surface step alone cannot: a tooltip at surface-4 over a hovered row at surface-2 reads as part of
+the row. Tailwind's shadow scale is dropped (`--shadow-*: initial`), so no other can creep in.
+
+A modal — a dialog, a sheet, ⌘K, Settings — also dims and blurs the page behind it (`BACKDROP` in
+`overlay.tsx`: black at 60% and a small backdrop blur), so the one thing in focus is the thing
+asking for it. Settings is a modal rather than a screen for the same reason ⌘K is: a choice made
+there should not cost the place the consultant was at.
 
 ```text
 canvas      the gutter behind everything
@@ -423,8 +442,8 @@ lifts a panel off the canvas without a shadow.
 
 Five radii, and a rectangle is the default. `xs` (3px) for badges, tiles and the small chrome
 that sits inside a row; `sm` (5px) for buttons and inputs; `md` (8px) for boxed metrics and
-grouped controls; `lg` (10px) for panels and dialogs; `pill` for the quota gauge and the status
-LEDs only — nothing else is fully round.
+grouped controls; `lg` (10px) for panels and dialogs; `pill` for the quota gauge, the status
+LEDs and the switch only — nothing else is fully round.
 
 Corners never mix within one surface: a panel at `lg` holds buttons at `sm` holding badges at
 `xs`, each step inward tightening.
@@ -434,7 +453,7 @@ Corners never mix within one surface: a panel at `lg` holds buttons at `sm` hold
 `frontend/src/ui/` holds the primitives, and nothing outside it may define one.
 
 - **kit.tsx** — `Page`, `PageHeader`, `Panel`, `Button`, `Input`, `Textarea`, `Field`, `Fieldset`,
-  `Checkbox`, `Chips`, `Segmented`, `Metric`, `Badge`, `MetricBadge`, `KV`, `Progress` (also the
+  `Checkbox`, `Switch`, `Chips`, `Segmented`, `Metric`, `Badge`, `MetricBadge`, `KV`, `Progress` (also the
   quota gauge), `Kbd`, `Spinner`, `Skeleton`, `Notice`, `ErrorNotice`, `Empty`, `Disclosure`,
   `TabBar`, and the tone helpers (`signTone`, `checkTone`, `TEXT_TONE`).
 - **table.tsx** — `DataTable`, virtualised and server-sorted, and `Pager`.
@@ -463,7 +482,8 @@ let a label be tinted as though it were a verdict.
 - Do keep panels flush to the viewport width.
 - Don't add a hex code outside tier 1.
 - Don't introduce a seventh type size, and don't reach for `display` outside the Dashboard hero.
-- Don't use a shadow for elevation; step the surface.
+- Don't use a shadow for elevation in the page; step the surface. `shadow-float` is for floating
+  surfaces only.
 - Don't colour something to draw attention. Attention is the `attention` animation, and it is for
   onboarding only.
 - Don't tint a label as though it were a judged number.

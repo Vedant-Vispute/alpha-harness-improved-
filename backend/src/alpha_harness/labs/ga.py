@@ -12,9 +12,11 @@ Every child is simulated holding the last two years out as a test and scored on 
 over the first eight, which BRAIN reports in the ``train`` block. Parents are the best of
 everything scored so far, kept apart by the correlation of their daily PnL over the train
 years.
-"""
 
-from __future__ import annotations
+In the all-regions market every child is a region-agnostic simulation, and each result is
+scored as its second-best region (see :func:`..vault.store.family_row`): BRAIN submits one
+only when two regions pass.
+"""
 
 import asyncio
 import json
@@ -28,10 +30,15 @@ import numpy as np
 import structlog
 from sqlalchemy import String, func, select, type_coerce
 
-from ..brain.schemas import TEST_PERIOD, SimulationRequest, SimulationSettings
+from ..brain.schemas import (
+    REGION_AGNOSTIC_REGION,
+    TEST_PERIOD,
+    SimulationRequest,
+    SimulationSettings,
+)
 from ..db.models import Study, Trial, TrialState
 from ..vault.metrics import MIN_OVERLAP
-from ..vault.store import EVOLVABLE, EVOLVABLE_TYPES
+from ..vault.store import EVOLVABLE_TYPES, SEEDABLE
 from ..vault.yields import IGNORED_CHECKS, SUBMITTED, checks_of, is_submitted
 from . import search, template
 from .fastexpr import (
@@ -489,6 +496,16 @@ def series_of(days: dict[date, float]) -> Series | None:
     )
 
 
+#: An Alpha's daily PnL by region: its one region, or each scored region of a family.
+Profile = dict[str, Series]
+
+
+def profile_of(regions: dict[str, str], days: dict[str, dict[date, float]]) -> Profile | None:
+    """The usable series among ``regions`` (region to the Alpha whose PnL stands there)."""
+    found = {r: s for r, alpha_id in regions.items() if (s := series_of(days.get(alpha_id) or {}))}
+    return found or None
+
+
 def correlation(a: Series, b: Series) -> float | None:
     """Pearson correlation over the days both have; ``None`` below the minimum overlap."""
     _, left, right = np.intersect1d(a.dates, b.dates, assume_unique=True, return_indices=True)
@@ -500,12 +517,22 @@ def correlation(a: Series, b: Series) -> float | None:
     return float(np.corrcoef(x, y)[0, 1])
 
 
+def kinship(a: Profile, b: Profile) -> float | None:
+    """The strongest correlation two Alphas show in any region both trade.
+
+    Region by region, because one idea read in USA and in EUR can look unrelated: the two
+    markets move apart even when the idea does not. ``None`` with no region in common.
+    """
+    found = [rho for r in a.keys() & b.keys() if (rho := correlation(a[r], b[r])) is not None]
+    return max(found, key=abs) if found else None
+
+
 def collision(
-    candidate: Series, kept: dict[str, Series], threshold: float = DEFAULT_MAX_CORRELATION
+    candidate: Profile, kept: dict[str, Profile], threshold: float = DEFAULT_MAX_CORRELATION
 ) -> tuple[str, float] | None:
     """The first kept Alpha this one moves with, at |correlation| of ``threshold`` or more."""
     for alpha_id, other in kept.items():
-        rho = correlation(candidate, other)
+        rho = kinship(candidate, other)
         if rho is not None and abs(rho) >= threshold:
             return alpha_id, rho
     return None
@@ -513,14 +540,14 @@ def collision(
 
 def independent(
     order: list[str],
-    series: dict[str, Series | None],
+    series: dict[str, Profile | None],
     limit: int,
     threshold: float = DEFAULT_MAX_CORRELATION,
 ) -> list[str]:
     """The notes' between-correlation selection: best first, each kept unless it moves with
     one already kept. An Alpha without a usable series counts as independent."""
     kept: list[str] = []
-    kept_series: dict[str, Series] = {}
+    kept_series: dict[str, Profile] = {}
     for alpha_id in order:
         if len(kept) >= limit:
             break
@@ -534,13 +561,18 @@ def independent(
 
 
 async def _parents(optimizer: Optimizer, ranked: list[Trial], limit: int) -> list[Trial]:
-    """The ranked trials kept apart by daily PnL. Missing PnL downloads in the background."""
+    """The ranked trials kept apart by daily PnL. Missing PnL downloads in the background.
+
+    A region-agnostic result has no series of its own; each scored region's child stands in.
+    """
     ids = [t.alpha_id for t in ranked if t.alpha_id]
-    days = await optimizer.alphas.train_pnl(ids)
-    missing = [alpha_id for alpha_id in ids if alpha_id not in days]
+    where = await optimizer.alphas.region_series(ids)
+    wanted = [alpha_id for regions in where.values() for alpha_id in regions.values()]
+    days = await optimizer.alphas.train_pnl(wanted)
+    missing = [alpha_id for alpha_id in wanted if alpha_id not in days]
     if missing and optimizer.backfill is not None:
         optimizer.backfill.schedule_returns(missing)
-    series = {alpha_id: series_of(rows) for alpha_id, rows in days.items()}
+    series = {a: profile_of(regions, days) for a, regions in where.items()}
     kept = set(await asyncio.to_thread(independent, ids, series, limit))
     return [t for t in ranked if t.alpha_id in kept]
 
@@ -632,15 +664,19 @@ def seed_problem(
     if is_submitted(row):
         return "Already submitted."
     kind = str(row.get("sim_type") or "REGULAR").upper()
-    if kind not in EVOLVABLE_TYPES:
-        if kind == "RA_PARENT":
-            # It summarises its children and has no Sharpe or Fitness of its own; the
-            # children are seeds like any other Alpha.
+    if kind == "RA_PARENT":
+        if region != REGION_AGNOSTIC_REGION:
             return (
-                "A region-agnostic parent has no metrics of its own. Seed from one of its children."
+                "A region-agnostic Alpha breeds in All Regions. Here, seed from one of its regions."
             )
+        if row.get("series_id") is None:
+            # Not stood in for by a family: fewer than two regions have a Fitness.
+            return "Fewer than two of its regions have a Fitness, and BRAIN needs two to submit it."
+    elif kind not in EVOLVABLE_TYPES:
         # A SuperAlpha, say: its expression is a combo, not a regular expression.
         return f"A {kind} Alpha cannot be a seed: its expression is not a regular expression."
+    elif region == REGION_AGNOSTIC_REGION:
+        return "One region's Alpha breeds in its own market. Here, seed from region-agnostic ones."
     if (row.get("region"), row.get("delay"), row.get("universe")) != (region, delay, universe):
         return f"It ran in {row.get('region')} D{row.get('delay')} {row.get('universe')}."
     if row.get("fitness") is None:
@@ -661,6 +697,14 @@ def seed_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def _download(state: Any, alpha_id: str) -> None:
+    """One Alpha's daily PnL, a failure logged rather than raised: it only costs a seed."""
+    try:
+        await state.backfill.fetch_returns(alpha_id)
+    except Exception:
+        log.warning("ga.seed_pnl_failed", alpha_id=alpha_id, exc_info=True)
+
+
 async def auto_seeds(
     state: Any,
     market: Market,
@@ -672,18 +716,22 @@ async def auto_seeds(
 ) -> dict[str, Any]:
     """The best, mutually uncorrelated unsubmitted Alphas of a market, and why the rest were
     not chosen. Downloads daily PnL where missing; simulates nothing."""
-    rows = await state.catalog.query(
+    found = await state.catalog.query(
         f"""
         SELECT a.* FROM alpha a
         WHERE coalesce(a.instrument_type, 'EQUITY') = 'EQUITY'
           AND a.region = ? AND a.delay = ? AND a.universe = ?
-          AND NOT {SUBMITTED} AND {EVOLVABLE}
-          AND a.expression IS NOT NULL AND a.fitness IS NOT NULL AND a.sharpe > 0
+          AND NOT {SUBMITTED} AND {SEEDABLE} AND a.expression IS NOT NULL
         """,  # noqa: S608
         [region, delay, universe],
     )
+    # Region-agnostic parents stand as their families, which is where their Sharpe is.
+    stood = await state.alphas.with_families({str(r["alpha_id"]): r for r in found})
+    rows = [
+        r for r in stood.values() if (r.get("sharpe") or 0) > 0 and r.get("fitness") is not None
+    ]
     kept: list[dict[str, Any]] = []
-    kept_series: dict[str, Series] = {}
+    kept_series: dict[str, Profile] = {}
     reasons: list[dict[str, str]] = []
     examined = 0
     for row in sorted(rows, key=seed_score, reverse=True):
@@ -692,16 +740,16 @@ async def auto_seeds(
         examined += 1
         alpha_id = str(row["alpha_id"])
         problem = unreadable(row["expression"], market)
-        own: Series | None = None
+        own: Profile | None = None
         if problem is None:
-            days = (await state.alphas.train_pnl([alpha_id])).get(alpha_id)
-            if days is None:
-                try:
-                    await state.backfill.fetch_returns(alpha_id)
-                except Exception:
-                    log.warning("ga.seed_pnl_failed", alpha_id=alpha_id, exc_info=True)
-                days = (await state.alphas.train_pnl([alpha_id])).get(alpha_id)
-            own = series_of(days or {})
+            regions: dict[str, str] = row.get("region_series") or {str(row["region"]): alpha_id}
+            days = await state.alphas.train_pnl(list(regions.values()))
+            missing = [s for s in regions.values() if s not in days]
+            # A family's regions together: four at most, the width every BRAIN read here uses.
+            await asyncio.gather(*(_download(state, s) for s in missing))
+            if missing:
+                days = await state.alphas.train_pnl(list(regions.values()))
+            own = profile_of(regions, days)
             hit = await asyncio.to_thread(collision, own, kept_series) if own else None
             if own is None:
                 problem = "No usable daily PnL."

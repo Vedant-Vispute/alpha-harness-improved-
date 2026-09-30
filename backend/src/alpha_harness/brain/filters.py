@@ -13,10 +13,8 @@ Three platform behaviours are mirrored deliberately, because not mirroring them 
 which alphas come back: ``hidden`` defaults to false, so omitting it silently excludes
 hidden alphas; a comma in a value is the multi-value separator ``%1F``, so a literal comma
 matches nothing; and the v4 list refuses a bare date, so a date becomes the start of its
-day in ``America/New_York`` (``docs/wqb-api/03-conventions.md``, "Date filters").
+day in ``America/New_York``.
 """
-
-from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta

@@ -1,25 +1,27 @@
 """Tracking what each key has spent.
 
-Google publishes no remaining-quota endpoint, so the only way to rotate keys sensibly is
-to count locally. Three windows, tracked differently because they behave differently:
+No provider publishes a remaining-quota endpoint, so the only way to rotate keys sensibly
+is to count locally, against the limits the user set up. Two windows, tracked differently
+because they behave differently:
 
-* **RPM and TPM** are sliding sixty-second windows, kept in memory: losing them on a
+* **Requests per minute** is a sliding sixty-second window, kept in memory: losing it on a
   restart costs at most one minute of over-caution.
-* **RPD** is a calendar day and *must* survive a restart, or a spent key looks fresh and
-  every rotation walks into a ``429``.
+* **Requests per day** is a calendar day and *must* survive a restart, or a spent key looks
+  fresh and every rotation walks into a ``429``.
 
-**The day boundary is Pacific, not UTC.** AI Studio quotas reset at midnight
-America/Los_Angeles, and counting UTC days would hand a key's daily budget back seven or
-eight hours early.
+Tokens are recorded for the record, never limited on: no count made here matches the
+provider's own.
+
+**The day boundary is the model's own.** Providers do not agree on when a day starts, Google
+at midnight Pacific and OpenRouter at midnight UTC, so each model carries the time zone its
+user named, and a day counted on the wrong clock hands a budget back hours early or late.
 
 Accounting is deliberately conservative — a request is refused here when it *would* exceed
 a limit — because a local refusal can name another key or model, and a ``429`` cannot.
 """
 
-from __future__ import annotations
-
 import time
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, tzinfo
 from datetime import time as clock  # `time` is already the module, imported above
@@ -33,63 +35,72 @@ from sqlalchemy.dialects.sqlite import insert
 from ..db.models import KeyUsage, utcnow
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from ..db.sqlite import Database
     from .registry import ModelInfo
 
 log = structlog.get_logger(__name__)
 
-#: Where Google's daily quota clock lives.
-QUOTA_TZ = ZoneInfo("America/Los_Angeles")
-
 WINDOW_SECONDS = 60.0
 
 
-def quota_day(moment: datetime | None = None) -> str:
-    """The quota day a moment falls in, as ``YYYY-MM-DD`` in Pacific time."""
-    return (moment or utcnow()).astimezone(QUOTA_TZ).strftime("%Y-%m-%d")
+def quota_day(tz: tzinfo, moment: datetime | None = None) -> str:
+    """The day a moment falls in on ``tz``'s clock, as ``YYYY-MM-DD``."""
+    return (moment or utcnow()).astimezone(tz).strftime("%Y-%m-%d")
 
 
-def seconds_until_reset(moment: datetime | None = None, tz: tzinfo = QUOTA_TZ) -> float:
-    """How long until a daily budget comes back.
+def model_day(model: ModelInfo) -> str:
+    """Today, as the model's provider counts it."""
+    return quota_day(ZoneInfo(model.reset_timezone))
+
+
+def seconds_until_reset(tz: tzinfo, moment: datetime | None = None) -> float:
+    """How long until a daily budget comes back at midnight on ``tz``'s clock.
 
     Built from the next local *date* rather than by adding 24 hours, so the two days a year
-    that are 23 or 25 hours long do not shift the answer. ``tz`` picks the clock: Pacific
-    for the assistant's quota, US Eastern for the platform's simulation allowance.
+    that are 23 or 25 hours long do not shift the answer.
     """
     now = (moment or utcnow()).astimezone(tz)
     midnight = datetime.combine(now.date() + timedelta(days=1), clock.min, tzinfo=tz)
     return max(0.0, (midnight - now).total_seconds())
 
 
+def model_reset(model: ModelInfo) -> float:
+    """Seconds until the model's provider starts a new day."""
+    return seconds_until_reset(ZoneInfo(model.reset_timezone))
+
+
+def daily_ceiling(model: ModelInfo, cap: int | None) -> int:
+    """Requests a key may send a model today: the model's limit, or the key's cap if lower."""
+    return model.rpd if cap is None else min(cap, model.rpd)
+
+
 @dataclass(slots=True)
 class Window:
-    """A sliding sixty-second record of requests and tokens."""
+    """A sliding sixty-second record of requests."""
 
-    events: deque[tuple[float, int]] = field(default_factory=deque)
+    events: deque[float] = field(default_factory=deque)
 
     def trim(self, now: float) -> None:
         cutoff = now - WINDOW_SECONDS
-        while self.events and self.events[0][0] < cutoff:
+        while self.events and self.events[0] < cutoff:
             self.events.popleft()
 
-    def add(self, tokens: int, now: float) -> None:
-        self.events.append((now, tokens))
+    def add(self, now: float) -> None:
+        self.events.append(now)
         self.trim(now)
 
     def requests(self, now: float) -> int:
         self.trim(now)
         return len(self.events)
 
-    def tokens(self, now: float) -> int:
-        self.trim(now)
-        return sum(t for _, t in self.events)
-
     def next_free(self, now: float) -> float:
-        """Seconds until the oldest event ages out of the window."""
+        """Seconds until the oldest request ages out of the window."""
         self.trim(now)
         if not self.events:
             return 0.0
-        return max(0.0, WINDOW_SECONDS - (now - self.events[0][0]))
+        return max(0.0, WINDOW_SECONDS - (now - self.events[0]))
 
 
 @dataclass(slots=True)
@@ -102,8 +113,6 @@ class Headroom:
     requests_per_day: int
     requests_this_minute: int
     requests_per_minute: int
-    tokens_this_minute: int
-    tokens_per_minute: int
     blocked_by: str | None = None
     #: Seconds until the block clears. Large for a daily limit, small for a per-minute one.
     retry_after: float = 0.0
@@ -128,8 +137,6 @@ class Headroom:
             "dailyRemaining": self.daily_remaining,
             "requestsThisMinute": self.requests_this_minute,
             "requestsPerMinute": self.requests_per_minute,
-            "tokensThisMinute": self.tokens_this_minute,
-            "tokensPerMinute": self.tokens_per_minute,
         }
 
 
@@ -142,6 +149,9 @@ class Ledger:
         #: Daily counts, read through from the database on first use and kept in step
         #: with it afterwards, so the hot path does not hit SQLite per check.
         self._daily: dict[tuple[int, str, str], int] = {}
+        #: Requests sent and not yet settled, per (key, model). They count against the day
+        #: until :meth:`record` makes it permanent, or callers at once could overrun a cap.
+        self._in_flight: Counter[tuple[int, str]] = Counter()
 
     def forget(self, key_id: int) -> None:
         """Drop a removed key's counts: SQLite hands its id to the next key added."""
@@ -151,36 +161,33 @@ class Ledger:
     def _window(self, key_id: int, model: str) -> Window:
         return self._windows.setdefault((key_id, model), Window())
 
-    async def _requests_today(self, key_id: int, model: str) -> int:
-        day = quota_day()
-        cached = self._daily.get((key_id, model, day))
+    async def _requests_today(self, key_id: int, model: ModelInfo) -> int:
+        day = model_day(model)
+        cached = self._daily.get((key_id, model.id, day))
         if cached is not None:
             return cached
         async with self.db.session() as session:
             row = await session.scalar(
                 select(KeyUsage).where(
                     KeyUsage.api_key_id == key_id,
-                    KeyUsage.model == model,
+                    KeyUsage.model == model.id,
                     KeyUsage.day == day,
                 )
             )
             count = int(row.requests) if row else 0
-        self._daily[(key_id, model, day)] = count
+        self._daily[(key_id, model.id, day)] = count
         return count
 
     async def headroom(self, key_id: int, model: ModelInfo, *, cap: int | None = None) -> Headroom:
         """What is left, and the first limit that would stop the next request.
 
-        ``cap`` is the key's own daily limit and wins over the model's when it is set. Two
-        things need that. A paid key has no published daily ceiling, so the user names one
-        and it is the only thing standing between them and a bill. And a *discovered* model
-        carries :data:`UNKNOWN_LIMITS`, deliberately tiny — correct for a free tier nobody
-        has documented, and absurd on an account that is being billed per token.
+        ``cap`` is the key's own daily limit. A paid key must have one, because it is the
+        only thing between its owner and a bill; where both are set, the lower one stops.
         """
         now = time.monotonic()
         window = self._window(key_id, model.id)
-        today = await self._requests_today(key_id, model.id)
-        daily = cap if cap is not None else model.rpd
+        today = await self._requests_today(key_id, model) + self._in_flight[(key_id, model.id)]
+        daily = daily_ceiling(model, cap)
 
         state = Headroom(
             key_id=key_id,
@@ -189,53 +196,35 @@ class Ledger:
             requests_per_day=daily,
             requests_this_minute=window.requests(now),
             requests_per_minute=model.rpm,
-            tokens_this_minute=window.tokens(now),
-            tokens_per_minute=model.tpm,
         )
 
-        # Daily first: it is the one that cannot be waited out in any useful sense. Zero is
-        # "no daily ceiling", not "already spent": a paid model publishes none, and reading
-        # it literally would refuse the day's very first request.
-        if daily > 0 and today >= daily:
+        # Daily first: it is the one that cannot be waited out in any useful sense.
+        if today >= daily:
             state.blocked_by = "requests_per_day"
-            state.retry_after = seconds_until_reset()
+            state.retry_after = model_reset(model)
         elif state.requests_this_minute >= model.rpm:
             state.blocked_by = "requests_per_minute"
             state.retry_after = window.next_free(now)
-        elif state.tokens_this_minute >= model.tpm:
-            state.blocked_by = "tokens_per_minute"
-            state.retry_after = window.next_free(now)
         return state
 
-    async def allows(
-        self,
-        key_id: int,
-        model: ModelInfo,
-        *,
-        estimated_tokens: int,
-        cap: int | None = None,
-    ) -> Headroom:
-        """Headroom, also refusing a request whose *size* would breach TPM.
+    def sent(self, key_id: int, model: ModelInfo) -> None:
+        """Count a request against the minute as it leaves, not when it returns: one still
+        in flight already counts at the provider. :meth:`KeyStore.choose` calls it under the
+        lock it reads the budget with. The day counts it too, until :meth:`settled`."""
+        self._window(key_id, model.id).add(time.monotonic())
+        self._in_flight[(key_id, model.id)] += 1
 
-        Nothing is reserved between this check and :meth:`record`, so callers checking at
-        once can overshoot a limit by their number.
+    def settled(self, key_id: int, model: ModelInfo) -> None:
+        """The request :meth:`sent` counted has been answered and recorded, or has failed."""
+        self._in_flight[(key_id, model.id)] = max(0, self._in_flight[(key_id, model.id)] - 1)
+
+    async def record(self, key_id: int, model: ModelInfo, tokens: int) -> None:
+        """Count an answered request against the day, with its tokens.
+
+        Called after the response so the token count is the provider's own, thinking
+        tokens included. The minute already counted it in :meth:`sent`.
         """
-        state = await self.headroom(key_id, model, cap=cap)
-        if state.available and state.tokens_this_minute + estimated_tokens > model.tpm:
-            state.blocked_by = "tokens_per_minute"
-            state.retry_after = self._window(key_id, model.id).next_free(time.monotonic())
-        return state
-
-    async def record(self, key_id: int, model: str, tokens: int) -> None:
-        """Count a request that actually went out.
-
-        Called after the response so the token count is real rather than estimated —
-        including thinking tokens, which count against TPM and are easy to forget.
-        """
-        now = time.monotonic()
-        self._window(key_id, model).add(max(0, tokens), now)
-
-        day = quota_day()
+        day = model_day(model)
         spent, now_at = max(0, tokens), utcnow()
         # One atomic statement: calls finishing together otherwise read-then-write the same
         # count and lose increments, and the day's first two collide inserting its row.
@@ -243,7 +232,7 @@ class Ledger:
             insert(KeyUsage)
             .values(
                 api_key_id=key_id,
-                model=model,
+                model=model.id,
                 day=day,
                 requests=1,
                 tokens=spent,
@@ -261,10 +250,11 @@ class Ledger:
         )
         async with self.db.session() as session:
             requests = (await session.execute(statement)).scalar_one()
-        self._daily[(key_id, model, day)] = requests
+        self._daily[(key_id, model.id, day)] = requests
 
-        # Yesterday's counts are not just stale, they are wrong to serve — drop them.
-        for cached in [k for k in self._daily if k[2] != day]:
+        # Yesterday's counts are not just stale, they are wrong to serve — drop them. Only
+        # this key's for this model: another provider serving the same id keeps its own clock.
+        for cached in [k for k in self._daily if k[:2] == (key_id, model.id) and k[2] != day]:
             del self._daily[cached]
 
     async def penalise(
@@ -274,16 +264,10 @@ class Ledger:
 
         A ``429`` means the local count was wrong, so the count is moved to the ceiling and
         rotation immediately treats this pair as spent rather than retrying into it.
-
-        ``cap`` is the key's own ceiling, as in :meth:`headroom`. Without it a paid model,
-        whose published ``rpd`` is zero, would be moved to a ceiling of zero — which is to
-        say not moved at all, and rotation would retry into the same 429 for good.
         """
-        # One past what it has, when there is no published ceiling: the point is to mark
-        # this pair spent, and a ceiling of zero would mark nothing.
-        ceiling = cap if cap is not None else model.rpd
+        ceiling = daily_ceiling(model, cap)
         if daily:
-            day = quota_day()
+            day = model_day(model)
             async with self.db.session() as session:
                 row = await session.scalar(
                     select(KeyUsage).where(
@@ -297,7 +281,7 @@ class Ledger:
                     # row is read back before then.
                     row = KeyUsage(api_key_id=key_id, model=model.id, day=day, requests=0, tokens=0)
                     session.add(row)
-                row.requests = max(row.requests or 0, ceiling or (row.requests or 0) + 1)
+                row.requests = max(row.requests or 0, ceiling)
                 await session.commit()
                 self._daily[(key_id, model.id, day)] = row.requests
             log.warning("llm.budget.daily_exhausted", key_id=key_id, model=model.id)
@@ -305,24 +289,33 @@ class Ledger:
             now = time.monotonic()
             window = self._window(key_id, model.id)
             while window.requests(now) < model.rpm:
-                window.add(0, now)
+                window.add(now)
             log.info("llm.budget.minute_exhausted", key_id=key_id, model=model.id)
 
-    async def usage(self, key_ids: list[int]) -> list[dict[str, Any]]:
-        """Today's spend per key and model, for the keys panel."""
-        if not key_ids:
+    async def usage(
+        self, providers: Mapping[int, str], models: Mapping[tuple[str, str], ModelInfo]
+    ) -> list[dict[str, Any]]:
+        """Today's spend per key and set-up model, each today counted on its model's clock.
+
+        ``providers`` maps each key to its provider, and ``models`` is keyed by (provider,
+        model id): a usage row names only its key and model id, and ids repeat across
+        providers.
+        """
+        if not providers or not models:
             return []
-        day = quota_day()
+        today = {pair: model_day(model) for pair, model in models.items()}
         async with self.db.session() as session:
             rows = list(
                 (
                     await session.scalars(
                         select(KeyUsage).where(
-                            KeyUsage.api_key_id.in_(key_ids), KeyUsage.day == day
+                            KeyUsage.api_key_id.in_(providers.keys()),
+                            KeyUsage.day.in_(set(today.values())),
                         )
                     )
                 ).all()
             )
+        rows = [r for r in rows if today.get((providers[r.api_key_id], r.model)) == r.day]
         return [
             {
                 "keyId": r.api_key_id,

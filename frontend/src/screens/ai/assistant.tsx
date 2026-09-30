@@ -38,12 +38,13 @@ import {
 import { Confirm, Select } from '@/ui/overlay'
 import { SplitPane } from '@/ui/panels'
 import { ScopePicker } from '@/ui/scope-picker'
-import { useKeys } from './shared'
+import { useKeys, useProviderLabel } from './shared'
 
 export function Assistant({ threadId }: { threadId: number | null }) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const keys = useKeys()
+  const providerLabel = useProviderLabel()
   const options = useQuery({
     queryKey: ['ai', 'chat', 'options'],
     queryFn: chat.options,
@@ -79,13 +80,15 @@ export function Assistant({ threadId }: { threadId: number | null }) {
   }, [threadScope, setScope])
 
   const enabledProviders = new Set(keys.data?.keys.filter((k) => k.enabled).map((k) => k.provider))
+  // Most requests left today first, so the default is never a model already spent.
+  const left = new Map(keys.data?.budget.map((b) => [b.ref, b.remainingToday]))
   const modelItems = (options.data?.models.models ?? [])
-    .filter((m) => m.kind !== 'embedding' && enabledProviders.has(m.provider))
-    .map((m) => ({ value: m.id, label: `${m.label} · ${m.provider}` }))
-  const defaultModel = options.data?.models.defaults.chat
+    .filter((m) => enabledProviders.has(m.provider))
+    .sort((a, b) => (left.get(b.ref) ?? 0) - (left.get(a.ref) ?? 0))
+    .map((m) => ({ value: m.ref, label: `${m.id} · ${providerLabel(m.provider)}` }))
   const modelValue =
     (model && modelItems.some((m) => m.value === model) ? model : null) ??
-    (modelItems.some((m) => m.value === defaultModel) ? defaultModel : modelItems[0]?.value) ??
+    modelItems[0]?.value ??
     null
   const reasoningValue = reasoning ?? options.data?.defaultReasoning ?? 'normal'
   const reasoningHelp = options.data?.reasoning.find((r) => r.value === reasoningValue)?.description
@@ -160,6 +163,19 @@ export function Assistant({ threadId }: { threadId: number | null }) {
           an idea in your own words and get back real data fields.{' '}
           <Link to="/ai/$tab" params={{ tab: 'providers' }} className={LINK}>
             Choose a provider
+          </Link>
+        </Empty>
+      </Panel>
+    )
+  }
+  if (options.isSuccess && modelItems.length === 0) {
+    return (
+      <Panel>
+        <Empty title="The assistant needs a model">
+          Your Key is in. Now pick a model it can reach and give it the limits your provider shows
+          you.{' '}
+          <Link to="/ai/$tab" params={{ tab: 'models' }} className={LINK}>
+            Set up a model
           </Link>
         </Empty>
       </Panel>

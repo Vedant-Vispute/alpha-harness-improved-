@@ -65,7 +65,7 @@ export function AlphaCounts() {
   })
   const liveTasks = useLive((s) => s.tasks)
   const polled = useQuery({
-    queryKey: ['pool', 'tasks'],
+    queryKey: ['background-tasks'],
     queryFn: tasks.list,
     enabled: liveTasks == null,
     refetchInterval: 5000,

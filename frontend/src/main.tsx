@@ -59,6 +59,7 @@ createRoot(root).render(
             border: '1px solid var(--color-hairline-strong)',
             color: 'var(--color-ink)',
             borderRadius: 8,
+            boxShadow: 'var(--shadow-float)',
           },
         }}
       />

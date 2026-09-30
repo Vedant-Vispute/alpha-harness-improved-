@@ -4,8 +4,6 @@ One endpoint behind the indicator in the top bar: a catalog sync, a returns back
 template sweep all report into the same registry, so "is anything happening?" has one answer.
 """
 
-from __future__ import annotations
-
 from typing import Any, Literal
 
 from fastapi import APIRouter

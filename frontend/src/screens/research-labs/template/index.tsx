@@ -5,23 +5,17 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import {
-  CopyPlusIcon,
-  EllipsisIcon,
-  FilePlusIcon,
-  PlusIcon,
-  SaveIcon,
-  StarIcon,
-} from 'lucide-react'
+import { CopyPlusIcon, EllipsisIcon, FilePlusIcon, SaveIcon, StarIcon } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/cn'
 import { fmt } from '@/lib/format'
+import { useCores } from '@/lib/preferences'
+import { AddTaskButtons, useAddTask } from '@/screens/research-labs/add-task'
 import {
   labBody,
   MAX_SIMULATIONS,
   simulationsValid,
-  useAddTask,
   useLabMarket,
   useLabPreview,
   vectorOperatorsOf,
@@ -107,8 +101,9 @@ export function TemplateLabScreen() {
 
   const doc = draft.doc ?? EMPTY
   const vectorOperators = vectorOperatorsOf(draft, options.data?.vector)
+  const cores = useCores(draft.cores)
   const previewBody: TemplateLabRequest = {
-    ...labBody(draft, vectorOperators),
+    ...labBody(draft, vectorOperators, cores),
     tree: doc,
     template_name: '',
   }
@@ -142,8 +137,12 @@ export function TemplateLabScreen() {
     plan.problems.length === 0 &&
     simulationsValid(draft.simulations, maxSimulations)
 
-  const add = useAddTask((count: number) =>
-    templateLab.addTask({ ...previewBody, template_name: taskName, simulations: count }),
+  const add = useAddTask(() =>
+    templateLab.addTask({
+      ...previewBody,
+      template_name: taskName,
+      simulations: draft.simulations ?? 0,
+    }),
   )
   const sync = useMutation({
     mutationFn: () => templateLab.options(true),
@@ -242,15 +241,7 @@ export function TemplateLabScreen() {
                 ]}
               />
             )}
-            <Button
-              variant="primary"
-              disabled={!ready}
-              loading={add.isPending}
-              onClick={() => draft.simulations !== null && add.mutate(draft.simulations)}
-            >
-              <PlusIcon />
-              Add Task
-            </Button>
+            <AddTaskButtons add={add} disabled={!ready} />
           </>
         }
       />

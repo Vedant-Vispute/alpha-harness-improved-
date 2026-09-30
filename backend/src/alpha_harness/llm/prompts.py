@@ -9,8 +9,6 @@ never invent a field or operator name (a hallucinated one costs a simulation fro
 quota that does not come back until midnight), and say plainly what is uncertain.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 

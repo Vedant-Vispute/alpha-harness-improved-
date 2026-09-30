@@ -7,8 +7,6 @@ Lives at the top of the package rather than under ``api/`` so domain modules can
 their own response models without importing the layer that serves them.
 """
 
-from __future__ import annotations
-
 from dataclasses import asdict
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal

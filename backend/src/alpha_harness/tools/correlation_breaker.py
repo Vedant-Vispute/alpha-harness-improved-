@@ -19,8 +19,6 @@ A re-shape adds operators and data fields. For a Power Pool Alpha that can cost 
 limits, so each recipe is counted the way Power Pool counts and says when it would cross them.
 """
 
-from __future__ import annotations
-
 import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any

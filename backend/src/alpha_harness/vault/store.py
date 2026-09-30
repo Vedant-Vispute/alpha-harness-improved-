@@ -8,8 +8,6 @@ if the series are kept. The stored series rebuilds the platform's own figures (s
 :mod:`.metrics`), so a mix can be judged before a simulation is spent on it.
 """
 
-from __future__ import annotations
-
 import itertools
 import json
 from datetime import date, datetime
@@ -146,13 +144,132 @@ ALPHA_METRICS: dict[str, str] = {
 #: Sharpe and Fitness, and an expression. Excluding it left anyone running region-agnostic
 #: simulations with a vault full of Alphas that Evolution refused to breed from.
 #:
-#: The ``RA_PARENT`` is the one to keep out, and not because of its type — it is a summary
-#: of its children with region ``ALL`` and no metrics of its own (measured: Sharpe and
-#: Fitness both null), so there is nothing to score it by and no single market to breed in.
+#: An ``RA_PARENT`` breeds only in the all-regions market, and has no metrics of its own
+#: (measured: Sharpe and Fitness both null), so it is scored through its children: see
+#: :func:`family_row`.
 EVOLVABLE = "(coalesce(a.sim_type, 'REGULAR') IN ('REGULAR', 'RA_CHILD'))"
 
 #: The same rule, for a row already in hand.
 EVOLVABLE_TYPES = frozenset({"REGULAR", "RA_CHILD"})
+
+
+def family_of(parent: str) -> str:
+    """SQL: ``c`` is a region-agnostic child of the row aliased ``parent``.
+
+    Rows carry no parent id, but BRAIN writes a family in one second, from one expression and
+    one set of settings (measured on every family stored: the same expression recurs at
+    other seconds, never with the same second and settings).
+    """
+    return f"""
+        c.sim_type = 'RA_CHILD' AND c.expression = {parent}.expression
+        AND c.date_created = {parent}.date_created AND c.delay = {parent}.delay
+        AND c.neutralization IS NOT DISTINCT FROM {parent}.neutralization
+        AND c.decay IS NOT DISTINCT FROM {parent}.decay
+        AND c.truncation IS NOT DISTINCT FROM {parent}.truncation
+    """
+
+
+#: What the lab ranks an Alpha by: Train Fitness, or whole-period Fitness without a split.
+MERIT = "coalesce({row}.train_fitness, {row}.fitness)"
+
+#: Whether the Evolution Lab takes ``a`` as a seed, as far as its stored row can say: a
+#: single-region Alpha with a Fitness, or a region-agnostic parent two of whose regions are
+#: scored, since BRAIN submits a region-agnostic Alpha only when two regions pass. Regions,
+#: not children: twin families simulated in the same second are indistinguishable here.
+SEEDABLE = f"""(
+    ({EVOLVABLE} AND a.fitness IS NOT NULL)
+    OR (a.sim_type = 'RA_PARENT' AND (
+        SELECT count(DISTINCT c.region) FROM alpha c
+        WHERE {family_of("a")} AND {MERIT.format(row="c")} IS NOT NULL
+    ) >= 2)
+)"""  # noqa: S608 - built from constants in this module
+
+#: What the seed picker shows of a family: the standing child's figures.
+FAMILY_METRICS = (
+    "sharpe",
+    "fitness",
+    "turnover",
+    "returns",
+    "drawdown",
+    "margin",
+    "train_sharpe",
+    "test_sharpe",
+    "long_count",
+    "short_count",
+)
+
+#: The vault with each region-agnostic parent's figures taken from its standing child, so
+#: the seed picker sorts and filters families in SQL across pages. The same child
+#: :func:`family_row` picks, by the same merit and tie-break; a parent with fewer than two
+#: scored regions keeps its empty figures.
+STANDING_VIEW = f"""(
+    WITH best AS (
+        SELECT p.alpha_id AS parent_id, c.*
+        FROM alpha p JOIN alpha c ON {family_of("p")}
+        WHERE p.sim_type = 'RA_PARENT' AND {MERIT.format(row="c")} IS NOT NULL
+        QUALIFY row_number() OVER (
+            PARTITION BY p.alpha_id, c.region ORDER BY {MERIT.format(row="c")} DESC, c.alpha_id
+        ) = 1
+    ), standing AS (
+        SELECT * FROM best
+        QUALIFY row_number() OVER (
+            PARTITION BY parent_id ORDER BY {MERIT.format(row="best")} DESC, alpha_id
+        ) = 2
+    )
+    SELECT a.* REPLACE ({", ".join(f"coalesce(a.{k}, s.{k}) AS {k}" for k in FAMILY_METRICS)})
+        , s.region AS standing_region
+    FROM alpha a LEFT JOIN standing s ON s.parent_id = a.alpha_id
+)"""  # noqa: S608 - built from constants in this module
+
+#: What a family row takes from the parent rather than from its standing child.
+PARENT_OWN = (
+    "alpha_id",
+    "sim_type",
+    "region",
+    "universe",
+    "expression",
+    "status",
+    "name",
+    "date_created",
+    "date_submitted",
+)
+
+
+def _merit(row: dict[str, Any]) -> float | None:
+    """What the lab ranks by: Train Fitness, or whole-period Fitness without a test split."""
+    value = row.get("train_fitness")
+    if value is None:
+        value = row.get("fitness")
+    return float(value) if value is not None else None
+
+
+def family_row(parent: dict[str, Any], children: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """A region-agnostic parent as the Evolution Lab scores it, or ``None`` below two regions.
+
+    BRAIN submits one only when two or more regions pass, so the family is as good as its
+    second-best region: that child's metrics, checks and daily PnL (``series_id``) stand in
+    for the parent's, which has none. Identity, status and settings stay the parent's.
+    Chosen as :data:`STANDING_VIEW` chooses it: best child per region, then the second region.
+    """
+    by_merit = sorted(
+        ((merit, c) for c in children if (merit := _merit(c)) is not None),
+        key=lambda pair: (-pair[0], str(pair[1]["alpha_id"])),
+    )
+    best: dict[str, tuple[float, dict[str, Any]]] = {}
+    for merit, child in by_merit:
+        best.setdefault(str(child.get("region")), (merit, child))
+    if len(best) < 2:
+        return None
+    scored = [c for _, c in sorted(best.values(), key=lambda p: (-p[0], str(p[1]["alpha_id"])))]
+    standing = scored[1]
+    return {
+        **standing,
+        **{key: parent.get(key) for key in PARENT_OWN},
+        "series_id": standing["alpha_id"],
+        "regions": [c["region"] for c in scored],
+        #: Each scored region's best child: whose daily PnL stands for the family there.
+        "region_series": {str(c["region"]): str(c["alpha_id"]) for c in scored},
+    }
 
 
 def _iso(value: Any) -> str | None:
@@ -191,6 +308,7 @@ def _page_row(r: dict[str, Any]) -> dict[str, Any]:
         "pyramids": json_list(r["pyramids"]),
         "trainSharpe": r["train_sharpe"],
         "testSharpe": r["test_sharpe"],
+        "standingRegion": r.get("standing_region"),
     }
 
 
@@ -417,8 +535,7 @@ class AlphaVault:
             SELECT a.region, a.delay, a.universe, count(*) AS alphas FROM alpha a
             WHERE coalesce(a.instrument_type, 'EQUITY') = 'EQUITY'
               AND a.region IS NOT NULL AND a.delay IS NOT NULL AND a.universe IS NOT NULL
-              AND NOT {SUBMITTED} AND {EVOLVABLE}
-              AND a.expression IS NOT NULL AND a.fitness IS NOT NULL
+              AND NOT {SUBMITTED} AND {SEEDABLE} AND a.expression IS NOT NULL
             GROUP BY 1, 2, 3
             ORDER BY alphas DESC
             """  # noqa: S608
@@ -466,10 +583,9 @@ class AlphaVault:
             # be the same lie in a different place.
             clauses.extend(
                 [
-                    EVOLVABLE,
+                    SEEDABLE,
                     "coalesce(a.instrument_type, 'EQUITY') = 'EQUITY'",
                     "a.expression IS NOT NULL",
-                    "a.fitness IS NOT NULL",
                 ]
             )
         params: list[Any] = []
@@ -493,7 +609,10 @@ class AlphaVault:
         where = " AND ".join(clauses)
         order = ALPHA_METRICS.get(sort_by, ALPHA_METRICS["date_created"])
         direction = "DESC" if sort_desc else "ASC"
-        total = await self.catalog.scalar(f"SELECT count(*) FROM alpha a WHERE {where}", params)  # noqa: S608
+        # Picking seeds, a region-agnostic parent sorts, filters and shows as its family.
+        source = STANDING_VIEW if evolvable else "alpha"
+        standing = "a.standing_region" if evolvable else "NULL AS standing_region"
+        total = await self.catalog.scalar(f"SELECT count(*) FROM {source} a WHERE {where}", params)  # noqa: S608
         rows = await self.catalog.query(
             f"""
             SELECT a.alpha_id, a.name, a.sim_type, a.status, a.region, a.universe, a.delay,
@@ -502,9 +621,9 @@ class AlphaVault:
                    a.operator_count, {ALPHA_METRICS["calmar"]} AS calmar,
                    a.date_created, a.date_submitted, a.long_count, a.short_count,
                    a.max_trade, a.max_position, a.classifications, a.pyramids,
-                   a.train_sharpe, a.test_sharpe,
+                   a.train_sharpe, a.test_sharpe, {standing},
                    EXISTS (SELECT 1 FROM alpha_pnl p WHERE p.alpha_id = a.alpha_id) AS has_pnl
-            FROM alpha a
+            FROM {source} a
             WHERE {where}
             ORDER BY {order} {direction} NULLS LAST, a.alpha_id
             LIMIT ? OFFSET ?
@@ -661,6 +780,44 @@ class AlphaVault:
         for row in rows:
             out.setdefault(str(row["alpha_id"]), {})[row["date"]] = float(row["pnl"] or 0.0)
         return out
+
+    async def families(self, rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """The scorable region-agnostic parents among ``rows``, as family rows by id."""
+        parents = {str(r["alpha_id"]): r for r in rows if r.get("sim_type") == "RA_PARENT"}
+        if not parents:
+            return {}
+        placeholders = ", ".join("?" for _ in parents)
+        found = await self.catalog.query(
+            f"""
+            SELECT p.alpha_id AS parent_of, c.* FROM alpha p JOIN alpha c ON {family_of("p")}
+            WHERE p.alpha_id IN ({placeholders})
+            """,  # noqa: S608
+            list(parents),
+        )
+        children: dict[str, list[dict[str, Any]]] = {}
+        for row in found:
+            children.setdefault(str(row.pop("parent_of")), []).append(row)
+        return {
+            alpha_id: family
+            for alpha_id, parent in parents.items()
+            if (family := family_row(parent, children.get(alpha_id, [])))
+        }
+
+    async def with_families(self, rows: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """``rows``, each scorable region-agnostic parent standing as its family."""
+        return rows | await self.families(list(rows.values()))
+
+    async def region_series(self, alpha_ids: list[str]) -> dict[str, dict[str, str]]:
+        """Whose daily PnL stands for each Alpha, by region: its own in its one region, or
+        each scored region's best child for a region-agnostic family."""
+        rows = await self.by_ids(alpha_ids)
+        families = await self.families(list(rows.values()))
+        return {
+            a: families[a]["region_series"]
+            if a in families
+            else {str((rows.get(a) or {}).get("region")): a}
+            for a in alpha_ids
+        }
 
     async def by_ids(self, alpha_ids: list[str]) -> dict[str, dict[str, Any]]:
         """Look several alphas up at once, keyed by id."""

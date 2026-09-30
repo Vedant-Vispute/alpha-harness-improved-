@@ -21,6 +21,16 @@ const ICONS: Record<(typeof LAB_TABS)[number]['tab'], LucideIcon> = {
   'region-agnostic': GlobeIcon,
 }
 
+/** What each one searches, since a name alone does not say which to start with. */
+const ABOUT: Record<(typeof LAB_TABS)[number]['tab'], string> = {
+  search: 'Writes one- and two-operator Alphas from the datasets you pick, steering to Sharpe.',
+  template: 'Tries every choice and value a template allows, and keeps the best Sharpe.',
+  evolution: 'Breeds new Alphas from seeds you pick, holding the last two years back as a test.',
+  'power-pool': 'An LLM writes Power Pool Alphas for the datasets you pick.',
+  'region-agnostic':
+    'An LLM writes Alphas from region-agnostic fields, each run in every region that carries them.',
+}
+
 /** The card a hub screen links each of its entries with; the `Link` carries it. */
 export const HUB_CARD =
   'panel-highlight group flex min-h-56 flex-col justify-between rounded-lg border border-hairline bg-surface-1 p-6 transition-colors hover:border-hairline-strong hover:bg-surface-2'
@@ -65,7 +75,12 @@ export function ResearchLabsScreen() {
       <div className="grid gap-3 sm:grid-cols-2">
         {LAB_TABS.map((lab, index) => (
           <Link key={lab.tab} to={lab.to} className={HUB_CARD}>
-            <HubCardBody icon={ICONS[lab.tab]} index={index} label={lab.label} />
+            <HubCardBody
+              icon={ICONS[lab.tab]}
+              index={index}
+              label={lab.label}
+              about={ABOUT[lab.tab]}
+            />
           </Link>
         ))}
       </div>

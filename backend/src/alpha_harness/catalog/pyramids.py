@@ -7,8 +7,6 @@ no quarter dates, and Genius levels run on calendar quarters, so the quarter is 
 from today's date in platform time.
 """
 
-from __future__ import annotations
-
 import math
 import time
 from datetime import date, datetime
@@ -24,7 +22,7 @@ if TYPE_CHECKING:
 
 #: Alphas submitted in a pyramid this quarter before it counts as formulated: "A consultant
 #: is considered to have formulated a pyramid if they have submitted a minimum of 3 Alphas in
-#: it" — ``docs/learn/consultant-information/brain-genius``.
+#: it" — BRAIN Genius.
 LIT_AT = 3
 
 MULTIPLIERS_TTL = 6 * 3600

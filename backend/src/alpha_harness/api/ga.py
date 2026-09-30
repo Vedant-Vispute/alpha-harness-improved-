@@ -4,8 +4,6 @@ Nothing here runs a search: a task is added not started and is run from Tasks. A
 reads the local store and downloads daily PnL where it is missing; it never simulates.
 """
 
-from __future__ import annotations
-
 import asyncio
 import time
 from typing import TYPE_CHECKING, Any, Literal
@@ -181,7 +179,8 @@ async def _plan(body: EvolutionRequest, state: Any) -> dict[str, Any]:
         state, body.region, body.delay, body.universe, body.neutralizations
     )
     ids = list(dict.fromkeys(body.alpha_ids))
-    rows = await state.alphas.by_ids(ids)
+    # A region-agnostic parent stands as its family: the region it would be scored on.
+    rows = await state.alphas.with_families(await state.alphas.by_ids(ids))
     seeds: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
     for alpha_id in ids:

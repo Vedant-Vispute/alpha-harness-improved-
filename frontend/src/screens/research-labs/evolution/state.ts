@@ -9,7 +9,8 @@ export interface EvolutionDraft {
   delay: number
   universe: string
   seedIds: string[]
-  cores: number
+  /** `null` until chosen in the form: until then Settings' default applies. */
+  cores: number | null
   /** `null` until the user assigns them: a task always has simulations chosen on purpose. */
   simulations: number | null
   /** `null`: sized from the simulations. */
@@ -29,7 +30,7 @@ export const useEvolutionLab = create<EvolutionDraft>()(
       delay: DEFAULT_SCOPE.delay,
       universe: DEFAULT_SCOPE.universe,
       seedIds: [],
-      cores: 4,
+      cores: null,
       simulations: null,
       population: null,
       neutralizations: [],
@@ -37,6 +38,11 @@ export const useEvolutionLab = create<EvolutionDraft>()(
       autoJobId: null,
       appliedJobId: null,
     }),
-    { name: 'alpha-harness-evolution-lab' },
+    {
+      name: 'alpha-harness-evolution-lab',
+      // Version 1 leaves cores unchosen, so Settings' default for new tasks applies.
+      version: 1,
+      migrate: (stored) => ({ ...(stored as EvolutionDraft), cores: null }),
+    },
   ),
 )

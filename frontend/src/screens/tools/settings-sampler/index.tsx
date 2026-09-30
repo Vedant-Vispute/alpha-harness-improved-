@@ -10,14 +10,14 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useSearch } from '@tanstack/react-router'
-import { PlusIcon } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import { cn } from '@/lib/cn'
 import { DASH, fmt } from '@/lib/format'
 import { neutralizationLabel } from '@/lib/neutralization'
+import { useCores } from '@/lib/preferences'
 import { DEFAULT_SCOPE, marketKey, regionLabel, useScopeOptions } from '@/lib/scope'
 import { AstInspector } from '@/screens/pool/shared'
-import { useAddTask } from '@/screens/research-labs/lab-task'
+import { AddTaskButtons, useAddTask } from '@/screens/research-labs/add-task'
 import { NeutralizationPicker } from '@/screens/research-labs/neutralization'
 import {
   Button,
@@ -442,7 +442,9 @@ export function SettingsSamplerScreen() {
   const [chosen, setChosen] = useState<ReadonlySet<string>>(new Set())
   const [neutralizations, setNeutralizations] = useState<string[]>([])
   const [pairs, setPairs] = useState<string[]>([])
-  const [cores, setCores] = useState(1)
+  /** `null` until chosen here: until then Settings' default for new tasks applies. */
+  const [chosenCores, setCores] = useState<number | null>(null)
+  const wantedCores = useCores(chosenCores)
   const [marketNeutralOnly, setMarketNeutralOnly] = useState(true)
 
   useEffect(() => {
@@ -464,6 +466,7 @@ export function SettingsSamplerScreen() {
     retry: false,
   })
   const plan = query.data
+  const cores = Math.min(wantedCores, plan?.maxCores ?? wantedCores)
 
   // An Alpha's own settings fill the fields the first time its plan arrives, so what is shown
   // is what would run — and stays editable, because an edit is the whole point of having them
@@ -493,7 +496,7 @@ export function SettingsSamplerScreen() {
     setChosen(start.chosen)
     setNeutralizations(start.neutralizations)
     setPairs(start.pairs)
-    setCores(plan.maxCores)
+    setCores(null)
   }, [plan])
 
   const change = (keys: string[], on: boolean) =>
@@ -614,17 +617,7 @@ export function SettingsSamplerScreen() {
       <PageHeader
         title="Settings Sampler"
         description="Run an expression everywhere BRAIN accepts it"
-        actions={
-          <Button
-            variant="primary"
-            disabled={simulations === 0}
-            loading={add.isPending}
-            onClick={() => add.mutate()}
-          >
-            <PlusIcon />
-            Add Task
-          </Button>
-        }
+        actions={<AddTaskButtons add={add} disabled={simulations === 0} />}
       />
 
       <Panel

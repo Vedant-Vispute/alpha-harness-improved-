@@ -1,13 +1,10 @@
 """Pydantic models of BRAIN API objects.
 
-Shapes are taken from ``docs/wqb-api``. The wire format is camelCase; models accept either
-spelling and serialise back to camelCase.
+The wire format is camelCase; models accept either spelling and serialise back to camelCase.
 
 Deliberately permissive — ``extra="allow"`` everywhere — because the platform adds fields
 over time and unknown ones should survive into the UI rather than be silently dropped.
 """
-
-from __future__ import annotations
 
 from datetime import date, datetime
 from enum import StrEnum
@@ -35,9 +32,8 @@ class SimulationType(StrEnum):
     """What a simulation is, and what the Alphas it makes are.
 
     ``REGION_AGNOSTIC`` is a request type only; it produces one ``RA_PARENT`` Alpha holding
-    up to four ``RA_CHILD`` Alphas, one per region (``docs/learn/advanced-topics/
-    region-agnostic-alpha.json``). Measured live: the simulation answers with the parent's
-    id, and the parent carries ``children``.
+    up to four ``RA_CHILD`` Alphas, one per region. Measured live: the simulation answers
+    with the parent's id, and the parent carries ``children``.
     """
 
     REGULAR = "REGULAR"
@@ -81,7 +77,7 @@ def region_label(region: str) -> str:
 
 
 class SimulationStatus(StrEnum):
-    """Every simulation ``status`` (``docs/wqb-documentation/brain-api/brain-api.md``).
+    """Every simulation ``status``.
 
     ``WAITING`` and ``SIMULATING`` are still running; the rest are final.
     """
@@ -277,7 +273,7 @@ class Alpha(BrainModel):
     date_submitted: datetime | None = None
     date_modified: datetime | None = None
     name: str | None = None
-    #: Nullable on the wire (``docs/api/schemas/alpha.md``), so a null must not fail the page.
+    #: Nullable on the wire, so a null must not fail the page.
     favorite: bool | None = None
     hidden: bool | None = None
     color: str | None = None
