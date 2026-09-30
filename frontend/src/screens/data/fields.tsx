@@ -227,6 +227,8 @@ const ADVANCED: (keyof FieldFilterState)[] = [
   'user_count_min',
   'user_count_max',
   'pyramid_multiplier_min',
+  'region_coverage_min',
+  'region_coverage_max',
   'date_min',
   'date_max',
   'keywords',
@@ -506,7 +508,7 @@ function SelectionLists({ scope, onOpen }: { scope: Scope; onOpen: (id: string) 
 
 /** The labs a selection of fields can be sent to. */
 const FIELD_LABS = LAB_TABS.filter((l): l is (typeof LAB_TABS)[number] & { to: PickFrom } =>
-  ['/labs/search', '/labs/template', '/labs/power-pool'].includes(l.to),
+  ['/labs/search', '/labs/template', '/labs/power-pool', '/labs/region-agnostic'].includes(l.to),
 )
 
 /**
@@ -833,6 +835,18 @@ function FieldFilters({ scope }: { scope: Scope }) {
                   max={filter.coverage_max}
                   onChange={(coverage_min, coverage_max) => set({ coverage_min, coverage_max })}
                 />
+                {/* Only the region-agnostic market says how many regions hold a field. */}
+                {isRegionAgnostic(scope) && (
+                  <Range
+                    label="Regions per field"
+                    hint="How many of USA, EUR, ASI and GLB carry the field."
+                    min={filter.region_coverage_min}
+                    max={filter.region_coverage_max}
+                    onChange={(region_coverage_min, region_coverage_max) =>
+                      set({ region_coverage_min, region_coverage_max })
+                    }
+                  />
+                )}
                 <Range
                   label="Alpha Count"
                   hint={s && `Highest in this market: ${fmt.int(s.alpha_count_max)}`}

@@ -27,6 +27,7 @@ import { MAX_SIMULATIONS } from '@/screens/research-labs/lab-task'
 import { type LabTask, labTasks, type RankedAlpha, type TaskStatus } from '@/screens/tasks/api'
 import { AFTER_COST_HEADER, DELAY, INVESTABILITY, SharpeCell } from '@/screens/tasks/columns'
 import { resultsMarkdown } from '@/screens/tasks/copy'
+import { AlphaGroups } from '@/screens/tasks/groups'
 import { SubmittableAlphas } from '@/screens/tasks/submittable'
 import { TaskAbout, TaskControls } from '@/screens/tasks/task-info'
 import { HoldButton } from '@/ui/hold-button'
@@ -53,8 +54,9 @@ import {
 import { Confirm, Dialog, Menu } from '@/ui/overlay'
 import { type Column, DataTable } from '@/ui/table'
 
-/** Matches `labs.params.SETTINGS_SAMPLER`. */
+/** Matches `labs.params.SETTINGS_SAMPLER` and `REGION_AGNOSTIC_SAMPLER`. */
 const SETTINGS_SAMPLER = 'settings-sampler'
+const REGION_AGNOSTIC = 'region-agnostic'
 
 const STATUS: Record<TaskStatus, { label: string; tone: ComponentProps<typeof Badge>['tone'] }> = {
   IDLE: { label: 'Not Started', tone: 'outline' },
@@ -257,7 +259,7 @@ export function TasksScreen() {
     setSelectedId(id)
     // After the pane has rendered the new task.
     requestAnimationFrame(() =>
-      detail.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+      detail.current?.scrollIntoView({ behavior: 'instant', block: 'start' }),
     )
   }
 
@@ -722,6 +724,8 @@ function TaskDetail({
     queryKey: ['lab-tasks', 'top', task.id],
     // The whole sweep is worth scrolling; the table virtualises, so the rows are cheap.
     queryFn: () => labTasks.top(task.id, Math.min(Math.max(task.target, 50), 5000)),
+    // Region Agnostic Lab's results are its Alpha groups instead.
+    enabled: task.lab !== REGION_AGNOSTIC,
   })
   // The Alpha the sweep came from leads and is never ranked: it is the reference, not a
   // result. Everything else arrives sorted on the objective already.
@@ -843,17 +847,21 @@ function TaskDetail({
             Open Full Results
           </Button>
         </div>
-        <DataTable
-          label={task.lab === SETTINGS_SAMPLER ? 'Results' : 'Top Alphas'}
-          rows={rows}
-          columns={topColumns(task)}
-          rowKey={(r) => String(r.trialId)}
-          onRowClick={(r) => r.alphaId && onOpenAlpha(r.alphaId)}
-          rowClass={rowClass}
-          loading={top.isPending}
-          error={top.error}
-          empty="No Alphas back yet."
-        />
+        {task.lab === REGION_AGNOSTIC ? (
+          <AlphaGroups task={task} onOpenAlpha={onOpenAlpha} />
+        ) : (
+          <DataTable
+            label={task.lab === SETTINGS_SAMPLER ? 'Results' : 'Top Alphas'}
+            rows={rows}
+            columns={topColumns(task)}
+            rowKey={(r) => String(r.trialId)}
+            onRowClick={(r) => r.alphaId && onOpenAlpha(r.alphaId)}
+            rowClass={rowClass}
+            loading={top.isPending}
+            error={top.error}
+            empty="No Alphas back yet."
+          />
+        )}
         {task.lab === SETTINGS_SAMPLER && (
           // A two-column grid rather than padded text: the equals signs line up whatever the
           // labels are and whatever the font does.

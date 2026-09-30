@@ -2,7 +2,11 @@
 
 import { createPick } from '@/lib/pick'
 
-export type PickFrom = '/labs/search' | '/labs/template' | '/labs/power-pool'
+export type PickFrom =
+  | '/labs/search'
+  | '/labs/template'
+  | '/labs/power-pool'
+  | '/labs/region-agnostic'
 
 /** A field ticked in the Fields table, with the dataset it belongs to. */
 export interface PickedField {

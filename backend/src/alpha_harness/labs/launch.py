@@ -25,6 +25,7 @@ from .params import (
     CORRELATION_BREAKER,
     GA_SAMPLER,
     POWER_POOL_SAMPLER,
+    REGION_AGNOSTIC_SAMPLER,
     SEARCH_SAMPLER,
     SETTINGS_SAMPLER,
     TASK_SAMPLERS,
@@ -49,6 +50,7 @@ _TASKS: dict[str, tuple[str, str]] = {
     TEMPLATE_SAMPLER: ("template", "train_sharpe"),
     GA_SAMPLER: ("evolution", "train_fitness"),
     POWER_POOL_SAMPLER: ("power-pool", "sharpe"),
+    REGION_AGNOSTIC_SAMPLER: ("region-agnostic", "sharpe"),
     SETTINGS_SAMPLER: ("settings-sampler", "sharpe"),
     CORRELATION_BREAKER: ("correlation-breaker", "sharpe"),
 }
@@ -100,7 +102,7 @@ async def account_operators(state: Any, *, refresh: bool) -> list[dict[str, Any]
     if refresh or not cached:
         try:
             return await state.metadata.refresh_operators()
-        except BrainError, ValidationError:
+        except (BrainError, ValidationError):
             return cached or []
     return cached
 

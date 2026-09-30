@@ -76,6 +76,14 @@ const powerPoolLab = createRoute({
     'PowerPoolLabScreen',
   ),
 })
+const regionAgnosticLab = createRoute({
+  getParentRoute: () => labs,
+  path: 'region-agnostic',
+  component: lazyRouteComponent(
+    () => import('@/screens/research-labs/region-agnostic'),
+    'RegionAgnosticLabScreen',
+  ),
+})
 const tools = createRoute({ getParentRoute: () => root, path: '/tools' })
 const toolsIndex = createRoute({
   getParentRoute: () => tools,
@@ -209,7 +217,14 @@ const routeTree = root.addChildren([
   dashboard,
   matrix,
   data,
-  labs.addChildren([labsIndex, searchLab, templateLab, evolutionLab, powerPoolLab]),
+  labs.addChildren([
+    labsIndex,
+    searchLab,
+    templateLab,
+    evolutionLab,
+    powerPoolLab,
+    regionAgnosticLab,
+  ]),
   tools.addChildren([toolsIndex, settingsSampler, submissionPlanner, correlationBreaker]),
   llmPrompts,
   tasks.addChildren([tasksIndex, taskResults]),

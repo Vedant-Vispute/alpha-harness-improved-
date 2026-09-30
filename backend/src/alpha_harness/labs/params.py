@@ -24,6 +24,11 @@ GA_SAMPLER = "ga"
 SEARCH_SAMPLER = "search"
 TEMPLATE_SAMPLER = "template"
 POWER_POOL_SAMPLER = "power-pool"
+#: An LLM writes Alphas from region-agnostic fields; each runs as an ordinary simulation in every
+#: chosen region that carries its fields (labs.power_pool).
+REGION_AGNOSTIC_SAMPLER = "region-agnostic"
+#: The labs an LLM writes for, which share one machinery.
+LLM_SAMPLERS = frozenset({POWER_POOL_SAMPLER, REGION_AGNOSTIC_SAMPLER})
 #: Studies that re-run one proven expression across markets and settings (tools.settings_sampler).
 SETTINGS_SAMPLER = "settings-sampler"
 #: Studies that re-shape one Alpha's expression at its own settings (tools.correlation_breaker).
@@ -34,6 +39,7 @@ TASK_SAMPLERS = {
     TEMPLATE_SAMPLER: "Template Lab",
     GA_SAMPLER: "Evolution Lab",
     POWER_POOL_SAMPLER: "LLM Power Pool Lab",
+    REGION_AGNOSTIC_SAMPLER: "Region Agnostic Lab",
     SETTINGS_SAMPLER: "Settings Sampler",
     CORRELATION_BREAKER: "Correlation Breaker",
 }
@@ -102,6 +108,19 @@ class PowerPoolParams(TaskParams):
     calls: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class RegionAgnosticParams(PowerPoolParams):
+    """Region Agnostic Lab: every Alpha runs once per region, the settings otherwise shared.
+
+    ``region`` is ``ALL``, the market the fields were chosen in; ``universes`` holds each
+    region's universe in ``regions`` order, and ``region_universes`` says which is whose.
+    """
+
+    regions: list[str] = Field(default_factory=list)
+    region_universes: dict[str, str] = Field(default_factory=dict)
+    #: BRAIN's region-agnostic universe size, which ``region_universes`` spells out.
+    size: str = "LARGE"
+
+
 class SettingsParams(TaskParams):
     """Settings Sampler: every simulation is written up front, so nothing is sampled.
 
@@ -141,6 +160,7 @@ BY_SAMPLER: dict[str, type[TaskParams]] = {
     TEMPLATE_SAMPLER: TemplateParams,
     GA_SAMPLER: EvolutionParams,
     POWER_POOL_SAMPLER: PowerPoolParams,
+    REGION_AGNOSTIC_SAMPLER: RegionAgnosticParams,
     SETTINGS_SAMPLER: SettingsParams,
     CORRELATION_BREAKER: BreakerParams,
 }
@@ -151,7 +171,9 @@ def params_of[P: TaskParams](row: Study, kind: type[P]) -> P:
     expected = BY_SAMPLER.get(row.sampler)
     if expected is None or not issubclass(expected, kind):
         raise TypeError(f"A {row.sampler!r} task has no {kind.__name__}.")
-    return kind.model_validate(row.sampler_params or {})
+    # The row's own class, which is ``kind`` or a subclass: asked as a PowerPoolParams, a
+    # Region Agnostic task must still come back with its regions, not as a Power Pool one.
+    return expected.model_validate(row.sampler_params or {})  # pyright: ignore[reportReturnType]
 
 
 def task_params(row: Study) -> TaskParams:

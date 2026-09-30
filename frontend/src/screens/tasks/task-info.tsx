@@ -30,6 +30,12 @@ import { type Column, DataTable } from '@/ui/table'
 /** Matches `labs.params.POWER_POOL_SAMPLER` and the prompt kind that lab sends. */
 const POWER_POOL = 'power-pool'
 const PROMPT_KIND = 'power_pool_lab'
+/** Region Agnostic Lab: an LLM lab too, with a prompt of its own kind. */
+const REGION_AGNOSTIC = 'region-agnostic'
+const LLM_LABS: Record<string, string> = {
+  [POWER_POOL]: PROMPT_KIND,
+  [REGION_AGNOSTIC]: 'region_agnostic_lab',
+}
 /** Labs whose simulations are written when the task is added. */
 const WRITTEN_UP_FRONT = new Set(['settings-sampler', 'correlation-breaker'])
 
@@ -209,7 +215,7 @@ function CloneDialog({
   onCloned: (id: number) => void
 }) {
   const refresh = useRefresh()
-  const llm = task.lab === POWER_POOL
+  const llm = task.lab in LLM_LABS
   const upFront = WRITTEN_UP_FRONT.has(task.lab)
   const [simulations, setSimulations] = useState(String(task.target))
   const [prompt, setPrompt] = useState<'same' | 'other'>('same')
@@ -283,7 +289,11 @@ function CloneDialog({
               onChange={setPrompt}
             />
             {prompt === 'other' && (
-              <PromptPicker kind={PROMPT_KIND} value={promptId} onChange={setPromptId} />
+              <PromptPicker
+                kind={LLM_LABS[task.lab] ?? PROMPT_KIND}
+                value={promptId}
+                onChange={setPromptId}
+              />
             )}
           </Fieldset>
         )}
@@ -382,7 +392,7 @@ export function TaskAbout({ task }: { task: LabTask }) {
   if (!info.data) return <Skeleton className="h-40" />
   const d = info.data
   return (
-    <Disclosure summary="Everything about this task" defaultOpen>
+    <Disclosure summary="Everything about this task">
       <div className="flex flex-col gap-5">
         <div className="grid grid-cols-1 gap-x-8 gap-y-4 lg:grid-cols-2">
           <section aria-label="When" className="flex flex-col gap-2">
@@ -436,7 +446,7 @@ export function TaskAbout({ task }: { task: LabTask }) {
           </section>
         )}
 
-        {task.lab === POWER_POOL && (
+        {task.lab in LLM_LABS && (
           <section aria-label="LLM calls" className="flex flex-col gap-2">
             <h3 className="text-caption font-medium text-ink-muted">
               LLM calls · <span className="num">{fmt.int(d.llmCalls)}</span> made, latest first

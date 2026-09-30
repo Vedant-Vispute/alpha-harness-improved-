@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import re
 from typing import Annotated, Any, Literal
 
@@ -26,7 +27,8 @@ from ..labs.params import (
     BY_SAMPLER,
     CORRELATION_BREAKER,
     GA_SAMPLER,
-    POWER_POOL_SAMPLER,
+    LLM_SAMPLERS,
+    REGION_AGNOSTIC_SAMPLER,
     SETTINGS_SAMPLER,
     TASK_SAMPLERS,
     TEMPLATE_SAMPLER,
@@ -333,7 +335,7 @@ def _task(row: Study, progress: dict[str, Any], names: dict[str, str] | None = N
             "datasetNames": [(names or {}).get(d, d) for d in params.get("datasetIds") or []],
             "chosenFields": len(params.get("fieldIds") or []),
             "promptName": (params.get("promptName") or "Built-in")
-            if row.sampler == POWER_POOL_SAMPLER
+            if row.sampler in LLM_SAMPLERS
             else None,
             "model": params.get("model") or None,
             "fields": len((params.get("space") or {}).get("fields") or {}),
@@ -588,12 +590,12 @@ async def clone(task_id: int, body: CloneTask, state: State) -> AddedTask:
         params.llm = {"calls": 0}
         params.calls = []
         if body.change_prompt:
-            name, system = await chosen(state, pool_lab.KIND, body.prompt_id)
+            name, system = await chosen(state, pool_lab.kind_of(params), body.prompt_id)
             params.prompt_id = body.prompt_id
             params.prompt_name = name if body.prompt_id is not None else None
             params.system = system if body.prompt_id is not None else None
     elif body.change_prompt:
-        raise refuse(422, "no_prompt", "Only an LLM Power Pool Lab task sends a prompt.")
+        raise refuse(422, "no_prompt", "Only a task an LLM writes for sends a prompt.")
 
     async with state.db.session() as session:
         if row.sampler in ONE_EXPRESSION:
@@ -811,7 +813,11 @@ def _value(value: Any) -> str:
         items: list[Any] = list(value)  # pyright: ignore[reportUnknownArgumentType]
         return ", ".join(str(v) for v in items) or "None"
     if isinstance(value, dict):
-        return f"{len(value)} entries"  # pyright: ignore[reportUnknownArgumentType]
+        entries: dict[Any, Any] = dict(value)  # pyright: ignore[reportUnknownArgumentType]
+        # Short maps read as they are, e.g. each region's universe; long ones are counted.
+        if len(entries) <= 8 and all(not isinstance(v, (dict, list)) for v in entries.values()):
+            return ", ".join(f"{k} {v}" for k, v in entries.items())
+        return f"{len(entries)} entries"
     return str(value)
 
 
@@ -827,7 +833,7 @@ async def info(task_id: int, state: State) -> TaskInfo:
         for k, v in params.items()
         if k not in HIDDEN and v not in (None, "", [])
     ]
-    if row.sampler == POWER_POOL_SAMPLER and "promptName" not in params:
+    if row.sampler in LLM_SAMPLERS and "promptName" not in params:
         settings.append(TaskSetting(label="Prompt", value="Built-in"))
     space = params.get("space") or {}
     if space.get("fields"):
@@ -938,6 +944,239 @@ async def info(task_id: int, state: State) -> TaskInfo:
         finished_at=row.finished_at.isoformat() if row.finished_at else None,
         updated_at=row.updated_at.isoformat() if row.updated_at else None,
     )
+
+
+# --- Region Agnostic Lab: one Alpha, a run per region ----------------------------------
+
+#: Checks that say where an Alpha belongs rather than whether it is fit to submit.
+NOT_FITNESS = ("THEME", "CLUSTER", "PYRAMID")
+
+#: Tasks being calibrated now, so the view can say so and wait.
+_calibrating: set[int] = set()
+
+
+class GroupAlpha(Out):
+    trial_id: int
+    region: str | None
+    universe: str | None
+    #: Where its simulation is: waiting for cores, out on BRAIN, back, or failed.
+    state: Literal["waiting", "running", "complete", "failed"]
+    alpha_id: str | None
+    sharpe: float | None
+    fitness: float | None
+    turnover: float | None
+    returns: float | None
+    #: Submission checks, leaving out theme, cluster and pyramid ones.
+    passed: int
+    failed: int
+    pending: int
+    failing: list[str]
+
+
+class AlphaGroup(Out):
+    #: The first of its trials' numbers, which the rest share.
+    group: int
+    expression: str | None
+    neutralization: str | None
+    decay: int | None
+    truncation: float | None
+    alphas: list[GroupAlpha]
+    passed: int
+    failed: int
+    pending: int
+    best_sharpe: float | None
+
+
+class AlphaGroups(Out):
+    groups: list[AlphaGroup]
+    calibrating: bool
+    #: Alphas back from BRAIN whose checks were ever read, of those back.
+    calibrated: int
+    complete: int
+
+
+def _check_counts(raw: Any) -> tuple[int, int, int, list[str]]:
+    """Passed, failed and pending checks, and the names that failed, fitness checks only."""
+    try:
+        checks = json.loads(raw) if isinstance(raw, str) else (raw or [])
+    except ValueError:
+        checks = []
+    passed = failed = pending = 0
+    failing: list[str] = []
+    for c in checks if isinstance(checks, list) else []:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "")
+        if any(word in name.upper() for word in NOT_FITNESS):
+            continue
+        result = str(c.get("result") or "").upper()
+        if result == "PASS":
+            passed += 1
+        elif result in ("FAIL", "ERROR"):
+            failed += 1
+            failing.append(name)
+        elif result == "PENDING":
+            pending += 1
+    return passed, failed, pending, failing
+
+
+async def _group_rows(state: Any, task_id: int) -> list[Trial]:
+    async with state.db.session() as session:
+        return list(
+            (
+                await session.scalars(
+                    select(Trial)
+                    .where(
+                        Trial.study_id == task_id,
+                        func.json_extract(Trial.params, "$.group").is_not(None),
+                        or_(Trial.state != TrialState.PRUNED, Trial.message == pool_lab.PROPOSED),
+                    )
+                    .order_by(Trial.number)
+                )
+            ).all()
+        )
+
+
+@router.get("/{task_id}/groups")
+async def groups(task_id: int, state: State) -> AlphaGroups:
+    """Region Agnostic Lab's results: each expression once, with its run in every region.
+
+    Runs come back at different times; each lands in its expression's group as it does.
+    Groups are ranked by the share of their Alphas' submission checks that pass, then by how
+    many pass, then best Sharpe — so after Calibrate, the most submittable come first.
+    """
+    row = await _one(state, task_id)
+    if row.sampler != REGION_AGNOSTIC_SAMPLER:
+        raise refuse(422, "not_region_agnostic", "Only a Region Agnostic Lab task has groups.")
+    trials = await _group_rows(state, task_id)
+    stored = await state.alphas.by_ids([t.alpha_id for t in trials if t.alpha_id])
+    by_group: dict[int, list[Trial]] = {}
+    for t in trials:
+        # ``is None``, not ``or``: the first Alpha a task writes is group 0.
+        group = (t.params or {}).get("group")
+        by_group.setdefault(t.number if group is None else int(group), []).append(t)
+    out: list[AlphaGroup] = []
+    complete = calibrated = 0
+    for group, members in by_group.items():
+        alphas: list[GroupAlpha] = []
+        for t in members:
+            a = stored.get(t.alpha_id or "") or {}
+            passed, failed, pending, failing = _check_counts(a.get("checks"))
+            state_ = (
+                "complete"
+                if t.state == TrialState.COMPLETE
+                else "failed"
+                if t.state == TrialState.FAIL
+                else "running"
+                if t.state in (TrialState.QUEUED, TrialState.RUNNING)
+                else "waiting"
+            )
+            if state_ == "complete":
+                complete += 1
+                calibrated += bool(passed + failed) and not pending
+            settings = t.settings or {}
+            alphas.append(
+                GroupAlpha(
+                    trial_id=t.id,
+                    region=settings.get("region") or (t.params or {}).get("region"),
+                    universe=settings.get("universe"),
+                    state=state_,
+                    alpha_id=t.alpha_id,
+                    sharpe=a.get("sharpe"),
+                    fitness=a.get("fitness"),
+                    turnover=a.get("turnover"),
+                    returns=a.get("returns"),
+                    passed=passed,
+                    failed=failed,
+                    pending=pending,
+                    failing=failing,
+                )
+            )
+        first = (members[0].settings or {}) if members else {}
+        sharpes = [a.sharpe for a in alphas if a.sharpe is not None]
+        out.append(
+            AlphaGroup(
+                group=group,
+                expression=members[0].expression if members else None,
+                neutralization=first.get("neutralization"),
+                decay=first.get("decay"),
+                truncation=first.get("truncation"),
+                alphas=alphas,
+                passed=sum(a.passed for a in alphas),
+                failed=sum(a.failed for a in alphas),
+                pending=sum(a.pending for a in alphas),
+                best_sharpe=max(sharpes) if sharpes else None,
+            )
+        )
+
+    # By the share of its checks passed, not the count: an Alpha that ran in four regions
+    # would otherwise outrank a cleaner one that ran in three.
+    def score(g: AlphaGroup) -> tuple[float, int, float, int]:
+        judged = g.passed + g.failed
+        return (
+            -(g.passed / judged) if judged else 1.0,
+            -g.passed,
+            -(g.best_sharpe or -99.0),
+            g.group,
+        )
+
+    out.sort(key=score)
+    return AlphaGroups(
+        groups=out,
+        calibrating=task_id in _calibrating,
+        calibrated=int(calibrated),
+        complete=complete,
+    )
+
+
+@router.post("/{task_id}/calibrate", status_code=202)
+async def calibrate(task_id: int, state: State) -> WorkflowStarted:
+    """Run BRAIN's submission checks on every Alpha the task has back, without submitting.
+
+    It spends no simulation quota; each check is a request BRAIN answers in its own time,
+    so this runs in the background and the groups rank themselves as the answers land.
+    """
+    row = await _one(state, task_id)
+    if row.sampler != REGION_AGNOSTIC_SAMPLER:
+        raise refuse(422, "not_region_agnostic", "Only a Region Agnostic Lab task calibrates.")
+    ids = list(
+        dict.fromkeys(
+            t.alpha_id
+            for t in await _group_rows(state, task_id)
+            if t.alpha_id and t.state == TrialState.COMPLETE
+        )
+    )
+    if not ids:
+        raise refuse(409, "nothing_back", "No Alpha of this task is back from BRAIN yet.")
+
+    async def work(task: Task) -> str:
+        _calibrating.add(task_id)
+        failed = 0
+        try:
+            for done, alpha_id in enumerate(ids, start=1):
+                try:
+                    body = await state.endpoints.check_alpha(alpha_id)
+                    checks = ((body.get("is") or {}).get("checks")) or []
+                    if checks:
+                        await state.alphas.save_checks(alpha_id, checks)
+                except Exception:  # noqa: BLE001
+                    failed += 1
+                await state.tasks.update(
+                    task, progress=done / len(ids), detail=f"Checked {done} of {len(ids)} Alphas"
+                )
+        finally:
+            _calibrating.discard(task_id)
+        return f"Checked {len(ids) - failed} of {len(ids)} Alphas" + (
+            f"; {failed} could not be read" if failed else ""
+        )
+
+    try:
+        started = await state.backfill.start_job(
+            "ra-calibrate", f"Calibrating task {task_id}", work
+        )
+    except RuntimeError as exc:
+        raise refuse(409, "already_running", str(exc)) from exc
+    return WorkflowStarted(task_id=started)
 
 
 @router.get("/{task_id}/top")

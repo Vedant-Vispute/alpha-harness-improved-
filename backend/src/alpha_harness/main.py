@@ -37,6 +37,7 @@ from .api import (
     power_pool_lab,
     prompts,
     quarter,
+    region_agnostic_lab,
     search_lab,
     sims,
     tasks,
@@ -161,6 +162,7 @@ def create_app() -> FastAPI:
     app.include_router(search_lab.router)
     app.include_router(lab_tasks.router)
     app.include_router(power_pool_lab.router)
+    app.include_router(region_agnostic_lab.router)
     app.include_router(chat.router)
     app.include_router(update.router)
     app.include_router(ws.router)

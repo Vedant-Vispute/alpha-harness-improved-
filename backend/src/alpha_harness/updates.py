@@ -271,7 +271,7 @@ def _launcher_json(name: str) -> dict[str, Any]:
         return {}
     try:
         body = json.loads((home / name).read_text(encoding="utf-8"))
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return {}
     return body if isinstance(body, dict) else {}
 

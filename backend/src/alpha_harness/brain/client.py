@@ -136,7 +136,7 @@ def _parse_retry_after(headers: httpx2.Headers) -> float | None:
     except ValueError:
         try:
             seconds = (parsedate_to_datetime(raw) - datetime.now(UTC)).total_seconds()
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return 0.0
     if not math.isfinite(seconds):
         return 0.0

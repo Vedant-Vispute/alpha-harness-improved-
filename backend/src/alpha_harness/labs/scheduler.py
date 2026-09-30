@@ -23,6 +23,7 @@ from .params import (
     CORRELATION_BREAKER,
     GA_SAMPLER,
     POWER_POOL_SAMPLER,
+    REGION_AGNOSTIC_SAMPLER,
     SETTINGS_SAMPLER,
     TASK_SAMPLERS,
     TEMPLATE_SAMPLER,
@@ -238,7 +239,7 @@ async def advance(optimizer: Optimizer, study_id: int) -> int:
     want = to_ask(row.batch_size, int(in_flight or 0), row.max_trials - committed)
     if row.sampler == GA_SAMPLER:
         return await _breed(optimizer, row, last_number, want, waiting)
-    if row.sampler == POWER_POOL_SAMPLER:
+    if row.sampler in (POWER_POOL_SAMPLER, REGION_AGNOSTIC_SAMPLER):
         from . import power_pool  # imported here: labs.power_pool builds on this module
 
         return await power_pool.refill(optimizer, row, want, waiting)
@@ -493,6 +494,7 @@ def park_message(sampler: str) -> str | None:
         SETTINGS_SAMPLER: PENDING_SEND,
         CORRELATION_BREAKER: PENDING_SEND,
         POWER_POOL_SAMPLER: PROPOSED,
+        REGION_AGNOSTIC_SAMPLER: PROPOSED,
     }.get(sampler)
 
 

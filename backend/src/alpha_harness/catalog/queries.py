@@ -100,6 +100,9 @@ class FieldFilter(BaseModel):
     user_count_max: int | None = None
     pyramid_multiplier_min: float | None = None
 
+    #: Region ``ALL`` only: how many regions carry the field, both ends included.
+    region_coverage_min: int | None = None
+    region_coverage_max: int | None = None
     #: Date added, both ends included.
     date_min: date | None = None
     date_max: date | None = None
@@ -194,6 +197,12 @@ class FieldFilter(BaseModel):
                 clauses.append(f"{column} {op} ?")
                 params.append(value)
 
+        if self.region_coverage_min is not None:
+            clauses.append("region_coverage >= ?")
+            params.append(self.region_coverage_min)
+        if self.region_coverage_max is not None:
+            clauses.append("region_coverage <= ?")
+            params.append(self.region_coverage_max)
         if self.date_min is not None:
             clauses.append("date_created >= ?")
             params.append(self.date_min)

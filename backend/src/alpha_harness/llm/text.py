@@ -27,7 +27,7 @@ def loads_or(text: str) -> dict[str, Any]:
     for candidate in (text, *(m.group(1) for m in FENCE.finditer(text))):
         try:
             payload = json.loads(candidate)
-        except json.JSONDecodeError, TypeError:
+        except (json.JSONDecodeError, TypeError):
             continue
         if isinstance(payload, dict):
             return payload

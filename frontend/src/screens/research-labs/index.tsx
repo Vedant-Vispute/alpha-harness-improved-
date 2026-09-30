@@ -5,6 +5,7 @@ import {
   ArrowUpRightIcon,
   BlocksIcon,
   DnaIcon,
+  GlobeIcon,
   type LucideIcon,
   SearchIcon,
   ZapIcon,
@@ -17,6 +18,7 @@ const ICONS: Record<(typeof LAB_TABS)[number]['tab'], LucideIcon> = {
   template: BlocksIcon,
   evolution: DnaIcon,
   'power-pool': ZapIcon,
+  'region-agnostic': GlobeIcon,
 }
 
 /** The card a hub screen links each of its entries with; the `Link` carries it. */

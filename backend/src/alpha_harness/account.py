@@ -251,7 +251,7 @@ class AuthService:
                 return None
             try:
                 return json.loads(self.sealer.open(row.cookies_sealed, context=COOKIE_CONTEXT))
-            except SealError, ValueError:
+            except (SealError, ValueError):
                 log.warning("session.cookies_unreadable")
                 return None
 

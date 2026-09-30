@@ -880,6 +880,29 @@ export interface paths {
         patch: operations["change_api_lab_tasks__task_id__patch"];
         trace?: never;
     };
+    "/api/lab-tasks/{task_id}/calibrate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Calibrate
+         * @description Run BRAIN's submission checks on every Alpha the task has back, without submitting.
+         *
+         *     It spends no simulation quota; each check is a request BRAIN answers in its own time,
+         *     so this runs in the background and the groups rank themselves as the answers land.
+         */
+        post: operations["calibrate_api_lab_tasks__task_id__calibrate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/lab-tasks/{task_id}/clone": {
         parameters: {
             query?: never;
@@ -920,6 +943,30 @@ export interface paths {
          *     memory and what it learnt stay, and it runs until the new target is met.
          */
         post: operations["continue_task_api_lab_tasks__task_id__continue_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lab-tasks/{task_id}/groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Groups
+         * @description Region Agnostic Lab's results: each expression once, with its run in every region.
+         *
+         *     Runs come back at different times; each lands in its expression's group as it does.
+         *     Groups are ranked by the share of their Alphas' submission checks that pass, then by how
+         *     many pass, then best Sharpe — so after Calibrate, the most submittable come first.
+         */
+        get: operations["groups_api_lab_tasks__task_id__groups_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1337,6 +1384,60 @@ export interface paths {
          *     closes both stores, and the launcher exits when the process does.
          */
         post: operations["quit_app_api_quit_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/region-agnostic-lab/options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Options */
+        get: operations["options_api_region_agnostic_lab_options_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/region-agnostic-lab/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview
+         * @description What a task would send. Free: no LLM call, no simulation.
+         */
+        post: operations["preview_api_region_agnostic_lab_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/region-agnostic-lab/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Add Task */
+        post: operations["add_task_api_region_agnostic_lab_tasks_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1976,6 +2077,40 @@ export interface components {
             /** Problem */
             problem: string | null;
             settings: components["schemas"]["AlphaSettings"];
+        };
+        /** AlphaGroup */
+        AlphaGroup: {
+            /** Alphas */
+            alphas: components["schemas"]["GroupAlpha"][];
+            /** Bestsharpe */
+            bestSharpe: number | null;
+            /** Decay */
+            decay: number | null;
+            /** Expression */
+            expression: string | null;
+            /** Failed */
+            failed: number;
+            /** Group */
+            group: number;
+            /** Neutralization */
+            neutralization: string | null;
+            /** Passed */
+            passed: number;
+            /** Pending */
+            pending: number;
+            /** Truncation */
+            truncation: number | null;
+        };
+        /** AlphaGroups */
+        AlphaGroups: {
+            /** Calibrated */
+            calibrated: number;
+            /** Calibrating */
+            calibrating: boolean;
+            /** Complete */
+            complete: number;
+            /** Groups */
+            groups: components["schemas"]["AlphaGroup"][];
         };
         /**
          * AlphaIds
@@ -2984,6 +3119,10 @@ export interface components {
              * @default false
              */
             region_agnostic: boolean;
+            /** Region Coverage Max */
+            region_coverage_max?: number | null;
+            /** Region Coverage Min */
+            region_coverage_min?: number | null;
             /**
              * Region Exclusive
              * @default false
@@ -3021,6 +3160,38 @@ export interface components {
             results: components["schemas"]["DataFieldRow"][];
             /** Total */
             total: number;
+        };
+        /** GroupAlpha */
+        GroupAlpha: {
+            /** Alphaid */
+            alphaId: string | null;
+            /** Failed */
+            failed: number;
+            /** Failing */
+            failing: string[];
+            /** Fitness */
+            fitness: number | null;
+            /** Passed */
+            passed: number;
+            /** Pending */
+            pending: number;
+            /** Region */
+            region: string | null;
+            /** Returns */
+            returns: number | null;
+            /** Sharpe */
+            sharpe: number | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "waiting" | "running" | "complete" | "failed";
+            /** Trialid */
+            trialId: number;
+            /** Turnover */
+            turnover: number | null;
+            /** Universe */
+            universe: string | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -4027,6 +4198,96 @@ export interface components {
              */
             level: "MINIMAL" | "LOW" | "MEDIUM" | "HIGH";
             value: components["schemas"]["Reasoning"];
+        };
+        /** RegionAgnosticOptions */
+        RegionAgnosticOptions: {
+            /** Defaultmodel */
+            defaultModel: string | null;
+            /** Maxsimulations */
+            maxSimulations: number;
+            /** Models */
+            models: components["schemas"]["PowerPoolModel"][];
+            /** Regions */
+            regions: components["schemas"]["RegionChoice"][];
+            /** Sizes */
+            sizes: {
+                [key: string]: {
+                    [key: string]: string;
+                };
+            };
+        };
+        /** RegionAgnosticPreview */
+        RegionAgnosticPreview: {
+            /** Fields */
+            fields: number;
+            /** Llmcalls */
+            llmCalls: number;
+            /** Lonely */
+            lonely: number;
+            /** Neutralizations */
+            neutralizations: string[];
+            /** Perregion */
+            perRegion: components["schemas"]["RegionFieldCount"][];
+            /** Problems */
+            problems: string[];
+            prompt: components["schemas"]["PowerPoolPrompt"] | null;
+            /** Warnings */
+            warnings: string[];
+        };
+        /** RegionAgnosticRequest */
+        RegionAgnosticRequest: {
+            /**
+             * Cores
+             * @default 8
+             */
+            cores: number;
+            /** Dataset Ids */
+            dataset_ids?: string[];
+            /** Delay */
+            delay: number;
+            /** Field Ids */
+            field_ids?: string[];
+            /** Model */
+            model?: string | null;
+            /** Neutralizations */
+            neutralizations?: string[];
+            /** Prompt Id */
+            prompt_id?: number | null;
+            /** Rank By */
+            rank_by?: string | null;
+            /** Regions */
+            regions?: string[];
+            /**
+             * Simulations
+             * @default 0
+             */
+            simulations: number;
+            /**
+             * Size
+             * @default LARGE
+             * @enum {string}
+             */
+            size: "LARGE" | "MEDIUM" | "SMALL";
+            /** Universe */
+            universe?: string | null;
+        };
+        /** RegionChoice */
+        RegionChoice: {
+            /** Defaultuniverse */
+            defaultUniverse: string | null;
+            /** Neutralizations */
+            neutralizations: string[];
+            /** Region */
+            region: string;
+            /** Universes */
+            universes: string[];
+        };
+        /** RegionFieldCount */
+        RegionFieldCount: {
+            /** Fields */
+            fields: number;
+            /** Region */
+            region: string;
         };
         /** RegionPlan */
         RegionPlan: {
@@ -6347,6 +6608,37 @@ export interface operations {
             };
         };
     };
+    calibrate_api_lab_tasks__task_id__calibrate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowStarted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     clone_api_lab_tasks__task_id__clone_post: {
         parameters: {
             query?: never;
@@ -6404,6 +6696,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LabTask"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    groups_api_lab_tasks__task_id__groups_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlphaGroups"];
                 };
             };
             /** @description Validation Error */
@@ -7063,6 +7386,103 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Quitting"];
+                };
+            };
+        };
+    };
+    options_api_region_agnostic_lab_options_get: {
+        parameters: {
+            query?: {
+                delay?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegionAgnosticOptions"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_api_region_agnostic_lab_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegionAgnosticRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegionAgnosticPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_task_api_region_agnostic_lab_tasks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegionAgnosticRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AddedTask"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

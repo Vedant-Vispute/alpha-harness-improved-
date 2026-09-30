@@ -19,6 +19,9 @@ export type TaskAlpha = Omit<Schemas['TaskAlpha'], 'settings'> & {
 }
 
 export type TaskInfo = Schemas['TaskInfo']
+export type AlphaGroups = Schemas['AlphaGroups']
+export type AlphaGroup = Schemas['AlphaGroup']
+export type GroupAlpha = Schemas['GroupAlpha']
 
 export interface CloneRequest {
   simulations?: number | null
@@ -47,6 +50,10 @@ export const labTasks = {
   clone: (id: number, body: CloneRequest) =>
     http.post<Schemas['AddedTask']>(`${B}/${id}/clone`, body),
   info: (id: number) => http.get<TaskInfo>(`${B}/${id}/info`),
+  /** Region Agnostic Lab: each Alpha with its run in every region, most submittable first. */
+  groups: (id: number) => http.get<AlphaGroups>(`${B}/${id}/groups`),
+  /** Runs BRAIN's submission checks on the task's Alphas, in the background. No quota. */
+  calibrate: (id: number) => http.post<Schemas['WorkflowStarted']>(`${B}/${id}/calibrate`),
   change: (id: number, body: { cores?: number; simulations?: number }) =>
     http.patch<LabTask>(`${B}/${id}`, body),
   /** `force` takes a running task down too: paused, what is out cancelled, then removed. */
