@@ -106,6 +106,9 @@ class LabTask(Out):
     simulated: int
     #: Of ``simulated``, how many came back from the dedup cache without spending quota.
     cached: int
+    #: Quick Alphas that passed and were simulated again in Full: quota spent on top of
+    #: ``target``, which BRAIN needs before it will take them.
+    full_runs: int = 0
     queued: int
     running: int
     failed: int
@@ -167,6 +170,10 @@ class RankedAlpha(Out):
     pending: bool = False
     #: The Alpha the sweep started from, kept first as its reference point.
     source: bool = False
+    #: Simulated in Quick mode: the figures stand, but BRAIN submits it only once it is
+    #: simulated again in Full. The task does that for every one that passes, and the Full
+    #: Alpha replaces it here once it is back.
+    quick: bool = False
 
 
 class WorkflowStarted(Out):
@@ -257,7 +264,9 @@ async def _progress(state: Any, ids: list[int]) -> dict[int, dict[str, Any]]:
     A long task holds tens of thousands of trials; reading them all to count them would
     slow the list down with every day the task runs.
     """
-    out: dict[int, dict[str, Any]] = {i: {"states": {}, "free": 0, "best": None} for i in ids}
+    out: dict[int, dict[str, Any]] = {
+        i: {"states": {}, "free": 0, "fullRuns": 0, "best": None} for i in ids
+    }
     if not ids:
         return out
     value = func.json_extract(Trial.values, "$[0]")
@@ -280,6 +289,18 @@ async def _progress(state: Any, ids: list[int]) -> dict[int, dict[str, Any]]:
         )
         for study_id, n in free.all():
             out[study_id]["free"] = int(n)
+        full_runs = await session.execute(
+            select(Trial.study_id, func.count())
+            .where(
+                Trial.study_id.in_(ids),
+                Trial.state.in_([TrialState.COMPLETE, TrialState.FAIL]),
+                or_(Trial.message.is_(None), Trial.message != scheduler.FREE),
+                scheduler.full_run(),
+            )
+            .group_by(Trial.study_id)
+        )
+        for study_id, n in full_runs.all():
+            out[study_id]["fullRuns"] = int(n)
         # An Alpha that returned no value is scored at the failure value, so it is not a best;
         # nor is a seed, which was scored before the task began.
         best = await session.execute(
@@ -295,6 +316,17 @@ async def _progress(state: Any, ids: list[int]) -> dict[int, dict[str, Any]]:
         for study_id, value in best.all():
             out[study_id]["best"] = None if value is None else float(value)
     return out
+
+
+def _fields(space: Any) -> int:
+    """Fields a task searches: its pool, or each variable's for a typed Template Lab template."""
+    if not isinstance(space, dict):
+        return 0
+    pooled = len(space.get("fields") or {})
+    variables = space.get("variables")
+    if pooled or not isinstance(variables, list):
+        return pooled
+    return sum(len(v.get("fields") or {}) for v in variables if isinstance(v, dict))
 
 
 def _task(row: Study, progress: dict[str, Any], names: dict[str, str] | None = None) -> LabTask:
@@ -336,11 +368,12 @@ def _task(row: Study, progress: dict[str, Any], names: dict[str, str] | None = N
             if row.sampler in LLM_SAMPLERS
             else None,
             "model": params.get("model") or None,
-            "fields": len((params.get("space") or {}).get("fields") or {}),
+            "fields": _fields(params.get("space")),
             "target": row.max_trials,
             # What spent quota, as the scheduler counts toward the target.
-            "simulated": told - progress["free"],
+            "simulated": told - progress["free"] - progress["fullRuns"],
             "cached": progress["free"],
+            "fullRuns": progress["fullRuns"],
             "queued": states.get(TrialState.QUEUED, 0),
             "running": states.get(TrialState.RUNNING, 0),
             "failed": states.get(TrialState.FAIL, 0),

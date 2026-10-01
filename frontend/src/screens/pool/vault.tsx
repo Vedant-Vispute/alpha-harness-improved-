@@ -113,7 +113,7 @@ export function AlphaCounts() {
                   <span
                     className={
                       t.state === 'failed'
-                        ? 'min-w-0 break-words text-pnl-negative'
+                        ? 'min-w-0 break-words text-pnl-negative-text'
                         : 'min-w-0 text-ink-subtle'
                     }
                   >

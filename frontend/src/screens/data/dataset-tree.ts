@@ -81,48 +81,101 @@ export function buildTree(source: TreeSource): Trunk[] {
   return [...trunks.values()].filter((t) => t.ids.length > 0)
 }
 
+/** One removable pick: a whole category, a whole subcategory, or a single dataset. */
 export interface Ticked {
   key: string
-  label: string
+  name: string
   ids: string[]
 }
 
+/** The picks under one subcategory, or under none for datasets that have no subcategory. */
+export interface TickedBranch {
+  key: string
+  name: string | null
+  /** The whole subcategory, when every dataset in it is ticked. */
+  whole: Ticked | null
+  datasets: Ticked[]
+}
+
+/** Everything ticked in one category, so a shared path is written once. */
+export interface TickedTrunk {
+  key: string
+  /** Null for datasets the tree does not have: they still show, so they can be removed. */
+  name: string | null
+  /** The whole category, when every dataset in it is ticked. */
+  whole: Ticked | null
+  branches: TickedBranch[]
+}
+
 /**
- * What is ticked, said briefly: whole categories, then whole subcategories, then single
- * datasets. A dataset the tree does not have still shows, so it can be seen and removed.
+ * What is ticked, grouped by where it sits: one entry per category, holding whole
+ * subcategories and single datasets beneath it. A whole category is one pick.
  */
 export function summarize(
   tree: Trunk[],
   value: string[],
   nameOf: (id: string) => string,
-): Ticked[] {
+): TickedTrunk[] {
   const chosen = new Set(value)
-  const summary: Ticked[] = []
   const covered = new Set<string>()
-  const take = (item: Ticked) => {
-    summary.push(item)
-    for (const id of item.ids) covered.add(id)
+  const pick = (key: string, name: string, ids: string[]): Ticked => {
+    for (const id of ids) covered.add(id)
+    return { key, name, ids }
   }
+  // A group of one is its dataset: naming the group would hide which dataset it is.
+  const all = (ids: string[]) => ids.length > 1 && ids.every((id) => chosen.has(id))
+  const datasets = (ids: string[]) =>
+    ids.filter((id) => chosen.has(id)).map((id) => pick(`d:${id}`, nameOf(id), [id]))
+  const summary: TickedTrunk[] = []
   for (const trunk of tree) {
-    if (trunk.ids.every((id) => chosen.has(id))) {
-      take({
-        key: `c:${trunk.key}`,
-        label: `All of ${trunk.name}`,
-        ids: trunk.ids,
+    if (!trunk.ids.some((id) => chosen.has(id))) continue
+    if (all(trunk.ids)) {
+      summary.push({
+        key: trunk.key,
+        name: trunk.name,
+        whole: pick(`c:${trunk.key}`, trunk.name, trunk.ids),
+        branches: [],
       })
       continue
     }
+    const branches: TickedBranch[] = []
     for (const branch of trunk.subcategories) {
-      if (branch.ids.every((id) => chosen.has(id)))
-        take({
-          key: `s:${branch.key}`,
-          label: `${trunk.name} › ${branch.name}`,
-          ids: branch.ids,
-        })
+      if (!branch.ids.some((id) => chosen.has(id))) continue
+      const whole = all(branch.ids)
+      branches.push({
+        key: branch.key,
+        name: branch.name,
+        whole: whole ? pick(`s:${branch.key}`, branch.name, branch.ids) : null,
+        datasets: whole ? [] : datasets(branch.ids),
+      })
     }
+    const loose = datasets(trunk.loose)
+    if (loose.length)
+      branches.push({ key: `${trunk.key}|`, name: null, whole: null, datasets: loose })
+    summary.push({ key: trunk.key, name: trunk.name, whole: null, branches })
   }
-  for (const id of chosen) {
-    if (!covered.has(id)) summary.push({ key: `d:${id}`, label: nameOf(id), ids: [id] })
+  const unknown = value.filter((id) => !covered.has(id))
+  if (unknown.length) {
+    summary.push({
+      key: 'unknown',
+      name: null,
+      whole: null,
+      branches: [{ key: 'unknown|', name: null, whole: null, datasets: datasets(unknown) }],
+    })
   }
   return summary
+}
+
+/**
+ * Dataset ids to the names people read, each with its id: BRAIN gives some datasets the very
+ * same name ("ETF Risk Data" is both model237 and risk82), and the id is also what a field's
+ * prefix and every BRAIN page use.
+ */
+export function datasetNames(rows: { dataset_id: string; name: string | null }[]) {
+  return new Map(
+    rows.map((r) => [
+      r.dataset_id,
+      r.name && r.name !== r.dataset_id ? `${r.name} (${r.dataset_id})` : r.dataset_id,
+    ]),
+  )
 }

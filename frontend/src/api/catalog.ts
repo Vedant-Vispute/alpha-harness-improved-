@@ -23,6 +23,7 @@ export type DataFieldDetail = Schemas['DataFieldDetail']
 export type FieldAvailabilityRow = Schemas['FieldAvailabilityRow']
 export type DatasetRow = Schemas['DatasetRow']
 export type PyramidGridData = Schemas['PyramidGrid']
+export type FieldOutline = Schemas['FieldOutline']
 
 /** Unknown keys sort by alpha_count on the backend. */
 export type FieldSortKey =
@@ -70,4 +71,7 @@ export const catalog = {
   datasets: (s: Scope) => http.get<DatasetRow[]>(`${B}/datasets${scopeQs(s)}`),
 
   pyramids: () => http.get<PyramidGridData>(`${B}/pyramids`),
+  /** The chosen fields as Category › Subcategory › Dataset › Field text, for an LLM. */
+  outline: (s: Scope, pick: { field_ids: string[] } | { dataset_ids: string[] }) =>
+    http.post<FieldOutline>(`${B}/fields/outline${scopeQs(s)}`, pick),
 }

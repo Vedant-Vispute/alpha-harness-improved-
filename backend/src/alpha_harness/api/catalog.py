@@ -1,10 +1,10 @@
 """Data Explorer: syncing the catalog and querying it."""
 
 from datetime import date, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Self
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from ..brain.schemas import REGION_AGNOSTIC_REGION
 from ..brain.settings_schema import valid_values
@@ -28,6 +28,11 @@ def scope(
 
 
 Scope = Annotated[Tuple4, Depends(scope)]
+
+#: Enough for a focused idea, and short enough to paste whole into any chat LLM.
+MAX_OUTLINE_FIELDS = 100
+#: Every dataset in the largest category, with room to spare.
+MAX_OUTLINE_DATASETS = 1000
 
 
 # --- wire shapes: DuckDB rows keep their snake_case column names ------------
@@ -104,13 +109,25 @@ class CatalogSize(BaseModel):
     used_bytes: int
 
 
+class MonthCount(BaseModel):
+    month: date
+    fields: int
+
+
 class CatalogStats(BaseModel):
     coverage_min: float | None = None
     coverage_max: float | None = None
     coverage_median: float | None = None
+    alpha_count_min: int | None = None
     alpha_count_max: int | None = None
+    user_count_min: int | None = None
     user_count_max: int | None = None
+    pyramid_multiplier_min: float | None = None
     pyramid_multiplier_max: float | None = None
+    date_coverage_min: float | None = None
+    date_coverage_max: float | None = None
+    #: Every month a field was added in, oldest first, with how many.
+    date_added: list[MonthCount] = []
 
 
 class DataFieldRow(BaseModel):
@@ -174,11 +191,21 @@ class TypeFacet(BaseModel):
     n: int
 
 
+class AvailabilityCounts(BaseModel):
+    """Fields each availability toggle would show if pressed, under the other filters."""
+
+    region_agnostic: int
+    region_exclusive: int
+
+
 class CatalogFacets(BaseModel):
     categories: list[CategoryFacet]
     subcategories: list[SubcategoryFacet]
     datasets: list[DatasetFacet]
     types: list[TypeFacet]
+    availability: AvailabilityCounts
+    #: Fields per month added, under every filter but the month range itself.
+    date_added: list[MonthCount]
 
 
 class FieldAvailabilityRow(BaseModel):
@@ -370,3 +397,93 @@ async def field_availability(field_id: str, state: State) -> list[FieldAvailabil
 @router.get("/datasets")
 async def datasets(scope: Scope, state: State) -> list[DatasetRow]:
     return [DatasetRow.model_validate(r) for r in await state.queries.datasets(scope)]
+
+
+class OutlineRequest(BaseModel):
+    """Fields picked one by one, or whole datasets: a category or subcategory is its datasets."""
+
+    field_ids: list[str] = Field(default_factory=list, max_length=MAX_OUTLINE_FIELDS)
+    dataset_ids: list[str] = Field(default_factory=list, max_length=MAX_OUTLINE_DATASETS)
+
+    @model_validator(mode="after")
+    def _one_kind(self) -> Self:
+        if not self.field_ids and not self.dataset_ids:
+            raise ValueError("Give field_ids or dataset_ids.")
+        if self.field_ids and self.dataset_ids:
+            raise ValueError("Give field_ids or dataset_ids, not both.")
+        return self
+
+
+class FieldOutline(Out):
+    text: str
+    #: How many fields ``text`` holds.
+    fields: int
+    #: Chosen ids this market does not carry; they are left out of ``text``.
+    missing: list[str]
+
+
+def _flat(text: Any) -> str:
+    """One line: a description's line breaks would read as new keys."""
+    return " ".join(str(text or "").split())
+
+
+def _pct(value: Any) -> str:
+    return "unknown" if value is None else f"{float(value) * 100:.0f}%"
+
+
+def outline(scope: Tuple4, rows: list[dict[str, Any]]) -> str:
+    """Key-value Markdown: Category, Subcategory and Dataset headings, each written once,
+    then one short block per field.
+
+    The universe is left out: a field is the same field in every universe of its region.
+    Categories and subcategories carry only a name, because BRAIN sends no description for
+    either.
+    """
+    tree: dict[str, dict[str, dict[str, list[dict[str, Any]]]]] = {}
+    for r in rows:
+        category = _flat(r["category_name"]) or "Uncategorised"
+        subcategory = _flat(r["subcategory_name"]) or "Uncategorised"
+        tree.setdefault(category, {}).setdefault(subcategory, {}).setdefault(
+            str(r["dataset_id"]), []
+        ).append(r)
+    lines = ["# Data Fields", f"Region: {scope.region}", f"Delay: {scope.delay}"]
+
+    def heading(text: str) -> None:
+        # A blank line only after content: stacked headings read as one path.
+        if not lines[-1].startswith("#"):
+            lines.append("")
+        lines.append(text)
+
+    for category, subcategories in sorted(tree.items()):
+        heading(f"## Category: {category}")
+        for subcategory, datasets in sorted(subcategories.items()):
+            heading(f"### Subcategory: {subcategory}")
+            for dataset_id, fields in sorted(datasets.items()):
+                heading(f"#### Dataset: {dataset_id}")
+                name = _flat(fields[0]["dataset_name"])
+                if name and name != dataset_id:
+                    lines.append(f"Name: {name}")
+                if about := _flat(fields[0]["dataset_description"]):
+                    lines.append(f"Description: {about}")
+                lines.append("")
+                for f in sorted(fields, key=lambda f: str(f["field_id"])):
+                    lines += [
+                        f"- Field: {f['field_id']}",
+                        f"  Description: {_flat(f['description']) or 'none'}",
+                        f"  Type: {f['field_type'] or 'unknown'}",
+                        f"  Instrument Coverage: {_pct(f['coverage'])}",
+                        f"  Date Coverage: {_pct(f['date_coverage'])}",
+                    ]
+    return "\n".join(lines)
+
+
+@router.post("/fields/outline")
+async def field_outline(scope: Scope, body: OutlineRequest, state: State) -> FieldOutline:
+    """The chosen fields as compact text for an LLM, grouped as the catalog is."""
+    by_dataset = bool(body.dataset_ids)
+    ids = body.dataset_ids if by_dataset else body.field_ids
+    rows = await state.queries.fields_by_id(scope, ids, whole_datasets=by_dataset)
+    found = {r["dataset_id" if by_dataset else "field_id"] for r in rows}
+    return FieldOutline(
+        text=outline(scope, rows), fields=len(rows), missing=[i for i in ids if i not in found]
+    )

@@ -1,521 +1,521 @@
-"""Template Lab: the user's own expression templates, searched for the best Sharpe.
+"""Template Lab: a Fast Expression with ``$variables``, searched for the best Sharpe.
 
-A template is a tree of blocks: operators (or a choice of operators that take the same
-inputs), variables (FIELD, LOOKBACK, FAST_LOOKBACK, SLOW_LOOKBACK, GROUP, WEIGHT, POWER),
-fixed data fields and numbers. A variable carries a letter tag: blocks with the same name and
-tag take the same value in an Alpha, and a different tag varies on its own. Operators and
-their inputs come from the account's own definitions, so a template only uses what the
-account can run.
+A template is written the way BRAIN reads an Alpha, ``x = ...;`` lines naming its steps and
+the last line the Alpha, with a ``$name`` wherever the search chooses. Each variable is
+defined beside the template: **fields** from chosen datasets, or **values** typed as a list
+of numbers, groups, operator names or whole expressions. Written as ``$name(...)`` it is an
+operator. A name takes one value per Alpha, however often it is written.
 
-A task freezes its tree and market when it is added. The search then asks, define-by-run:
-the universe, a field for each FIELD tag from that universe's own fields, a value for each
-variable tag, an operator for each choice block, and the neutralization.
+A task freezes its template, each variable's choices and the settings it searches when it is
+added. The search then asks, define-by-run: the universe, every variable in the order it is
+first written, the neutralization and the investability constraint.
 """
 
+import functools
 import math
+import operator
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from ..brain.schemas import SimulationRequest, SimulationSettings
-from . import search
-from .fastexpr import Node, OperatorInfo, operator_table
+from .fastexpr import (
+    MAX_FIELDS,
+    MAX_OPERATORS,
+    UNCOUNTED,
+    Node,
+    OperatorInfo,
+    ParseError,
+    node_at,
+    operator_count,
+    parse,
+    walk,
+)
+from .fastexpr import data_fields as names_read
 from .fastexpr import render as write
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from .params import TemplateParams
 
-VERSION = 1
-FAST_LOOKBACK = (5, 10, 21)
-SLOW_LOOKBACK = (63, 126, 252)
-LOOKBACK = (*FAST_LOOKBACK, *SLOW_LOOKBACK)
-#: Plain numbers a template searches, e.g. ``add(WEIGHT, signed_power(x, POWER))``.
-WEIGHT = (0.5, 1, 2)
-POWER = (0.5, 1, 2)
-#: What each variable other than FIELD can be. Frozen into a task when it is added.
-VARIABLES: dict[str, tuple[Any, ...]] = {
-    "LOOKBACK": LOOKBACK,
-    "FAST_LOOKBACK": FAST_LOOKBACK,
-    "SLOW_LOOKBACK": SLOW_LOOKBACK,
-    "GROUP": search.GROUPS,
-    "WEIGHT": WEIGHT,
-    "POWER": POWER,
+#: What a variable named one of these starts as. Only a start: it changes like any other.
+PRESETS: dict[str, str] = {
+    "lookback": "5, 10, 21, 63, 126, 252",
+    "fast_lookback": "5, 10, 21",
+    "slow_lookback": "63, 126, 252",
+    "group": "market, sector, industry, subindustry",
+    "weight": "0.5, 1, 2",
+    "power": "0.5, 1, 2",
+    "ts_op": "ts_rank, ts_zscore, ts_delta, ts_av_diff",
+    "group_op": "group_rank, group_zscore, group_neutralize",
 }
-LOOKBACK_VARIABLES = frozenset({"LOOKBACK", "FAST_LOOKBACK", "SLOW_LOOKBACK"})
-VARIABLE_NAMES = frozenset({"FIELD", *VARIABLES})
-TAGS = ("A", "B", "C", "D")
-#: Fixed fields a template may read. Each is checked per universe when a task is added.
-DATA_FIELDS = ("close", "open", "high", "low", "vwap", "volume", "adv20", "returns", "cap")
-GROUP_FIELDS = search.GROUPS
-MAX_NODES = 60
-MAX_CHOICES = 8
-#: Operators written between their inputs; the arithmetic ones only when no option is set.
-SYMBOLS = {
-    "add": "+",
-    "subtract": "-",
-    "multiply": "*",
-    "divide": "/",
-    "equal": "==",
-    "not_equal": "!=",
-    "greater": ">",
-    "greater_equal": ">=",
-    "less": "<",
-    "less_equal": "<=",
+#: maxTrade and maxPosition for each Investability a task can search. BRAIN refuses both ON.
+INVESTABILITY: dict[str, tuple[str, str]] = {
+    "none": ("OFF", "OFF"),
+    "max_trade": ("ON", "OFF"),
+    "max_position": ("OFF", "ON"),
 }
-#: Operators whose inputs no block can give. Backfill is a block: a template shows its own.
-EXCLUDED = frozenset({"ts_step"})
-#: Operators that make a group: every input is a group, and they fit only group inputs.
-GROUP_OUTPUT = frozenset({"densify", "group_cartesian_product"})
-#: Operators that turn a *signal* into a group, so they take signals and fit group inputs.
-#: ``bucket(rank(x), range="0, 1, 0.1")`` is how a continuous signal becomes something
-#: ``group_rank`` can group by.
-GROUP_MAKERS = frozenset({"bucket"})
-#: Vector operators are field preparation, chosen with the task; the rest are not for Alphas.
-EXCLUDED_CATEGORIES = frozenset({"Vector", "Special", "Reduce"})
-LOOKBACK_PARAMS = frozenset({"d", "lookback"})
-GROUP_PARAMS = frozenset({"group", "g", "g1", "g2"})
-_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
-#: An option's name, or an option *value* that names a behaviour, e.g. ``driver = cauchy``.
-_WORD = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
-#: An option *value* that is a list of numbers, e.g. ``range = "0, 1, 0.1"`` or
-#: ``buckets = "2,5,6,7,10"``. Written as one string because that is how BRAIN takes it.
-_NUMBER_LIST = re.compile(r"^-?\d+(?:\.\d+)?(?:\s*,\s*-?\d+(?:\.\d+)?)+$")
-#: Straight and curly both: the operator reference is typed prose and uses either.
-_QUOTES = "\"'\u201c\u201d"
-_COMPARISON = re.compile(r"^\s*input1\s*(==|!=|>=|<=|>|<)\s*input2\s*$")
+#: Where an Alpha without Max Trade has to keep 70% of its Sharpe under investability
+#: constraints to be submitted: BRAIN's Investability Sharpe test.
+MAX_TRADE_REGIONS = frozenset({"ASI", "JPN", "HKG", "TWN", "KOR"})
+MAX_TEXT = 8000
+MAX_VARIABLES = 16
+MAX_VALUES = 64
+#: Where a template's signal goes. A template holding one can be read and counted, not run.
+HOLE = "..."
+#: Operators that read pv1 whatever they are given, so BRAIN counts them as using it.
+PV1_OPERATORS = frozenset({"inst_pnl", "convert"})
+#: Wraps a typed list so the parser reads it as one call's inputs.
+_LIST = "values"
 
 
-# --- blocks -----------------------------------------------------------------
+@functools.lru_cache(maxsize=256)
+def program(text: str) -> Node:
+    """The template as a tree. Raises :class:`ParseError`."""
+    return parse(text)
 
 
-@dataclass(frozen=True, slots=True)
-class Block:
-    """One operator as a block: what goes in each input, and the options it takes."""
+@functools.lru_cache(maxsize=4096)
+def _value(text: str) -> Node:
+    return parse(text)
+
+
+def values(text: str) -> list[str]:
+    """A typed list, each value as BRAIN will read it. Raises ValueError saying why not.
+
+    Read as the inputs of one call, so a comma inside brackets or quotes stays in its value:
+    ``sector, bucket(rank(cap), range="0, 1, 0.1")`` is two values.
+    """
+    # A comma left at the end is the next value not typed yet, not a mistake.
+    text = text.strip().rstrip(",").rstrip()
+    if not text:
+        raise ValueError("Type its values, separated by commas.")
+    try:
+        listed = parse(f"{_LIST}({text})")
+    except ParseError as exc:
+        # Positions count the wrapper, so they would point at the wrong character.
+        raise ValueError(re.sub(r" at \d+", "", str(exc))) from exc
+    if listed.kind != "call" or listed.value != _LIST or listed.kwargs or not listed.args:
+        raise ValueError("Type its values, separated by commas.")
+    if any(n.value.startswith("$") for arg in listed.args for _, n in walk(arg)):
+        raise ValueError("A value can't hold another $variable.")
+    if any(n.value == HOLE for arg in listed.args for _, n in walk(arg)):
+        raise ValueError(f"A value can't be {HOLE}: type the signal itself.")
+    found = list(dict.fromkeys(write(arg) for arg in listed.args))
+    if len(found) > MAX_VALUES:
+        raise ValueError(f"A variable holds at most {MAX_VALUES} values.")
+    return found
+
+
+# --- how a template writes its variables ------------------------------------
+
+
+@dataclass(slots=True)
+class Use:
+    """How a template writes one variable."""
 
     name: str
-    category: str
-    #: ``signal``, ``lookback`` or ``group`` for each input, in order.
-    inputs: tuple[str, ...]
-    #: Keyword options with a number or true/false default, e.g. ``{"std": 4}``.
-    options: dict[str, float | bool | str]
-    #: Written between its two inputs (``x > y``) rather than as a call.
-    symbol: str | None = None
-    #: What it gives: ``signal``, or ``group`` for an operator that makes a group.
-    output: str = "signal"
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "category": self.category,
-            "inputs": list(self.inputs),
-            "options": dict(self.options),
-            "symbol": self.symbol,
-            "output": self.output,
-        }
+    #: Written as an operator, ``$name(...)``: each call's input count.
+    calls: list[int] = field(default_factory=list)
+    #: Written as an input, and of those, directly inside a vector operator.
+    inputs: int = 0
+    in_vector: int = 0
+    #: Written as an option's value, ``driver = $driver``.
+    options: int = 0
 
 
-def blocks(operators: list[dict[str, Any]]) -> dict[str, Block]:
-    """The account's operators as blocks, by name.
+def uses(tree: Node, vector: Callable[[str], bool]) -> dict[str, Use]:
+    """Each variable the template writes, in the order it is first written.
 
-    Inputs come from each definition's parameters without a default: ``d`` or ``lookback``
-    takes a lookback, ``group`` takes a group, anything else a signal. Options are the
-    parameters whose default is a number or true/false. Comparisons have no call form in
-    their definitions (``input1 > input2``), so they are recognised by that shape.
+    ``vector`` says whether a call's operator reduces a vector field: one of the account's
+    vector operators, or a variable whose every value is one.
     """
-    found: dict[str, Block] = {}
-    for name, info in operator_table(operators, "REGULAR").items():
-        if name in EXCLUDED or info.category in EXCLUDED_CATEGORIES:
+    found: dict[str, Use] = {}
+    for path, node in walk(tree):
+        if node.kind not in ("name", "call") or not node.value.startswith("$"):
             continue
-        shape = _shape(info)
-        if shape is None:
+        use = found.setdefault(node.value[1:], Use(node.value[1:]))
+        if node.kind == "call":
+            use.calls.append(len(node.args))
             continue
-        if name in GROUP_OUTPUT:
-            inputs = tuple("group" for _ in shape[0])
-            found[name] = Block(name, info.category, inputs, shape[1], None, "group")
-        elif name in GROUP_MAKERS:
-            # Its inputs stay signals; only what it *gives* is a group.
-            found[name] = Block(name, info.category, shape[0], shape[1], None, "group")
-        else:
-            found[name] = Block(name, info.category, shape[0], shape[1], SYMBOLS.get(name))
-    for operator in operators:
-        name, definition = operator.get("name"), operator.get("definition")
-        scopes = operator.get("scope")
-        if not isinstance(name, str) or not isinstance(definition, str):
+        parent = node_at(tree, path[:-1]) if path else None
+        if parent is not None and path[-1] >= len(parent.args):
+            use.options += 1
             continue
-        if isinstance(scopes, list) and scopes and "REGULAR" not in scopes:
-            continue
-        match = _COMPARISON.match(definition)
-        if match and SYMBOLS.get(name) == match.group(1):
-            category = str(operator.get("category") or "Logical")
-            found[name] = Block(name, category, ("signal", "signal"), {}, match.group(1))
-    return dict(sorted(found.items()))
+        use.inputs += 1
+        if parent is not None and parent.kind == "call" and vector(parent.value):
+            use.in_vector += 1
+    return found
 
 
-def _shape(info: OperatorInfo) -> tuple[tuple[str, ...], dict[str, float | bool | str]] | None:
-    inputs: list[str] = []
-    options: dict[str, float | bool | str] = {}
-    for raw in info.params:
-        key, equals, default = (part.strip() for part in raw.partition("="))
-        if equals:
-            value = _default(default)
-            # A word on a lookback or group parameter is BRAIN's own symbol for the input
-            # it takes, not a value to choose: ``ts_backfill(x, lookback = d)`` still takes
-            # a lookback, and reading ``d`` as a word would turn that input into an option.
-            if isinstance(value, str) and (key in LOOKBACK_PARAMS or key in GROUP_PARAMS):
-                value = None
-            # ``float("NaN")`` parses, and JSON has no way to write the result. No operator
-            # publishes such a default today; one would otherwise break the whole payload.
-            if isinstance(value, float) and not math.isfinite(value):
-                value = None
-            if value is not None and _WORD.match(key):
-                options[key] = value
-            if value is not None or key not in LOOKBACK_PARAMS:
-                continue  # ``lookback = d`` still takes a lookback
-        name = key.replace(".", "").strip()
-        if not name:
-            continue  # the ``..`` of a variadic operator
-        if name in LOOKBACK_PARAMS:
-            inputs.append("lookback")
-        elif name in GROUP_PARAMS:
-            inputs.append("group")
-        else:
-            inputs.append("signal")
-    return (tuple(inputs), options) if inputs else None
+def assigned(tree: Node) -> set[str]:
+    """The names a template's own lines define, ``x = ...;``."""
+    return {node.value for _, node in walk(tree) if node.kind == "assign"}
 
 
-def _default(text: str) -> float | bool | str | None:
-    """One option's default, as its published definition writes it.
-
-    Words and lists of numbers count, not only single numbers and flags. Several operators
-    choose behaviour by name — ``quantile(x, driver = gaussian)`` — and ``bucket`` takes the
-    edges of its buckets as one string, ``range = "0, 1, 0.1"``. Read as numbers alone, both
-    kinds were dropped here, so the block never offered them: no template could ask for
-    ``cauchy``, and ``bucket`` had no usable form at all.
-    """
-    lowered = text.lower()
-    if lowered in ("true", "false"):
-        return lowered == "true"
-    try:
-        number = float(text)
-    except ValueError:
-        value = text.strip().strip(_QUOTES).strip()
-        return value if _WORD.match(value) or _NUMBER_LIST.match(value) else None
-    return int(number) if number.is_integer() else number
-
-
-# --- the tree ---------------------------------------------------------------
-
-
-def load(doc: Any) -> dict[str, Any]:
-    """A template as stored: its structure checked, empty slots allowed. Raises ValueError."""
-    if not isinstance(doc, dict) or doc.get("version") != VERSION:
-        raise ValueError("That is not a Template Lab template.")
-    return {"version": VERSION, "root": _load(doc.get("root"), 0, [0])}
-
-
-def _load(slot: Any, depth: int, count: list[int]) -> dict[str, Any] | None:
-    if slot is None:
-        return None
-    count[0] += 1
-    if not isinstance(slot, dict) or depth > 30 or count[0] > MAX_NODES * 2:
-        raise ValueError("The template is too large or malformed.")
-    kind = slot.get("kind")
-    if kind == "op":
-        ops = slot.get("ops")
-        if (
-            not isinstance(ops, list)
-            or not 1 <= len(ops) <= MAX_CHOICES
-            or not all(isinstance(name, str) and _NAME.match(name) for name in ops)
-        ):
-            raise ValueError("An operator block names no operator.")
-        args = slot.get("args")
-        if not isinstance(args, list) or len(args) > 8:
-            raise ValueError(f"{ops[0]} has malformed inputs.")
-        options = slot.get("options") or {}
-        if not isinstance(options, dict) or not all(
-            isinstance(key, str) and _WORD.match(key) and _is_value(value)
-            for key, value in options.items()
-        ):
-            raise ValueError(f"{ops[0]} has malformed options.")
-        node: dict[str, Any] = {
-            "kind": "op",
-            "ops": list(dict.fromkeys(ops)),
-            "args": [_load(child, depth + 1, count) for child in args],
-        }
-        if options:
-            node["options"] = dict(options)
-        return node
-    if kind == "var":
-        name, tag = slot.get("name"), slot.get("tag")
-        if name not in VARIABLE_NAMES or tag not in TAGS:
-            raise ValueError("A variable block is malformed.")
-        return {"kind": "var", "name": name, "tag": tag}
-    if kind == "data":
-        name = slot.get("name")
-        if name not in DATA_FIELDS and name not in GROUP_FIELDS:
-            raise ValueError(f"{name!r} is not a data field a template can read.")
-        return {"kind": "data", "name": name}
-    if kind == "num":
-        value = slot.get("value")
-        if not _is_value(value) or isinstance(value, bool):
-            raise ValueError("A number block holds no number.")
-        return {"kind": "num", "value": value}
-    raise ValueError("The template has a block of an unknown kind.")
-
-
-def _is_value(value: Any) -> bool:
-    if isinstance(value, bool):
-        return True
-    if isinstance(value, str):
-        # A bare word or a list of numbers, nothing else: the value names a behaviour BRAIN
-        # publishes or the edges of its buckets, and it is written straight into an
-        # expression.
-        return bool(_WORD.match(value) or _NUMBER_LIST.match(value))
-    return isinstance(value, int | float) and math.isfinite(value)
-
-
-def _walk(slot: dict[str, Any] | None, path: str = "r") -> Iterator[tuple[str, dict[str, Any]]]:
-    """Every block with its path (``r``, ``r.0``, ``r.0.1``), parents first."""
-    if slot is None:
-        return
-    yield path, slot
-    if slot["kind"] == "op":
-        for index, child in enumerate(slot["args"]):
-            yield from _walk(child, f"{path}.{index}")
-
-
-def operators(doc: dict[str, Any]) -> set[str]:
-    """Every operator a template names, choices included."""
-    return {
-        name for _, node in _walk(doc.get("root")) if node["kind"] == "op" for name in node["ops"]
-    }
-
-
-def missing(doc: dict[str, Any], table: dict[str, Block]) -> list[str]:
-    """The operators a template names that the account does not have as blocks."""
-    return sorted(operators(doc) - table.keys())
-
-
-def problems(doc: dict[str, Any], table: dict[str, Block]) -> list[str]:
-    """Why a template can't become a task yet, each said once. Empty when it can."""
-    root = doc.get("root")
-    if root is None:
-        return ["The template is empty."]
-    nodes = list(_walk(root))
-    found: list[str] = []
-    empty = sum(
-        1 for _, node in nodes if node["kind"] == "op" for child in node["args"] if child is None
-    )
-    if empty:
-        found.append("1 slot is empty." if empty == 1 else f"{empty} slots are empty.")
-    if len(nodes) > MAX_NODES:
-        found.append(f"A template holds at most {MAX_NODES} blocks.")
-    if not any(node["kind"] == "var" and node["name"] == "FIELD" for _, node in nodes):
-        found.append("Use FIELD so the template reads your datasets.")
-    found.extend(_fits(root, "signal", "", 0, table))
-    for _, node in nodes:
-        if node["kind"] == "op":
-            found.extend(_operator_problems(node, table))
+def template_problems(tree: Node, table: dict[str, OperatorInfo]) -> list[str]:
+    """What is wrong with the template itself, before any variable is looked at."""
+    found = [
+        f"{node.value} is chosen by the search, so it can't be defined with =. "
+        "Name the step without $."
+        for _, node in walk(tree)
+        if node.kind == "assign" and node.value.startswith("$")
+    ]
+    if holes(tree):
+        found.append(f"Replace each {HOLE} with a signal.")
+    found.extend(_calls(tree, table))
     return list(dict.fromkeys(found))
 
 
-def _operator_problems(node: dict[str, Any], table: dict[str, Block]) -> Iterator[str]:
-    known = [table[name] for name in node["ops"] if name in table]
-    for name in node["ops"]:
-        if name not in table:
-            yield f"{name} is not one of your operators."
-    if not known:
-        return
-    first = known[0]
-    for other in known[1:]:
-        if other.inputs != first.inputs:
-            yield (
-                f"{first.name} and {other.name} take different inputs, so they can't share a block."
+def holes(tree: Node) -> int:
+    """How many ``...`` are still to be filled with a signal."""
+    return sum(1 for _, node in walk(tree) if node.value == HOLE and node.kind in ("name", "call"))
+
+
+def _calls(tree: Node, table: dict[str, OperatorInfo]) -> Iterator[str]:
+    for _, node in walk(tree):
+        if node.kind != "call" or node.value.startswith("$") or node.value == HOLE:
+            continue
+        info = table.get(node.value)
+        if info is None:
+            yield f"{node.value} is not one of your operators."
+        elif not _takes(info, len(node.args)):
+            yield f"{node.value} does not take {_inputs(len(node.args))}."
+
+
+def _inputs(count: int) -> str:
+    return f"{count} input{'' if count == 1 else 's'}"
+
+
+def _takes(info: OperatorInfo, count: int) -> bool:
+    return info.required <= count and (info.maximum is None or count <= info.maximum)
+
+
+def values_problems(use: Use, listed: list[str], table: dict[str, OperatorInfo]) -> list[str]:
+    """Why a variable typed as values can't be written where the template writes it."""
+    if use.calls and (use.inputs or use.options):
+        return ["It is written both as an operator and as an input. Give each its own name."]
+    found: list[str] = []
+    if use.calls:
+        for value in listed:
+            info = table.get(value)
+            if info is None:
+                found.append(f"{value} is not one of your operators.")
+                continue
+            found.extend(
+                f"{value} does not take {_inputs(count)}."
+                for count in dict.fromkeys(use.calls)
+                if not _takes(info, count)
             )
-    for key in node.get("options") or {}:
-        for block in known:
-            if key not in block.options:
-                yield f"{block.name} has no {key} option."
-    if len(node["args"]) != len(first.inputs):
-        count = len(first.inputs)
-        yield f"{first.name} takes {count} input{'' if count == 1 else 's'}."
-        return
-    for index, (socket, child) in enumerate(zip(first.inputs, node["args"], strict=True)):
-        if child is not None:
-            yield from _fits(child, socket, first.name, index, table)
+        return list(dict.fromkeys(found))
+    for value in listed:
+        found.extend(_calls(_value(value), table))
+    return list(dict.fromkeys(found))
 
 
-def _fits(
-    node: dict[str, Any], socket: str, owner: str, index: int, table: dict[str, Block]
-) -> Iterator[str]:
-    kind, name = node["kind"], node.get("name")
-    block = table.get(node["ops"][0]) if kind == "op" else None
-    group = (
-        (kind == "var" and name == "GROUP")
-        or (kind == "data" and name in GROUP_FIELDS)
-        or (block is not None and block.output == "group")
+def field_types(use: Use, chosen: list[str] | None) -> list[str]:
+    """The field types searched: as chosen, else what the template's writing implies.
+
+    Only matrix and vector fields are searched; a group field is typed as a value instead.
+    """
+    if picked := [t for t in ("MATRIX", "VECTOR") if t in (chosen or ())]:
+        return picked
+    inside = use.inputs > 0 and use.in_vector == use.inputs
+    return ["VECTOR"] if inside else ["MATRIX"]
+
+
+def fields_problems(use: Use, types: list[str], vector: list[str]) -> list[str]:
+    """Why a variable of fields can't be written where the template writes it.
+
+    Matrix and vector fields together are read as matrix fields, the vector ones reduced by
+    an operator the search chooses. Vector fields alone are the template's to reduce, so
+    each place it is written must be inside a vector operator.
+    """
+    if use.calls:
+        return ["Fields can't be an operator. Type operator names as its values instead."]
+    if use.options:
+        return ["Fields can't be an option's value. Type the values instead."]
+    found: list[str] = []
+    if types == ["VECTOR"]:
+        if use.in_vector < use.inputs:
+            found.append(
+                f"It holds vector fields only, so write it inside a vector operator, "
+                f"e.g. vec_avg(${use.name})."
+            )
+    elif use.in_vector:
+        found.append("It is inside a vector operator, so choose Vector fields only.")
+    if types == ["MATRIX", "VECTOR"] and not vector:
+        found.append("Choose the vector operators its vector fields are reduced with.")
+    return found
+
+
+def data_names(tree: Node, defined: set[str]) -> list[str]:
+    """Fixed data fields a tree reads: not variables, groups, options or the template's steps."""
+    return [n for n in names_read(tree) if not n.startswith("$") and n not in defined | {HOLE}]
+
+
+def value_names(listed: list[str], defined: set[str]) -> list[str]:
+    return sorted({n for value in listed for n in data_names(_value(value), defined)})
+
+
+# --- arithmetic on numbers, and how large a template's Alphas are ------------------
+
+_ARITHMETIC: dict[str, Callable[[float, float], Any]] = {
+    "+": operator.add,
+    "-": operator.sub,
+    "*": operator.mul,
+    "/": operator.truediv,
+    "^": operator.pow,
+}
+
+
+def _number(node: Node) -> float | None:
+    if node.kind == "num":
+        return float(node.value)
+    if node.kind == "unary" and node.value == "-" and node.args[0].kind == "num":
+        return -float(node.args[0].value)
+    return None
+
+
+def fold(node: Node) -> Node:
+    """Arithmetic between numbers worked out, so ``$lookback / 2`` reaches BRAIN as ``10.5``
+    rather than as an operator Power Pool counts."""
+    node = replace(
+        node,
+        args=tuple(fold(arg) for arg in node.args),
+        kwargs=tuple((key, fold(arg)) for key, arg in node.kwargs),
     )
-    if socket == "lookback":
-        if not (
-            (kind == "var" and name in LOOKBACK_VARIABLES)
-            or (kind == "num" and _whole(node["value"]))
-        ):
-            yield f"{owner} needs a lookback in input {index + 1}."
-    elif socket == "group":
-        if not group:
-            yield f"{owner} needs a group in input {index + 1}."
-    elif kind == "var" and name in LOOKBACK_VARIABLES:
-        yield f"{name} can only go in a lookback input."
-    elif group:
-        yield f"{name or node['ops'][0]} can only go in a group input."
-
-
-def _whole(value: Any) -> bool:
-    return not isinstance(value, bool) and float(value).is_integer() and value > 0
-
-
-# --- what the search asks for -----------------------------------------------
+    if node.kind != "binary" or node.value not in _ARITHMETIC:
+        return node
+    left, right = (_number(arg) for arg in node.args)
+    if left is None or right is None:
+        return node
+    try:
+        result = _ARITHMETIC[node.value](left, right)
+    except ZeroDivisionError, OverflowError:
+        return node
+    # A negative number to a fractional power is complex, and nothing BRAIN can read.
+    if not isinstance(result, float) or not math.isfinite(result):
+        return node
+    number = Node("num", f"{abs(result):.10g}")
+    return Node("unary", "-", (number,)) if result < 0 else number
 
 
 @dataclass(frozen=True, slots=True)
-class Used:
-    """What a template asks the search for."""
+class Size:
+    """How large a template's Alphas are, as Power Pool counts them: fewest and most."""
 
-    #: FIELD tags in order; the first is the field the first pass covers.
-    fields: tuple[str, ...]
-    #: ``(variable, tag)`` for every other variable, sorted.
-    values: tuple[tuple[str, str], ...]
-    #: ``(path, operators)`` for every choice block, parents first.
-    choices: tuple[tuple[str, tuple[str, ...]], ...]
-    #: Fixed data fields read (grouping fields are not checked per universe).
-    data: tuple[str, ...]
+    operators: tuple[int, int]
+    fields: tuple[int, int]
+    #: ``...`` still to be filled with a signal.
+    holes: int
+    #: Data fields read by name, in the template or in a variable's values.
+    read: tuple[str, ...]
+    #: Variables standing for a field: defined as fields, or not defined at all.
+    slots: tuple[str, ...]
 
-
-def used(doc: dict[str, Any]) -> Used:
-    fields: set[str] = set()
-    values: set[tuple[str, str]] = set()
-    data: set[str] = set()
-    choices: list[tuple[str, tuple[str, ...]]] = []
-    for path, node in _walk(doc.get("root")):
-        if node["kind"] == "var":
-            if node["name"] == "FIELD":
-                fields.add(node["tag"])
-            else:
-                values.add((node["name"], node["tag"]))
-        elif node["kind"] == "op" and len(node["ops"]) > 1:
-            choices.append((path, tuple(node["ops"])))
-        elif node["kind"] == "data" and node["name"] in DATA_FIELDS:
-            data.add(node["name"])
-    return Used(tuple(sorted(fields)), tuple(sorted(values)), tuple(choices), tuple(sorted(data)))
+    @property
+    def power_pool(self) -> tuple[int, int] | None:
+        """Operators and fields every Alpha still has free under Power Pool's limits; ``None``
+        once some Alpha is over them."""
+        free = (MAX_OPERATORS - self.operators[1], MAX_FIELDS - self.fields[1])
+        return free if min(free) >= 0 else None
 
 
-def field_key(tag: str, fields: tuple[str, ...]) -> str:
-    """The first FIELD tag is ``field``, as in Search Lab, so the first pass covers it."""
-    return "field" if fields and tag == fields[0] else f"field_{tag}"
+def size(tree: Node, typed: dict[str, list[str]]) -> Size:
+    """Operators and unique data fields, fewest and most over the values variables can take.
 
+    A variable not typed as values stands for one field. Written as an operator, it is the
+    operator it draws, so one that may be ``ts_backfill`` may cost nothing.
+    """
+    written = uses(tree, lambda _: False)
+    defined = assigned(tree)
+    calls = {name for name, use in written.items() if use.calls}
 
-def vector_key(key: str) -> str:
-    return "vector_op" if key == "field" else f"vector_op_{key.removeprefix('field_')}"
+    def fields_of(node: Node) -> set[str]:
+        return {n for n in names_read(node) if n not in defined and n != HOLE}
 
+    def weight(name: str, text: str) -> tuple[int, int]:
+        if name in calls:
+            return int(text not in UNCOUNTED), 0
+        value = fold(_value(text))
+        return operator_count(value), len(fields_of(value))
 
-def suggest(trial: Any, run: TemplateParams, choices: dict[str, list[str]]) -> dict[str, Any]:
-    """One point, asked define-by-run in a fixed order so every name keeps one distribution."""
-    space, use = run.space, used(run.tree)
-    universes = list(space["universes"])
-    universe = (
-        universes[0] if len(universes) == 1 else trial.suggest_categorical("universe", universes)
+    def counted(pick: Callable[..., str]) -> tuple[int, int]:
+        chosen = {
+            name: pick(listed, key=functools.partial(weight, name))
+            for name, listed in typed.items()
+            if listed
+        }
+
+        def filled(node: Node) -> Node:
+            drawn = chosen.get(node.value[1:]) if node.value.startswith("$") else None
+            if node.kind == "name" and drawn is not None:
+                return _value(drawn)
+            return replace(
+                node,
+                value=drawn if node.kind == "call" and drawn is not None else node.value,
+                args=tuple(filled(arg) for arg in node.args),
+                kwargs=tuple((key, filled(arg)) for key, arg in node.kwargs),
+            )
+
+        whole = fold(filled(tree))
+        return operator_count(whole), len(fields_of(whole))
+
+    (fewest_ops, fewest_fields), (most_ops, most_fields) = counted(min), counted(max)
+    read = set(data_names(tree, defined))
+    for name, listed in typed.items():
+        if name in written and written[name].inputs:
+            read.update(value_names(listed, defined))
+    return Size(
+        operators=(fewest_ops, most_ops),
+        fields=(min(fewest_fields, most_fields), max(fewest_fields, most_fields)),
+        holes=holes(tree),
+        read=tuple(sorted(read)),
+        slots=tuple(n for n, use in written.items() if use.inputs and n not in typed),
     )
+
+
+def single_dataset(
+    tree: Node,
+    sized: Size,
+    datasets: dict[str, str],
+    slot_datasets: dict[str, frozenset[str] | None],
+) -> bool:
+    """Whether every Alpha the template makes reads one dataset: BRAIN's single dataset Alpha.
+
+    One field per Alpha is one dataset whatever it is. Past that, every field's dataset has to
+    be known and the same: ``datasets`` by field read, ``slot_datasets`` by variable, ``None``
+    where a variable's datasets are not known yet.
+    """
+    sources: list[frozenset[str] | None] = [
+        frozenset({datasets[name]}) if name in datasets else None for name in sized.read
+    ]
+    sources.extend(slot_datasets.get(slot) for slot in sized.slots)
+    if any(n.kind == "call" and n.value in PV1_OPERATORS for _, n in walk(tree)):
+        sources.append(frozenset({"pv1"}))
+    if sized.holes or not sources:
+        return False
+    if len(sources) == 1:
+        return True
+    known = [source for source in sources if source is not None]
+    return len(known) == len(sources) and len(frozenset[str]().union(*known)) == 1
+
+
+# --- the search ---------------------------------------------------------------
+
+
+def field_choices(space: dict[str, Any]) -> dict[str, dict[str, list[str]]]:
+    """Per variable of fields, per universe, the fields it can take there.
+
+    Frozen with the task, so every ``$name@universe`` slot keeps one distribution.
+    """
+    found: dict[str, dict[str, list[str]]] = {}
+    for variable in space["variables"]:
+        if variable["kind"] != "fields":
+            continue
+        absent = variable.get("absent") or {}
+        found[variable["name"]] = {
+            universe: [
+                f for f in variable["fields"] if f not in set[str](absent.get(universe) or ())
+            ]
+            for universe in space["universes"]
+        }
+    return found
+
+
+def _first_fields(space: dict[str, Any]) -> dict[str, Any] | None:
+    return next((v for v in space["variables"] if v["kind"] == "fields"), None)
+
+
+def coverage(space: dict[str, Any]) -> tuple[str, list[str]]:
+    """The first variable of fields, whose every field the first pass tries once."""
+    first = _first_fields(space)
+    return (f"${first['name']}", list(first["fields"])) if first else ("", [])
+
+
+def first_pass(space: dict[str, Any], field_id: str) -> dict[str, Any]:
+    """Fixed choices that try a field once, in the first universe that has it."""
+    first = _first_fields(space) or {}
+    absent = first.get("absent") or {}
+    universe = next(
+        (u for u in space["universes"] if field_id not in set[str](absent.get(u) or ())),
+        space["universes"][0],
+    )
+    return {"universe": universe, f"${first.get('name')}@{universe}": field_id}
+
+
+def _ask(trial: Any, name: str, choices: list[Any]) -> Any:
+    """Only a real choice is asked, so a single value never becomes a dimension."""
+    return choices[0] if len(choices) == 1 else trial.suggest_categorical(name, choices)
+
+
+def suggest(
+    trial: Any, run: TemplateParams, choices: dict[str, dict[str, list[str]]]
+) -> dict[str, Any]:
+    """One point, asked define-by-run in a fixed order so every name keeps one distribution.
+
+    A field is asked from its universe's own slot, ``$name@universe``, because BRAIN scopes
+    fields by universe: the universe is chosen first, so a field is never paired with one
+    that lacks it.
+    """
+    space = run.space
+    universe = _ask(trial, "universe", list(space["universes"]))
     params: dict[str, Any] = {"universe": universe}
-    for tag in use.fields:
-        key = field_key(tag, use.fields)
-        params[key] = trial.suggest_categorical(f"{key}@{universe}", choices[universe])
-        if space["fields"][params[key]] == "VECTOR":
-            vector = vector_key(key)
-            params[vector] = trial.suggest_categorical(vector, list(space["vector"]))
-    for name, tag in use.values:
-        key = f"{name}#{tag}"
-        params[key] = trial.suggest_categorical(key, list(space["variables"][name]))
-    for path, ops in use.choices:
-        params[f"op@{path}"] = trial.suggest_categorical(f"op@{path}", list(ops))
-    neutralizations = list(space["neutralizations"])
-    params["neutralization"] = (
-        neutralizations[0]
-        if len(neutralizations) == 1
-        else trial.suggest_categorical("neutralization", neutralizations)
-    )
+    for variable in space["variables"]:
+        key = f"${variable['name']}"
+        if variable["kind"] == "fields":
+            field_id = trial.suggest_categorical(
+                f"{key}@{universe}", choices[variable["name"]][universe]
+            )
+            params[key] = field_id
+            if variable["fields"][field_id] == "VECTOR" and variable.get("vector"):
+                params[f"{key}#vector"] = _ask(trial, f"{key}#vector", list(variable["vector"]))
+        else:
+            params[key] = _ask(trial, key, list(variable["values"]))
+    params["neutralization"] = _ask(trial, "neutralization", list(space["neutralizations"]))
+    params["investability"] = _ask(trial, "investability", list(space["investability"]))
     return params
 
 
-def render(doc: dict[str, Any], params: dict[str, Any]) -> str:
-    """The Fast Expression for one point of the search."""
-    return write(_written(doc["root"], "r", params, used(doc)))
+def render(text: str, space: dict[str, Any], params: dict[str, Any]) -> str:
+    """The Fast Expression for one point of the search.
 
+    The last line goes to BRAIN as an expression: ``alpha = ...`` there is read as what it
+    assigns, which is how BRAIN treats the last line whatever it is called.
+    """
+    kinds = {v["name"]: v["kind"] for v in space["variables"]}
 
-def _written(node: dict[str, Any], path: str, params: dict[str, Any], use: Used) -> Node:
-    kind = node["kind"]
-    if kind == "op":
-        name = node["ops"][0] if len(node["ops"]) == 1 else params[f"op@{path}"]
-        args = tuple(
-            _written(child, f"{path}.{index}", params, use)
-            for index, child in enumerate(node["args"])
+    def chosen(name: str) -> Node:
+        value = params[f"${name}"]
+        if kinds[name] != "fields":
+            return _value(value)
+        vector = params.get(f"${name}#vector")
+        return Node("call", vector, (Node("name", value),)) if vector else Node("name", value)
+
+    def filled(node: Node) -> Node:
+        if node.kind == "name" and node.value.startswith("$"):
+            return chosen(node.value[1:])
+        name = (
+            params[node.value] if node.kind == "call" and node.value.startswith("$") else node.value
         )
-        options = node.get("options") or {}
-        if name in SYMBOLS and not options and len(args) == 2:
-            return Node("binary", SYMBOLS[name], args)
-        return Node("call", name, args, tuple((k, _literal(v)) for k, v in options.items()))
-    if kind == "var":
-        if node["name"] == "FIELD":
-            key = field_key(node["tag"], use.fields)
-            inner = Node("name", params[key])
-            vector = params.get(vector_key(key))
-            if vector:
-                inner = Node("call", vector, (inner,))
-            return inner
-        value = params[f"{node['name']}#{node['tag']}"]
-        return Node("name", str(value)) if node["name"] == "GROUP" else _literal(value)
-    if kind == "data":
-        return Node("name", node["name"])
-    return _literal(node["value"])
+        return replace(
+            node,
+            value=name,
+            args=tuple(filled(arg) for arg in node.args),
+            kwargs=tuple((key, filled(arg)) for key, arg in node.kwargs),
+        )
 
-
-def _literal(value: float | bool | str) -> Node:
-    if isinstance(value, bool):
-        return Node("name", "true" if value else "false")
-    if isinstance(value, str):
-        # Quoted, as the operator reference writes it, so the word can never be mistaken
-        # for a data field of the same name.
-        return Node("str", f'"{value}"')
-    number = float(value)
-    text = str(int(abs(number))) if number.is_integer() else repr(abs(number))
-    return Node("unary", "-", (Node("num", text),)) if number < 0 else Node("num", text)
-
-
-def skeleton(doc: dict[str, Any]) -> str:
-    """The template with its names in, e.g. ``{ts_rank OR ts_zscore}(FIELD A, LOOKBACK A)``."""
-    return write(_shaped(doc.get("root")))
-
-
-def _shaped(slot: dict[str, Any] | None) -> Node:
-    if slot is None:
-        return Node("name", "?")
-    kind = slot["kind"]
-    if kind == "op":
-        ops, options = slot["ops"], slot.get("options") or {}
-        args = tuple(_shaped(child) for child in slot["args"])
-        if len(ops) == 1 and ops[0] in SYMBOLS and not options and len(args) == 2:
-            return Node("binary", SYMBOLS[ops[0]], args)
-        name = ops[0] if len(ops) == 1 else "{" + " OR ".join(ops) + "}"
-        return Node("call", name, args, tuple((k, _literal(v)) for k, v in options.items()))
-    if kind == "var":
-        return Node("name", f"{slot['name']} {slot['tag']}")
-    if kind == "data":
-        return Node("name", slot["name"])
-    return _literal(slot["value"])
+    tree = fold(filled(program(text)))
+    steps = list(tree.args) if tree.kind == "seq" else [tree]
+    if steps[-1].kind == "assign":
+        steps[-1] = steps[-1].args[0]
+    return write(Node("seq", args=tuple(steps)) if len(steps) > 1 else steps[0])
 
 
 def request_for(params: dict[str, Any], run: TemplateParams) -> SimulationRequest:
+    trade, position = INVESTABILITY[params["investability"]]
     return SimulationRequest(
         settings=SimulationSettings(
             region=run.region,
@@ -523,197 +523,154 @@ def request_for(params: dict[str, Any], run: TemplateParams) -> SimulationReques
             universe=params["universe"],
             neutralization=params["neutralization"],
             decay=run.decay,
-            truncation=search.TRUNCATION,
+            truncation=run.truncation,
+            pasteurization=run.pasteurization,
+            nan_handling=run.nan_handling,
+            test_period=run.test_period,
+            max_trade=trade,
+            max_position=position,
         ),
-        regular=render(run.tree, params),
+        regular=render(run.template, run.space, params),
     )
 
 
 def draw(
-    trial: Any, run: TemplateParams, choices: dict[str, list[str]]
+    trial: Any, run: TemplateParams, choices: dict[str, dict[str, list[str]]]
 ) -> tuple[dict[str, Any], SimulationRequest | None]:
-    """One point and its simulation; none when two FIELD or two GROUP tags landed on one value."""
+    """One point and its simulation; none when two variables of fields landed on one field.
+
+    Two names for fields mean two different fields: a template uses one field twice by writing
+    the same name twice. Values are not held apart this way, since two operators or two
+    lookbacks drawing the same value is a fair Alpha.
+    """
     params = suggest(trial, run, choices)
-    use = used(run.tree)
-    fields = [params[field_key(tag, use.fields)] for tag in use.fields]
-    groups = [params[f"GROUP#{tag}"] for name, tag in use.values if name == "GROUP"]
-    if len(set(fields)) < len(fields) or len(set(groups)) < len(groups):
+    # A variable with a single field is no choice: refusing it would refuse every draw.
+    drawn = [
+        params[f"${v['name']}"]
+        for v in run.space["variables"]
+        if v["kind"] == "fields" and len(v["fields"]) > 1
+    ]
+    if len(set(drawn)) < len(drawn):
         return params, None
     return params, request_for(params, run)
 
 
-# --- presets ----------------------------------------------------------------
+def combinations(space: dict[str, Any]) -> int:
+    """How many different simulations the search space holds."""
+    sizes = [
+        len(space["universes"]),
+        len(space["neutralizations"]),
+        len(space["investability"]),
+    ]
+    for variable in space["variables"]:
+        if variable["kind"] == "fields":
+            kinds = list(variable["fields"].values())
+            wraps = max(1, len(variable.get("vector") or []))
+            sizes.append(kinds.count("MATRIX") + kinds.count("VECTOR") * wraps)
+        else:
+            sizes.append(len(variable["values"]))
+    return math.prod(sizes)
 
 
-def _op(names: str, *args: dict[str, Any] | None, **options: float | bool) -> dict[str, Any]:
-    node: dict[str, Any] = {"kind": "op", "ops": names.split("|"), "args": list(args)}
-    if options:
-        node["options"] = options
-    return node
+# --- templates saved while they were built from blocks --------------------------------
 
-
-def _var(name: str, tag: str = "A") -> dict[str, Any]:
-    return {"kind": "var", "name": name, "tag": tag}
-
-
-def _data(name: str) -> dict[str, Any]:
-    return {"kind": "data", "name": name}
-
-
-def _num(value: float) -> dict[str, Any]:
-    return {"kind": "num", "value": value}
-
-
-@dataclass(frozen=True, slots=True)
-class Preset:
-    slug: str
-    name: str
-    description: str
-    root: dict[str, Any]
-    #: Where the template comes from, e.g. ``AIRS``. Starred on its card.
-    source: str | None = None
-
-    @property
-    def id(self) -> str:
-        return f"preset:{self.slug}"
-
-    @property
-    def doc(self) -> dict[str, Any]:
-        return {"version": VERSION, "root": self.root}
-
-
-_F, _F2 = _var("FIELD"), _var("FIELD", "B")
-_LB, _FAST, _SLOW, _G, _G2 = (
-    _var("LOOKBACK"),
-    _var("FAST_LOOKBACK"),
-    _var("SLOW_LOOKBACK"),
-    _var("GROUP"),
-    _var("GROUP", "B"),
+_V1_CHOICE = re.compile(r"\{\s*([a-z][a-z0-9_]*(?:\s+OR\s+[a-z][a-z0-9_]*)+)\s*\}")
+_V1_VARIABLE = re.compile(
+    r"\b(FAST_LOOKBACK|SLOW_LOOKBACK|LOOKBACK|FIELD|GROUP|WEIGHT|POWER)(?:[ \t]+([A-D]))?\b"
 )
-_COMPARE = "ts_rank|ts_zscore|ts_delta|ts_av_diff"
 
-PRESETS: tuple[Preset, ...] = (
-    Preset(
-        "own_history",
-        "Own History",
-        "Where a field stands against its own past.",
-        _op(_COMPARE, _F, _LB),
-    ),
-    Preset(
-        "peer_history",
-        "Peer History",
-        "Its own-history score, ranked against its peers.",
-        _op("group_rank", _op("ts_rank|ts_zscore", _F, _LB), _G),
-    ),
-    Preset(
-        "smoothed_peer_score",
-        "Smoothed Peer Score",
-        "A score against peers, smoothed over time.",
-        _op(
-            "ts_mean|ts_decay_linear", _op("group_rank|group_zscore|group_neutralize", _F, _G), _LB
+
+def from_blocks(skeleton: str) -> tuple[str, dict[str, dict[str, str]]]:
+    """A template saved as blocks, as text, with the variables its choice blocks become.
+
+    ``FIELD A`` is ``$field`` and ``LOOKBACK B`` is ``$lookback_b``; each choice block,
+    ``{ts_rank OR ts_zscore}(...)``, becomes ``$op1(...)`` listing its operators.
+    """
+    variables: dict[str, dict[str, str]] = {}
+
+    def choice(match: re.Match[str]) -> str:
+        name = f"op{len(variables) + 1}"
+        listed = ", ".join(re.split(r"\s+OR\s+", match.group(1)))
+        variables[name] = {"kind": "values", "values": listed}
+        return f"${name}"
+
+    def variable(match: re.Match[str]) -> str:
+        tag = (match.group(2) or "A").lower()
+        return f"${match.group(1).lower()}" + ("" if tag == "a" else f"_{tag}")
+
+    return _V1_VARIABLE.sub(variable, _V1_CHOICE.sub(choice, skeleton)), variables
+
+
+if __name__ == "__main__":
+    import random
+    import sys
+
+    from .params import TemplateParams
+    from .search import RandomTrial
+
+    listed = values(' 21, sector, bucket(rank(cap), range="0, 1, 0.1"), 21')
+    written = uses(
+        program("x = vec_avg($v) + $f; $op(x, $d) + q(x, k = $k)"), {"vec_avg"}.__contains__
+    )
+    space = {
+        "universes": ["TOP3000"],
+        "neutralizations": ["SECTOR"],
+        "investability": ["none", "max_trade"],
+        "variables": [
+            {
+                "name": "a",
+                "kind": "fields",
+                "fields": {"f1": "MATRIX", "f2": "VECTOR"},
+                "vector": ["vec_max"],
+            },
+            {"name": "b", "kind": "fields", "fields": {"f1": "MATRIX", "f3": "MATRIX"}},
+            {"name": "op", "kind": "values", "values": ["ts_rank", "ts_zscore"]},
+        ],
+    }
+    run = TemplateParams(region="USA", delay=1, space=space, template="alpha = $op($a - $b, 5)")
+    picks = field_choices(space)
+    drawn = [draw(RandomTrial(random.Random(seed)), run, picks) for seed in range(60)]
+    sent = [request.regular or "" for _, request in drawn if request is not None]
+    power_pool = program(
+        "r = rank($field); if_else(abs(ts_arg_min(low, $lookback) - ts_arg_max(high, $lookback))"
+        " > $lookback / 2, r, 1 - r)"
+    )
+    idea = program("if_else(abs(ts_arg_min(low, $d) - ts_arg_max(high, $d)) > $d / 2, ..., ...)")
+    lookbacks = {"lookback": ["21"], "d": ["21"]}
+    checks = {
+        "a Power Pool template is 8 operators and 3 fields": (
+            size(power_pool, lookbacks).operators,
+            size(power_pool, lookbacks).fields,
+        )
+        == ((8, 8), (3, 3)),
+        "an idea with two signals to fill has 2 operators and 1 field left": (
+            size(idea, lookbacks).holes,
+            size(idea, lookbacks).power_pool,
+        )
+        == (2, (2, 1)),
+        "arithmetic on numbers is worked out": write(fold(parse("x > 21 / 2 - -1"))) == "x > 11.5",
+        "an operator variable costs what it draws": size(
+            program("rank($clean($f, 21))"), {"clean": ["ts_backfill", "ts_mean"]}
+        ).operators
+        == (1, 2),
+        "a comma left at the end is not a value": values("5, 21, ") == ["5", "21"],
+        "values keep brackets and drop repeats": listed
+        == ["21", "sector", 'bucket(rank(cap), range="0, 1, 0.1")'],
+        "uses see vector, operator and option places": (
+            written["v"].in_vector,
+            written["f"].in_vector,
+            written["op"].calls,
+            written["k"].options,
+        )
+        == (1, 0, [2], 1),
+        "a variable inside a vector operator holds vector fields": field_types(written["v"], None)
+        == ["VECTOR"],
+        "only two variables on one field are refused": all(
+            p["$a"] == p["$b"] == "f1" for p, request in drawn if request is None
         ),
-    ),
-    Preset(
-        "four_step_recipe",
-        "Four-Step Recipe",
-        "Clip outliers, compare over time, rank within peers, then smooth.",
-        _op(
-            "ts_decay_linear",
-            _op("group_rank", _op(_COMPARE, _op("winsorize", _F, std=4), _SLOW), _G),
-            _FAST,
-        ),
-    ),
-    Preset(
-        "fast_versus_slow",
-        "Fast Versus Slow",
-        "A short average against a long one.",
-        _op("rank", _op("subtract", _op("ts_mean", _F, _FAST), _op("ts_mean", _F, _SLOW))),
-    ),
-    Preset(
-        "fade_the_jump",
-        "Fade the Jump",
-        "Leans against a recent move, within peers.",
-        _op("group_rank", _op("reverse", _op("ts_delta|ts_av_diff", _F, _FAST)), _G),
-    ),
-    Preset(
-        "busy_days_only",
-        "Busy Days Only",
-        "Trades only while volume runs above its average.",
-        _op(
-            "trade_when",
-            _op("greater", _data("volume"), _data("adv20")),
-            _op("ts_rank|ts_zscore", _F, _LB),
-            _num(-1),
-        ),
-    ),
-    Preset(
-        "against_the_price",
-        "Against the Price",
-        "Favours stocks whose field moves against their price.",
-        _op("reverse", _op("ts_corr", _F, _data("close"), _SLOW)),
-    ),
-    Preset(
-        "two_field_ratio",
-        "Two-Field Ratio",
-        "One field over another, compared over time and within peers.",
-        _op("group_rank", _op("ts_zscore", _op("divide", _F, _F2), _SLOW), _G),
-    ),
-    Preset(
-        "lean_on_trading_activity",
-        "Lean on Trading Activity",
-        "A centred rank within peers, leaning towards heavily traded stocks.",
-        _op(
-            "multiply",
-            _op("subtract", _op("group_rank", _F, _G), _num(0.5)),
-            _op("ts_rank", _data("volume"), _FAST),
-        ),
-    ),
-    Preset(
-        "rank_within_group_pairs",
-        "Rank Within Group Pairs",
-        "Its own-history rank, ranked against peers that share two groups.",
-        _op(
-            "group_rank",
-            _op("ts_rank", _op("ts_backfill", _F, _num(21)), _LB),
-            _op("densify", _op("group_cartesian_product", _G, _G2)),
-        ),
-        source="AIRS",
-    ),
-    Preset(
-        "clipped_two_field_ratio",
-        "Clipped Two-Field Ratio",
-        "One field over another with outliers clipped, compared over time and within peers.",
-        _op("group_rank", _op("ts_zscore", _op("winsorize", _op("divide", _F, _F2)), _LB), _G),
-        source="AIRS",
-    ),
-    Preset(
-        "normalized_peer_score",
-        "Normalized Peer Score",
-        "Its own-history score, scored within one group, normalized within another, then clipped.",
-        _op(
-            "winsorize",
-            _op("group_normalize", _op("group_zscore", _op("ts_zscore", _F, _LB), _G), _G2),
-            std=4,
-        ),
-        source="AIRS",
-    ),
-    Preset(
-        "weighted_smoothed_field",
-        "Weighted Smoothed Field",
-        "A clipped, smoothed field, leaning towards stocks that rank high on a second field.",
-        _op(
-            "group_neutralize",
-            _op(
-                "multiply",
-                _op(
-                    "ts_decay_linear",
-                    _op("ts_backfill", _op("winsorize", _F, std=4), _num(21)),
-                    _LB,
-                ),
-                _op("add", _var("WEIGHT"), _op("signed_power", _op("rank", _F2), _var("POWER"))),
-            ),
-            _G,
-        ),
-        source="AIRS",
-    ),
-)
+        "a vector field is reduced": any("vec_max(f2)" in text for text in sent),
+        "the last line goes as an expression": bool(sent) and not any("alpha" in t for t in sent),
+    }
+    if failed := [check for check, ok in checks.items() if not ok]:
+        raise SystemExit(f"template self-check failed: {'; '.join(failed)}")
+    sys.stdout.write(f"{len(sent)} of 60 drawn, e.g. {sent[0]}\n")

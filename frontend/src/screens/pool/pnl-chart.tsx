@@ -57,7 +57,11 @@ export function baseChart(node: HTMLElement): IChartApi {
     rightPriceScale: { borderVisible: false },
     // Ten years of days is ~2,500 bars; the default 0.5px minimum cannot fit them, and the
     // chart silently drops the early years instead.
-    timeScale: { borderVisible: false, minBarSpacing: 0.01 },
+    //
+    // `fitContent` fits the width the chart first paints at. A later resize — the sidebar
+    // opening, a split pane dragged — otherwise keeps that bar spacing, and the history
+    // slides off the right edge; locking the range rescales it to the new width instead.
+    timeScale: { borderVisible: false, minBarSpacing: 0.01, lockVisibleTimeRangeOnResize: true },
     crosshair: {
       vertLine: { color: guide, style: LineStyle.Dashed, labelBackgroundColor: tag },
       horzLine: { color: guide, style: LineStyle.Dashed, labelBackgroundColor: tag },

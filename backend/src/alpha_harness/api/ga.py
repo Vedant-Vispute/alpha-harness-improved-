@@ -16,6 +16,7 @@ from ..brain.schemas import TEST_PERIOD
 from ..db.models import Trial, TrialState, utcnow
 from ..labs import ga, scheduler, search
 from ..labs.launch import (
+    NO_NEUTRALIZATION,
     NO_SIMULATIONS,
     OPERATORS_UNREAD,
     AddedTask,
@@ -135,7 +136,8 @@ async def _market(
 ) -> tuple[ga.Market | None, list[str]]:
     """The market children are bred in, and why it cannot be used if it cannot.
 
-    ``chosen`` narrows the neutralizations a gene may take; empty keeps the lab's default.
+    ``chosen`` is the neutralizations a gene may take. Empty keeps the lab's default, which
+    only Auto Select relies on: a task with none chosen is refused in ``_plan``.
     """
     problems: list[str] = []
     operators = await account_operators(state, refresh=False)
@@ -178,6 +180,8 @@ async def _plan(body: EvolutionRequest, state: Any) -> dict[str, Any]:
     market, problems = await _market(
         state, body.region, body.delay, body.universe, body.neutralizations
     )
+    if not body.neutralizations:
+        problems.append(NO_NEUTRALIZATION)
     ids = list(dict.fromkeys(body.alpha_ids))
     # A region-agnostic parent stands as its family: the region it would be scored on.
     rows = await state.alphas.with_families(await state.alphas.by_ids(ids))

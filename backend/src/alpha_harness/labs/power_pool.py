@@ -16,6 +16,7 @@ import structlog
 from sqlalchemy import func, or_, select
 
 from ..brain.schemas import REGION_AGNOSTIC_REGION, SimulationSettings
+from ..catalog.queries import CatalogQueries, FieldFilter, Tuple4
 from ..db.models import Study, StudyStatus, Trial, TrialState, utcnow
 from ..llm import library
 from ..llm.keys import BudgetExhaustedError, LLMError
@@ -25,6 +26,8 @@ from ..tasks import spawn
 from . import scheduler, search
 from .fastexpr import (
     GROUPING,
+    MAX_FIELDS,
+    MAX_OPERATORS,
     ParseError,
     node_at,
     operator_count,
@@ -36,7 +39,6 @@ from .fastexpr import (
 )
 from .objectives import FAILURE
 from .params import PowerPoolParams, RegionAgnosticParams, params_of
-from .template import DATA_FIELDS
 
 if TYPE_CHECKING:  # pragma: no cover
     import asyncio
@@ -62,7 +64,8 @@ RA_UNIVERSES: dict[str, dict[str, str]] = {
 }
 PER_CALL = 20
 FIELDS_PER_CALL = 200
-MAX_OPERATORS, MAX_FIELDS = 8, 3
+#: Price and volume basics every market has, offered beside the chosen datasets' own fields.
+DATA_FIELDS = ("close", "open", "high", "low", "vwap", "volume", "adv20", "returns", "cap")
 PROPOSED = "Written by the LLM; waiting for cores."
 SCHEMA = {
     "type": "object",
@@ -325,7 +328,12 @@ async def ra_context(
 
 
 async def context_for(
-    catalog: Catalog, region: str, delay: int, universes: list[str], dataset: str
+    catalog: Catalog,
+    region: str,
+    delay: int,
+    universes: list[str],
+    dataset: str,
+    narrow: FieldFilter | None = None,
 ) -> Context | None:
     rows = await _rows(catalog, region, delay, universes, "dataset_id = ?", [dataset])
     if not any(r["dataset_id"] == dataset for r in rows):
@@ -337,6 +345,19 @@ async def context_for(
     )
     held, info = _best(rows, universes)
     own = {f for f, r in info.items() if r["dataset_id"] == dataset}
+    if narrow is not None:
+        # Only what the Data Explorer showed when the dataset was chosen, read through its query.
+        queries = CatalogQueries(catalog)
+        shown: set[str] = set()
+        for universe in universes:
+            page = await queries.fields(
+                Tuple4(region=region, delay=delay, universe=universe),
+                narrow.model_copy(
+                    update={"dataset_ids": [dataset], "limit": search.POOL_LIMIT, "offset": 0}
+                ),
+            )
+            shown.update(str(r["field_id"]) for r in page.get("results") or [])
+        own &= shown
     fields = sorted(
         (_field(info[f]) for f in own if f not in GROUPING), key=lambda x: -(x.coverage or 0)
     )
@@ -716,7 +737,14 @@ async def _write(optimizer: Optimizer, study_id: int) -> None:
         else:
             ids = run.dataset_ids
             dataset = min(ids, key=lambda d: (by.get(d, {}).get("calls", 0), ids.index(d)))
-            ctx = await context_for(catalog, run.region, run.delay, run.universes, dataset)
+            ctx = await context_for(
+                catalog,
+                run.region,
+                run.delay,
+                run.universes,
+                dataset,
+                FieldFilter.model_validate(run.field_filter) if run.field_filter else None,
+            )
         if model is None:
             return await _pause(
                 optimizer,

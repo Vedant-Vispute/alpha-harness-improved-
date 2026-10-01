@@ -40,7 +40,7 @@ from ..db.models import Study, Trial, TrialState
 from ..vault.metrics import MIN_OVERLAP
 from ..vault.store import EVOLVABLE_TYPES, SEEDABLE
 from ..vault.yields import IGNORED_CHECKS, SUBMITTED, checks_of, is_submitted
-from . import search, template
+from . import search
 from .fastexpr import (
     UNCOUNTED,
     Node,
@@ -79,6 +79,10 @@ PATIENCE = 1_000
 #: Candidates Auto Select examines at most, so a weak market cannot cost hundreds of downloads.
 MAX_EXAMINED = 200
 STALLED = "Stopped early: no new best Train Fitness in the last 1,000 simulations."
+#: Never swapped in: ``ts_step`` takes no input a seed can give, vector operators prepare a
+#: field rather than make a signal, and the other two categories are not for Alphas.
+NOT_SWAPPED = frozenset({"ts_step"})
+NOT_SWAPPED_CATEGORIES = frozenset({"Vector", "Special", "Reduce"})
 
 
 # --- seed scores ------------------------------------------------------------
@@ -259,8 +263,8 @@ def build_market(
         if (
             info.name in UNCOUNTED
             or info.name in search.EXCLUDED
-            or info.name in template.EXCLUDED
-            or info.category in template.EXCLUDED_CATEGORIES
+            or info.name in NOT_SWAPPED
+            or info.category in NOT_SWAPPED_CATEGORIES
             or (leveled and levels.get(info.name) != "ALL")
         ):
             continue

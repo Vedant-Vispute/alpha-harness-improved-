@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ConfigDict, Field
 
+from ..brain.schemas import TEST_PERIOD
 from ..schemas import Out
 
 if TYPE_CHECKING:
@@ -31,6 +32,8 @@ LLM_SAMPLERS = frozenset({POWER_POOL_SAMPLER, REGION_AGNOSTIC_SAMPLER})
 SETTINGS_SAMPLER = "settings-sampler"
 #: Studies that re-shape one Alpha's expression at its own settings (tools.correlation_breaker).
 CORRELATION_BREAKER = "correlation-breaker"
+#: Studies that combine your submitted Alphas into SuperAlphas (labs.super_alpha).
+SUPER_LAB = "super-alpha"
 #: Studies that are research-lab tasks, run only from the Tasks tab, by their lab's name.
 TASK_SAMPLERS = {
     SEARCH_SAMPLER: "Search Lab",
@@ -40,6 +43,7 @@ TASK_SAMPLERS = {
     REGION_AGNOSTIC_SAMPLER: "Region Agnostic Lab",
     SETTINGS_SAMPLER: "Settings Sampler",
     CORRELATION_BREAKER: "Correlation Breaker",
+    SUPER_LAB: "Super Alpha Lab",
 }
 
 
@@ -72,7 +76,14 @@ class SearchParams(TaskParams):
 
 
 class TemplateParams(SearchParams):
-    tree: dict[str, Any]
+    #: The template as typed, ``$variables`` and all (``labs.template``).
+    template: str = ""
+    #: A task added while templates were built from blocks: run by ``labs.template_v1``.
+    tree: dict[str, Any] | None = None
+    truncation: float = 0.08
+    pasteurization: str = "ON"
+    nan_handling: str = "ON"
+    test_period: str = TEST_PERIOD
 
 
 class EvolutionParams(TaskParams):
@@ -94,6 +105,8 @@ class PowerPoolParams(TaskParams):
     field_ids: list[str] = Field(default_factory=list)
     #: What they were ranked by, as the prompt says it: "Alphas, most first".
     rank_by: str | None = None
+    #: The Data Explorer's filter the datasets were chosen under, applied on every call.
+    field_filter: dict[str, Any] | None = None
     model: str = ""
     #: A saved prompt from LLM Prompts, re-read on every call; null sends the built-in.
     prompt_id: int | None = None
@@ -153,6 +166,18 @@ class BreakerParams(TaskParams):
     recipes: list[str] = Field(default_factory=list)
 
 
+class SuperParams(TaskParams):
+    """Super Alpha Lab: every selection and combo pairing is written up front."""
+
+    universe: str = ""
+    neutralization: str = ""
+    selection_limit: int = 30
+    #: ``IS``, ``OS``, or both: each pairing then runs once under each.
+    activation: list[str] = Field(default_factory=lambda: ["IS", "OS"])
+    #: The recipes queued, as ``selection · combo``, for the task's detail line.
+    recipes: list[str] = Field(default_factory=list)
+
+
 BY_SAMPLER: dict[str, type[TaskParams]] = {
     SEARCH_SAMPLER: SearchParams,
     TEMPLATE_SAMPLER: TemplateParams,
@@ -161,6 +186,7 @@ BY_SAMPLER: dict[str, type[TaskParams]] = {
     REGION_AGNOSTIC_SAMPLER: RegionAgnosticParams,
     SETTINGS_SAMPLER: SettingsParams,
     CORRELATION_BREAKER: BreakerParams,
+    SUPER_LAB: SuperParams,
 }
 
 

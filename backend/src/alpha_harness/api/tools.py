@@ -16,10 +16,11 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, select
 
+from ..brain.schemas import REGION_AGNOSTIC_REGION
 from ..db.models import Submission, Trial, TrialState, utcnow
 from ..engine.packer import MAX_BATCH
 from ..engine.slots import DEFAULT_SLOTS
-from ..labs.launch import AddedTask, add_study
+from ..labs.launch import NO_NEUTRALIZATION, AddedTask, add_study
 from ..labs.params import CORRELATION_BREAKER, SETTINGS_SAMPLER, BreakerParams, SettingsParams
 from ..schemas import Out
 from ..tools import correlation_breaker, settings_sampler, submission_planner
@@ -54,11 +55,14 @@ class RegionPlan(Out):
     pairs: list[Pair]
     #: Whether BRAIN accepts Max Position here, measured rather than assumed.
     position_available: bool
+    #: Simulations of the day's allowance one run here uses: 4 in All Regions, else 1.
+    cost: int
     markets: list[MarketRow]
     total: int
 
 
 class PlanTotals(Out):
+    #: Of the day's allowance, All Regions counted at its own cost.
     total: int
     batches: int
 
@@ -148,7 +152,8 @@ class PairPick(BaseModel):
 
 
 class SampleRequest(PreviewRequest):
-    """What to queue. An empty list means "everything the plan offers"."""
+    """What to queue. An empty market or pair list means "everything the plan offers"; an
+    empty neutralization list is refused, since nobody chose what to run."""
 
     markets: list[MarketPick] = Field(default_factory=list, max_length=500)
     neutralizations: list[str] = Field(default_factory=list, max_length=50)
@@ -182,11 +187,20 @@ async def add_task(body: SampleRequest, state: State) -> AddedTask:
             "too_many_cores",
             f"The engine has {state.engine.slots} slots, so a task cannot hold {body.cores}.",
         )
+    if not body.neutralizations:
+        raise refuse(422, "no_neutralization", NO_NEUTRALIZATION)
     found = await body.plan(state)
     if found["problems"]:
         raise refuse(422, "settings_sampler_blocked", found["problems"][0])
 
-    chosen = {(m.region, m.delay, m.universe) for m in body.markets}
+    # Nothing chosen means every market, except All Regions: at four simulations a run it is
+    # only swept when asked for by name.
+    chosen = {(m.region, m.delay, m.universe) for m in body.markets} or {
+        (str(m["region"]), int(m["delay"]), str(m["universe"]))
+        for r in found["regions"]
+        if r["region"] != REGION_AGNOSTIC_REGION
+        for m in r["markets"]
+    }
     source: dict[str, Any] = {**found["settings"], "expression": found["expression"]}
     requests = settings_sampler.expand(
         found["regions"],
@@ -204,7 +218,7 @@ async def add_task(body: SampleRequest, state: State) -> AddedTask:
             "Max Trade / Max Position pair.",
         )
 
-    markets = len(chosen) or sum(len(r["markets"]) for r in found["regions"])
+    markets = len(chosen)
     return await add_study(
         state,
         now=utcnow(),

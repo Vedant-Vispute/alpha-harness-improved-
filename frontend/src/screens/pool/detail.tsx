@@ -95,16 +95,7 @@ function Body({ alphaId }: { alphaId: string }) {
         <AlphaActionsMenu alphaId={d.alphaId} />
       </div>
 
-      <Section title="Cumulative PnL" description={`${fmt.int(d.days)} trading days stored`}>
-        {d.problem && <Notice tone="warn">{d.problem}</Notice>}
-        {d.pnl.length > 1 ? (
-          <PnlChart values={d.pnl} dates={d.dates} label={`Cumulative PnL of ${d.alphaId}`} />
-        ) : (
-          !d.problem && (
-            <Empty title="No daily PnL stored">BRAIN returned no daily PnL for this Alpha.</Empty>
-          )
-        )}
-      </Section>
+      <PnlSection alphaId={d.alphaId} />
 
       <Section title="Settings">
         <KV items={settingsItems(d.settings)} />
@@ -118,9 +109,9 @@ function Body({ alphaId }: { alphaId: string }) {
           <p className="text-body-compact text-ink-subtle">No checks stored.</p>
         ) : (
           <ul className="flex flex-col divide-y divide-hairline-subtle">
-            {d.checks.map((c) => (
+            {d.checks.map((c, i) => (
               <li
-                key={c.name}
+                key={`${c.name}-${i}`}
                 className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-1.5 text-body"
               >
                 <Badge tone={checkTone(c.result ?? 'PENDING')}>{c.result ?? 'PENDING'}</Badge>
@@ -161,6 +152,44 @@ function Body({ alphaId }: { alphaId: string }) {
         ))}
       </Section>
     </div>
+  )
+}
+
+/** Its own request: the first view of an Alpha downloads its daily PnL from BRAIN, and the
+ * rest of the sheet, all stored locally, should not wait for that. */
+function PnlSection({ alphaId }: { alphaId: string }) {
+  const q = useQuery({
+    queryKey: ['pool', 'pnl', alphaId],
+    queryFn: () => pool.pnl(alphaId),
+    retry: false,
+  })
+  const p = q.data
+  return (
+    <Section
+      title="Cumulative PnL"
+      description={p ? `${fmt.int(p.days)} trading days stored` : 'Reading the daily PnL…'}
+    >
+      {q.isPending ? (
+        <Skeleton className="h-48" label="Downloading the daily PnL from BRAIN" />
+      ) : q.isError ? (
+        <ErrorNotice error={q.error} title="Could not load the daily PnL" />
+      ) : (
+        <>
+          {q.data.problem && <Notice tone="warn">{q.data.problem}</Notice>}
+          {q.data.pnl.length > 1 ? (
+            <PnlChart
+              values={q.data.pnl}
+              dates={q.data.dates}
+              label={`Cumulative PnL of ${alphaId}`}
+            />
+          ) : (
+            !q.data.problem && (
+              <Empty title="No daily PnL stored">BRAIN returned no daily PnL for this Alpha.</Empty>
+            )
+          )}
+        </>
+      )}
+    </Section>
   )
 }
 

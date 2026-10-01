@@ -18,6 +18,7 @@ from ..db.models import utcnow
 from ..labs import power_pool, search
 from ..labs.launch import (
     MAX_PICKED_FIELDS,
+    NO_NEUTRALIZATION,
     OPERATORS_UNREAD,
     AddedTask,
     account_operators,
@@ -165,9 +166,11 @@ async def _plan(body: RegionAgnosticRequest, state: Any) -> dict[str, Any]:
         lists = [offered[r]["neutralizations"] for r in markets]
         shared = [n for n in lists[0] if all(n in other for other in lists[1:])]
     wanted = set(body.neutralizations)
-    neutralizations = [n for n in shared if n in wanted] or shared
-    if markets and not neutralizations:
-        problems.append("The chosen regions share no neutralization. Choose other regions.")
+    neutralizations = [n for n in shared if n in wanted]
+    if not body.neutralizations:
+        problems.append(NO_NEUTRALIZATION)
+    elif markets and not neutralizations:
+        problems.append("The chosen regions share none of the chosen neutralizations.")
 
     prompt_name, system = await chosen(state, power_pool.RA_KIND, body.prompt_id)
     if not system.strip():

@@ -1,5 +1,5 @@
 /**
- * The Sync with BRAIN matrix: every market BRAIN offers as a Region × Universe matrix, each
+ * The Sync matrix: every market BRAIN offers as a Region × Universe matrix, each
  * cell split into Delay 0 | Delay 1, filling live as a sync works through it. Click a half
  * to open that market in the Data Explorer.
  */
@@ -591,7 +591,7 @@ export function SyncButton({
       >
         {regionAgnostic
           ? 'The Data Fields an alpha can use when it runs in every region at once: 139 Datasets, about 28,000 fields per universe. BRAIN serves this market fifty fields at a time, so it takes around ten minutes per universe — the rest of the app keeps working meanwhile.'
-          : 'Downloads the Data Fields of every market BRAIN offers, then fills in Dataset Details. Fields are browsable in the Data Explorer as soon as they arrive; progress shows in Sync with BRAIN.'}
+          : 'Downloads the Data Fields of every market BRAIN offers, then fills in Dataset Details. Fields are browsable in the Data Explorer as soon as they arrive; progress shows here in Sync.'}
       </Confirm>
     </>
   )

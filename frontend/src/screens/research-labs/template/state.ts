@@ -1,74 +1,118 @@
-/** The Template Lab draft: the open template, its undo history and the task's settings. */
+/** The Template Lab draft: the template being written, its variables and the task's settings. */
 
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { LAB_DEFAULTS, type LabDraft } from '@/screens/research-labs/lab-task'
-import type { TemplateDoc } from '@/screens/research-labs/template/tree'
+import { DEFAULT_SCOPE } from '@/lib/scope'
+import type { Investability, VariableDef } from './api'
 
-const UNDO_STEPS = 50
-
-export interface TemplateDraft extends LabDraft {
-  /** `preset:<slug>`, a saved template's id, or `null` for a new template. */
-  templateId: string | number | null
+export interface TemplateDraft {
+  region: string
+  delay: number
+  /** The template as typed, `$variables` and all. */
+  text: string
+  /** Definitions given here, by name without the `$`. A name without one starts from its
+   *  preset, or from the dataset, subcategory or category it is named after. */
+  variables: Record<string, VariableDef>
+  /** Searched, like the variables. Nothing is ticked until the user ticks it. */
+  universes: string[]
+  neutralizations: string[]
+  investability: Investability[]
+  /** As typed, so a number half-way through being typed is not snapped back. */
+  decay: string
+  truncation: string
+  pasteurization: 'ON' | 'OFF'
+  nanHandling: 'ON' | 'OFF'
+  testYears: string
+  testMonths: string
+  /** `null` until chosen in the form: until then Settings' default applies. */
+  cores: number | null
+  /** `null` until the user assigns them: a task always has simulations chosen on purpose. */
+  simulations: number | null
+  /** The saved template open, or `null` for a new one. */
+  templateId: number | null
   name: string
-  doc: TemplateDoc | null
   /** Changed since it was opened or saved. */
   dirty: boolean
-  /** Earlier trees, newest last. Not kept between visits. */
-  past: TemplateDoc[]
+  /** The template as it was opened or last saved: what Reset puts back. */
+  opened: { text: string; variables: Record<string, VariableDef> }
+  /** The variable whose fields are being chosen in the Data Explorer, kept across a reload. */
+  picking: string | null
 }
 
 interface Actions {
-  open: (templateId: string | number | null, name: string, doc: TemplateDoc) => void
-  edit: (doc: TemplateDoc) => void
-  undo: () => void
+  open: (
+    templateId: number | null,
+    name: string,
+    text: string,
+    variables: Record<string, VariableDef>,
+  ) => void
+  write: (text: string) => void
+  /** `null` drops the definition, so the name starts from its default again. */
+  define: (name: string, variable: VariableDef | null) => void
   saved: (templateId: number, name: string) => void
+}
+
+const DRAFT: TemplateDraft = {
+  region: DEFAULT_SCOPE.region,
+  delay: DEFAULT_SCOPE.delay,
+  text: '',
+  variables: {},
+  universes: [],
+  neutralizations: [],
+  investability: [],
+  decay: '0',
+  truncation: '0.08',
+  pasteurization: 'ON',
+  nanHandling: 'ON',
+  testYears: '2',
+  testMonths: '0',
+  cores: null,
+  simulations: null,
+  templateId: null,
+  name: '',
+  dirty: false,
+  opened: { text: '', variables: {} },
+  picking: null,
 }
 
 export const useTemplateLab = create<TemplateDraft & Actions>()(
   persist(
-    (set, get) => ({
-      ...LAB_DEFAULTS,
-      templateId: null,
-      name: '',
-      doc: null,
-      dirty: false,
-      past: [],
-      open: (templateId, name, doc) => set({ templateId, name, doc, dirty: false, past: [] }),
-      edit: (doc) => {
-        const { doc: current, past } = get()
-        set({
-          doc,
-          dirty: true,
-          past: current ? [...past, current].slice(-UNDO_STEPS) : past,
-        })
-      },
-      undo: () => {
-        const { past } = get()
-        if (past.length === 0) return
-        set({ doc: past.at(-1) ?? null, past: past.slice(0, -1), dirty: true })
-      },
-      saved: (templateId, name) => set({ templateId, name, dirty: false }),
+    (set) => ({
+      ...DRAFT,
+      open: (templateId, name, text, variables) =>
+        set({ templateId, name, text, variables, dirty: false, opened: { text, variables } }),
+      write: (text) => set({ text, dirty: true }),
+      define: (name, variable) =>
+        set((s) => {
+          const variables = { ...s.variables }
+          if (variable) variables[name] = variable
+          else delete variables[name]
+          return { variables, dirty: true }
+        }),
+      saved: (templateId, name) =>
+        set((s) => ({
+          templateId,
+          name,
+          dirty: false,
+          opened: { text: s.text, variables: s.variables },
+        })),
     }),
     {
       name: 'alpha-harness-template-lab',
-      // Version 2 leaves cores unchosen, so Settings' default for new tasks applies.
-      version: 2,
-      migrate: (stored) => ({ ...(stored as TemplateDraft), cores: null }),
-      partialize: (s) => ({
-        region: s.region,
-        delay: s.delay,
-        universe: s.universe,
-        datasetIds: s.datasetIds,
-        cores: s.cores,
-        simulations: s.simulations,
-        decay: s.decay,
-        vectorOperators: s.vectorOperators,
-        templateId: s.templateId,
-        name: s.name,
-        doc: s.doc,
-        dirty: s.dirty,
-      }),
+      // Version 3 types templates; a draft of blocks keeps only its market and its size.
+      version: 3,
+      migrate: (stored) => {
+        const old = (stored ?? {}) as Partial<TemplateDraft>
+        return {
+          ...DRAFT,
+          region: old.region ?? DRAFT.region,
+          delay: old.delay ?? DRAFT.delay,
+          cores: old.cores ?? null,
+          simulations: old.simulations ?? null,
+        }
+      },
+      partialize: ({ open: _open, write: _write, define: _define, saved: _saved, ...draft }) =>
+        draft,
     },
   ),
 )

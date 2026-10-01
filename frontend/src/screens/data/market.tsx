@@ -1,4 +1,4 @@
-/** The filter: which market the tabs below show. Syncing lives in Sync with BRAIN. */
+/** The filter: which market the tabs below show. Syncing lives in BRAIN › Sync. */
 
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
@@ -68,8 +68,8 @@ export function MarketBar({
       ) : (
         <Notice tone="warn" title={`${scopeLabel(scope)} is not synced yet`}>
           Open{' '}
-          <Link to="/pyramids" className={LINK}>
-            Sync with BRAIN
+          <Link to="/sync" className={LINK}>
+            BRAIN › Sync
           </Link>{' '}
           to download every market.
         </Notice>

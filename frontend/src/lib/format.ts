@@ -17,6 +17,11 @@ const DATE = new Intl.DateTimeFormat('en-US', DAY)
 // A bare YYYY-MM-DD is a calendar day, parsed as UTC midnight: read it in UTC, or west of
 // UTC it shows the day before.
 const DATE_UTC = new Intl.DateTimeFormat('en-US', { ...DAY, timeZone: 'UTC' })
+const MONTH_UTC = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  year: 'numeric',
+  timeZone: 'UTC',
+})
 const DATE_TIME = new Intl.DateTimeFormat('en-US', {
   month: 'short',
   day: 'numeric',
@@ -67,6 +72,11 @@ export const fmt = {
     const at = moment(iso)
     if (!at) return DASH
     return ((iso?.length ?? 0) <= 10 ? DATE_UTC : DATE).format(at)
+  },
+  /** Sep 2026: for a date known only to the month, such as a Data Field's Date Added. */
+  month: (iso: string | null | undefined) => {
+    const at = moment(iso)
+    return at ? MONTH_UTC.format(at) : DASH
   },
   /** Sep 10, 14:05 */
   dateTime: (iso: string | null | undefined) => {

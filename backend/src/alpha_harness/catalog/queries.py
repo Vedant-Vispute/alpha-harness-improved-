@@ -7,6 +7,7 @@ All values are parameterised; the only interpolated identifiers are whitelisted 
 names, because a user-supplied sort key must never reach SQL directly.
 """
 
+import asyncio
 from datetime import date
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -97,13 +98,16 @@ class FieldFilter(BaseModel):
     user_count_min: int | None = None
     user_count_max: int | None = None
     pyramid_multiplier_min: float | None = None
+    pyramid_multiplier_max: float | None = None
+    date_coverage_min: float | None = None
+    date_coverage_max: float | None = None
+    #: When BRAIN first offered the field here, both ends inclusive.
+    date_created_from: date | None = None
+    date_created_to: date | None = None
 
     #: Region ``ALL`` only: how many regions carry the field, both ends included.
     region_coverage_min: int | None = None
     region_coverage_max: int | None = None
-    #: Date added, both ends included.
-    date_min: date | None = None
-    date_max: date | None = None
     #: The description holds at least one of these, as letters anywhere, any case.
     keywords: list[str] = Field(default_factory=list)
 
@@ -190,6 +194,11 @@ class FieldFilter(BaseModel):
             ("user_count", self.user_count_min, ">="),
             ("user_count", self.user_count_max, "<="),
             ("pyramid_multiplier", self.pyramid_multiplier_min, ">="),
+            ("pyramid_multiplier", self.pyramid_multiplier_max, "<="),
+            ("date_coverage", self.date_coverage_min, ">="),
+            ("date_coverage", self.date_coverage_max, "<="),
+            ("date_created", self.date_created_from, ">="),
+            ("date_created", self.date_created_to, "<="),
         ):
             if value is not None:
                 clauses.append(f"{column} {op} ?")
@@ -201,12 +210,6 @@ class FieldFilter(BaseModel):
         if self.region_coverage_max is not None:
             clauses.append("region_coverage <= ?")
             params.append(self.region_coverage_max)
-        if self.date_min is not None:
-            clauses.append("date_created >= ?")
-            params.append(self.date_min)
-        if self.date_max is not None:
-            clauses.append("date_created <= ?")
-            params.append(self.date_max)
         if words := _words(self.keywords):
             clauses.append(_any_word(len(words)))
             params.extend(words)
@@ -228,15 +231,21 @@ class FieldFilter(BaseModel):
             clauses.append(f"(description IS NULL OR NOT {_any_word(len(words))})")
             params.extend(words)
 
+        # By field id, across delays: whether a field exists elsewhere is a question about
+        # the field, not about the delay it is read at. Never across instrument types.
         if self.region_agnostic and scope.region != REGION_AGNOSTIC_REGION:
-            # By field id alone: region ALL keeps its own delay and universes, and what is
-            # being asked is whether the field exists there at all.
-            clauses.append("field_id IN (SELECT field_id FROM data_field WHERE region = ?)")
-            params.append(REGION_AGNOSTIC_REGION)
+            clauses.append(
+                "field_id IN (SELECT field_id FROM data_field "
+                "WHERE instrument_type = ? AND region = ?)"
+            )
+            params.extend([scope.instrument_type, REGION_AGNOSTIC_REGION])
 
         if self.region_exclusive:
-            clauses.append("field_id NOT IN (SELECT field_id FROM data_field WHERE region <> ?)")
-            params.append(scope.region)
+            clauses.append(
+                "field_id NOT IN (SELECT field_id FROM data_field "
+                "WHERE instrument_type = ? AND region <> ?)"
+            )
+            params.extend([scope.instrument_type, scope.region])
 
         return " AND ".join(clauses), params
 
@@ -371,6 +380,33 @@ class CatalogQueries:
         )
         return rows[0] if rows else None
 
+    async def fields_by_id(
+        self, scope: Tuple4, field_ids: list[str], *, whole_datasets: bool = False
+    ) -> list[dict[str, Any]]:
+        """The named fields in ``scope`` with their dataset's name and description.
+
+        ``whole_datasets`` reads the ids as datasets and takes every field in them. Unknown
+        ids are left out.
+        """
+        if not field_ids:
+            return []
+        column = "f.dataset_id" if whole_datasets else "f.field_id"
+        on_scope = " AND ".join(
+            f"d.{c} = f.{c}" for c in ("instrument_type", "region", "delay", "universe")
+        )
+        return await self.catalog.query(
+            f"""
+            SELECT f.field_id, f.description, f.field_type, f.coverage, f.date_coverage,
+                   f.category_name, f.subcategory_name, f.dataset_id,
+                   d.name AS dataset_name, d.description AS dataset_description
+            FROM data_field f
+            LEFT JOIN data_set d ON d.dataset_id = f.dataset_id AND {on_scope}
+            WHERE f.instrument_type = ? AND f.region = ? AND f.delay = ? AND f.universe = ?
+              AND {column} IN ({", ".join("?" for _ in field_ids)})
+            """,  # noqa: S608
+            [*scope.params, *field_ids],
+        )
+
     async def field_availability(self, field_id: str) -> list[dict[str, Any]]:
         """Every scope this field appears in.
 
@@ -384,6 +420,25 @@ class CatalogQueries:
             ORDER BY region, delay, universe
             """,
             [field_id],
+        )
+
+    async def universes_holding(
+        self, region: str, delay: int, field_ids: list[str]
+    ) -> list[dict[str, Any]]:
+        """Which universes of one equity market hold each of these fields, in one read.
+
+        One query rather than one per field: each is a scan of the whole table, and the
+        Template Lab asks on every preview.
+        """
+        if not field_ids:
+            return []
+        return await self.catalog.query(
+            f"""
+            SELECT field_id, universe FROM data_field
+            WHERE instrument_type = 'EQUITY' AND region = ? AND delay = ?
+              AND field_id IN ({", ".join("?" for _ in field_ids)})
+            """,  # noqa: S608 - placeholders only
+            [region, delay, *field_ids],
         )
 
     # -- datasets & facets -----------------------------------------------
@@ -400,9 +455,7 @@ class CatalogQueries:
             list(scope.params),
         )
 
-    async def facets(
-        self, scope: Tuple4, filters: FieldFilter | None = None
-    ) -> dict[str, list[dict[str, Any]]]:
+    async def facets(self, scope: Tuple4, filters: FieldFilter | None = None) -> dict[str, Any]:
         """Distinct values with counts under the other active filters, for the filter controls.
 
         A facet ignores its own selection, and a level of the Category → Subcategory →
@@ -435,26 +488,80 @@ class CatalogQueries:
                 [*head, *params],
             )
 
-        return {
-            "categories": await group(
-                "category_id", ("category_ids", "dataset_ids"), ("category_name", "name")
-            ),
+        # Independent reads, each on its own cursor: run together rather than one by one.
+        categories, subcategories, datasets, types, availability, months = await asyncio.gather(
+            group("category_id", ("category_ids", "dataset_ids"), ("category_name", "name")),
             # Each level names its parent, so the filters can be picked top-down:
             # Category → Subcategory → Dataset.
-            "subcategories": await group(
+            group(
                 "subcategory_id",
                 ("dataset_ids",),
                 ("subcategory_name", "name"),
                 ("category_id", "category_id"),
             ),
-            "datasets": await group(
+            group(
                 "dataset_id",
                 ("dataset_ids",),
                 ("category_id", "category_id"),
                 ("subcategory_id", "subcategory_id"),
             ),
-            "types": await group("field_type", ("field_types",)),
+            group("field_type", ("field_types",)),
+            self._availability(scope, active, table, head, ranked),
+            self._months(scope, active, table, head, ranked),
+        )
+        return {
+            "categories": categories,
+            "subcategories": subcategories,
+            "datasets": datasets,
+            "types": types,
+            "availability": availability,
+            "date_added": months,
         }
+
+    async def _months(
+        self, scope: Tuple4, active: FieldFilter, table: str, head: list[Any], ranked: bool
+    ) -> list[dict[str, Any]]:
+        """Fields per month added under every other filter, as the month choices count them.
+
+        The month range is left out, like a chip ignores its own selection, so a month outside
+        the range still says what choosing it would show.
+        """
+        where, params = active.model_copy(
+            update={"date_created_from": None, "date_created_to": None}
+        ).where(scope, search=not ranked)
+        return await self.catalog.query(
+            f"""
+            SELECT date_created AS month, count(*) AS fields FROM {table}
+            WHERE {where} AND date_created IS NOT NULL
+            GROUP BY 1 ORDER BY 1
+            """,  # noqa: S608
+            [*head, *params],
+        )
+
+    async def _availability(
+        self, scope: Tuple4, active: FieldFilter, table: str, head: list[Any], ranked: bool
+    ) -> dict[str, int]:
+        """How many fields each availability toggle would show, pressed on its own.
+
+        Like a chip count: everything else stays as filtered, and the toggle's own state is
+        what pressing it would make it. Region Agnostic and Region Exclusive cannot both hold
+        (a field in region ALL is in another region), so pressing one lets go of the other.
+        """
+        pressed = {
+            "region_agnostic": {"region_agnostic": True, "region_exclusive": False},
+            "region_exclusive": {"region_exclusive": True, "region_agnostic": False},
+        }
+
+        async def count(update: dict[str, bool]) -> int:
+            where, params = active.model_copy(update=update).where(scope, search=not ranked)
+            n = await self.catalog.scalar(
+                f"SELECT count(*) FROM {table} WHERE {where}",  # noqa: S608
+                [*head, *params],
+            )
+            return int(n or 0)
+
+        found = await asyncio.gather(*(count(update) for update in pressed.values()))
+        return dict(zip(pressed, found, strict=True))
 
     async def stats(self, scope: Tuple4) -> dict[str, Any]:
         """Distribution summary — lets the UI set sensible filter ranges."""
@@ -463,11 +570,25 @@ class CatalogQueries:
             SELECT
                 min(coverage) AS coverage_min, max(coverage) AS coverage_max,
                 median(coverage) AS coverage_median,
+                min(alpha_count) AS alpha_count_min,
                 max(alpha_count) AS alpha_count_max,
+                min(user_count) AS user_count_min,
                 max(user_count) AS user_count_max,
-                max(pyramid_multiplier) AS pyramid_multiplier_max
+                min(pyramid_multiplier) AS pyramid_multiplier_min,
+                max(pyramid_multiplier) AS pyramid_multiplier_max,
+                min(date_coverage) AS date_coverage_min,
+                max(date_coverage) AS date_coverage_max
             FROM data_field WHERE {Tuple4.WHERE}
             """,  # noqa: S608
             scope.params,
         )
-        return rows[0] if rows else {}
+        # BRAIN dates a field by month (always the 1st), so the months are the choices.
+        months = await self.catalog.query(
+            f"""
+            SELECT date_created AS month, count(*) AS fields FROM data_field
+            WHERE {Tuple4.WHERE} AND date_created IS NOT NULL
+            GROUP BY 1 ORDER BY 1
+            """,  # noqa: S608
+            scope.params,
+        )
+        return {**(rows[0] if rows else {}), "date_added": months}

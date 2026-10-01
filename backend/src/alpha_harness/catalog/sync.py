@@ -473,13 +473,29 @@ class CatalogSync:
         # Every market's pipeline at once, bounded by the gate above.
         await self._update(run_id, phase="fields")
         await self._emit(run_id)
+        gathered = asyncio.gather(*(pipeline(t) for t in targets), return_exceptions=True)
+        stopped = asyncio.create_task(cancel.wait())
         try:
-            results = await asyncio.gather(*(pipeline(t) for t in targets), return_exceptions=True)
-            _check(cancel)
+            # A pipeline only sees the cancel at its next checkpoint, and one mid-download or
+            # mid-retry is minutes from it. So Cancel ends the pipelines instead of waiting.
+            await asyncio.wait({gathered, stopped}, return_when=asyncio.FIRST_COMPLETED)
+            if cancel.is_set():
+                gathered.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await gathered
+                raise SyncCancelled
+            results = gathered.result()
             for result in results:
                 if isinstance(result, Exception) and not isinstance(result, SyncCancelled):
                     raise result
         finally:
+            stopped.cancel()
+            # A shutdown lands on the wait above, not on the pipelines; they stop here, and are
+            # waited for, so none outlives the run it belongs to.
+            if not gathered.done():
+                gathered.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await gathered
             # Cancelling or failing the run must not leave the shared read holding a
             # connection, nor its exception unretrieved. CancelledError is named because it
             # is a BaseException: suppressing Exception alone lets it escape and strand the

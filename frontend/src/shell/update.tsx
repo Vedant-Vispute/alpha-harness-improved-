@@ -69,12 +69,34 @@ function Installing({ version }: { version: string }) {
 }
 
 /** The version being installed, once Update was pressed anywhere, for the one overlay. */
-const useInstalling = create<{ version: string | null }>(() => ({ version: null }))
+const useInstalling = create<{ version: string | null; closed: boolean }>(() => ({
+  version: null,
+  closed: false,
+}))
 
-/** Holds the screen while an update installs, whichever button started it. Mounted once. */
+/** Holds the screen while an update installs, or once the app was quit. Mounted once. */
 export function InstallingOverlay() {
   const version = useInstalling((s) => s.version)
+  const closed = useInstalling((s) => s.closed)
+  if (closed)
+    return (
+      <div className="fixed inset-0 z-100 flex flex-col items-center justify-center gap-3 bg-canvas/95 p-6 text-center">
+        <p className="text-title text-ink">Alpha Harness is closed</p>
+        <p className="max-w-prose text-body text-ink-subtle">
+          Queued simulations wait until you open it again, the same way you opened it this time. You
+          can close this tab.
+        </p>
+      </div>
+    )
   return version === null ? null : <Installing version={version} />
+}
+
+/** Closes the app for good; the overlay says so, since every query is about to fail. */
+export function useQuitApp() {
+  return useMutation({
+    mutationFn: update.quit,
+    onSuccess: () => useInstalling.setState({ closed: true }),
+  })
 }
 
 /** Hands the install to the launcher; the overlay takes the screen until the new one answers. */
@@ -157,10 +179,13 @@ export function VersionBadge() {
 /** The one thing the in-app updater cannot fix for you. */
 function LauncherNotice({
   version,
+  file,
   url,
   collapsed,
 }: {
   version: string | null
+  /** The release download for this machine, e.g. `AlphaHarness-macOS-arm64.zip`. */
+  file: string
   url: string
   collapsed: boolean
 }) {
@@ -172,8 +197,8 @@ function LauncherNotice({
           size="icon-sm"
           variant="secondary"
           className="self-center"
-          aria-label="Update AlphaHarness.exe"
-          title="A newer AlphaHarness.exe is out"
+          aria-label={`Update ${file}`}
+          title={`A newer ${file} is out`}
           onClick={() => setOpen(true)}
         >
           <TriangleAlertIcon aria-hidden />
@@ -181,13 +206,13 @@ function LauncherNotice({
       ) : (
         <Button size="sm" variant="secondary" className="w-full" onClick={() => setOpen(true)}>
           <TriangleAlertIcon aria-hidden />
-          Update AlphaHarness.exe
+          Update {file}
         </Button>
       )}
       <Dialog
         open={open}
         onOpenChange={setOpen}
-        title="A newer AlphaHarness.exe is out"
+        title={`A newer ${file} is out`}
         description={version ? `Yours is ${version}.` : 'Yours is from before they were dated.'}
         footer={
           <>
@@ -205,8 +230,8 @@ function LauncherNotice({
       >
         <p className="text-body-compact text-ink-subtle">
           Alpha Harness updates itself, but it cannot replace the program that starts it. Download{' '}
-          <span className="num">AlphaHarness.exe</span> from the release, put it where the old one
-          is, and run it. Nothing you have is lost — your data, alphas and sign-in all stay.
+          <span className="num">{file}</span> from the release, open it in place of the one you
+          have, and run it. Nothing you have is lost — your data, alphas and sign-in all stay.
         </p>
       </Dialog>
     </>
@@ -220,13 +245,14 @@ export function UpdateBadge({ collapsed = false }: { collapsed?: boolean }) {
   const apply = useApplyUpdate()
 
   const data = status.data
-  // An update installs the wheel and never AlphaHarness.exe, so a launcher change — the
+  // An update installs the wheel and never the launcher, so a launcher change — the
   // system tray, say — reaches nobody until they fetch the exe themselves. Nothing else in
   // the app can say so: from inside, an out-of-date launcher looks exactly like a current one.
   if (data?.launcherOutdated)
     return (
       <LauncherNotice
         version={data.launcher}
+        file={data.launcherFile}
         url={data.url || data.releasesUrl}
         collapsed={collapsed}
       />

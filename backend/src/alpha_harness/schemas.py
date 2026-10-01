@@ -102,6 +102,8 @@ class EngineStatus(Out):
     session_lost: bool
     #: OS sleep block: held while work is pending, unavailable where the OS cannot be asked.
     awake: Literal["idle", "held", "unavailable"]
+    #: The account holds QUICK_MODE, so the regions Settings name run in Quick mode.
+    quick_allowed: bool
     #: The last time this computer slept while the engine ran, which paused sending.
     last_pause: Pause | None
     #: Rough minutes until the queue empties, from recent completions; none when unknown.

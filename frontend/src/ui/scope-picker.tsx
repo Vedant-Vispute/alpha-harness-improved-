@@ -8,7 +8,7 @@ import type { Scope } from '@/api/types'
 import { type Choice, useScopeOptions } from '@/lib/scope'
 import { Select } from './overlay'
 
-type ScopePart = 'region' | 'delay' | 'universe'
+export type ScopePart = 'region' | 'delay' | 'universe'
 
 const PARTS: ScopePart[] = ['region', 'delay', 'universe']
 
@@ -22,10 +22,13 @@ export function ScopePicker({
   scope,
   onChange,
   disabled,
+  parts = PARTS,
 }: {
   scope: Scope
   onChange: (change: Partial<Scope>) => void
   disabled?: boolean
+  /** Which of Region, Delay and Universe to offer; a screen that searches universes leaves it out. */
+  parts?: readonly ScopePart[]
 }) {
   const options = useScopeOptions(scope)
 
@@ -58,7 +61,7 @@ export function ScopePicker({
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      {PARTS.map((part) => (
+      {parts.map((part) => (
         <label key={part} className="flex items-center gap-1.5">
           <span className="text-body-compact text-ink-subtle">{LABELS[part]}</span>
           <Select

@@ -1,14 +1,7 @@
 /** Every field in the market: server-sorted, offset-paged, filtered; a row opens its detail. */
 
 import { keepPreviousData, skipToken, useMutation, useQuery } from '@tanstack/react-query'
-import {
-  FlaskConicalIcon,
-  GlobeIcon,
-  MapPinIcon,
-  MaximizeIcon,
-  MinimizeIcon,
-  SparklesIcon,
-} from 'lucide-react'
+import { CopyIcon, FlaskConicalIcon, MaximizeIcon, MinimizeIcon, SparklesIcon } from 'lucide-react'
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import {
@@ -19,10 +12,11 @@ import {
   type FieldFilter,
   type FieldSortKey,
 } from '@/api/catalog'
+import { errorMessage } from '@/api/http'
 import { type Scope, scopeLabel } from '@/api/types'
 import { cn } from '@/lib/cn'
 import { DASH, fmt } from '@/lib/format'
-import { isRegionAgnostic, runsRegionAgnostic } from '@/lib/scope'
+import { isRegionAgnostic } from '@/lib/scope'
 import { useDebounced } from '@/lib/use-debounced'
 import { type PickFrom, useDatasetPick } from '@/screens/data/dataset-pick'
 import {
@@ -34,7 +28,6 @@ import {
   useSelectionSplit,
   useTicked,
 } from '@/screens/data/field-pick'
-import { LAB_TABS } from '@/shell/nav'
 import {
   Badge,
   Button,
@@ -48,9 +41,11 @@ import {
   Panel,
   Skeleton,
 } from '@/ui/kit'
-import { Menu, Sheet } from '@/ui/overlay'
+import { Menu, Select, Sheet } from '@/ui/overlay'
 import { useMediaQuery } from '@/ui/panels'
 import { type Column, DataTable, Pager, type Sort } from '@/ui/table'
+import { AvailabilityFilters } from './availability'
+import { datasetNames } from './dataset-tree'
 import {
   type FieldFilterState,
   isActive,
@@ -65,6 +60,8 @@ import {
 import { DatasetTree } from './tree-view'
 
 const LIMIT = 100
+/** The backend's own cap: enough for one focused idea, short enough for any chat LLM. */
+const MAX_PICKED = 100
 const TYPES = ['MATRIX', 'VECTOR', 'GROUP']
 
 /** Two ways to read the search box, because neither answers the other's questions. */
@@ -211,11 +208,11 @@ const COLUMNS: Column<DataFieldRow>[] = [
   },
   {
     key: 'date_created',
-    header: 'Date added',
+    header: 'Date Added',
     width: 'minmax(108px,0.8fr)',
     align: 'right',
     sortable: true,
-    cell: (r) => fmt.date(r.date_created),
+    cell: (r) => fmt.month(r.date_created),
   },
 ]
 
@@ -228,10 +225,13 @@ const ADVANCED: (keyof FieldFilterState)[] = [
   'user_count_min',
   'user_count_max',
   'pyramid_multiplier_min',
+  'pyramid_multiplier_max',
+  'date_coverage_min',
+  'date_coverage_max',
+  'date_created_from',
+  'date_created_to',
   'region_coverage_min',
   'region_coverage_max',
-  'date_min',
-  'date_max',
   'keywords',
 ]
 
@@ -293,7 +293,6 @@ export function FieldsTab({ scope }: { scope: Scope }) {
   const full = useFullscreen()
   const active: FieldFilterState = { ...filter, dataset_ids: datasetIds }
   const [openId, setOpenId] = useState<string | null>(null)
-
   // A new market starts at its first page.
   const label = scopeLabel(scope)
   const seen = useRef(label)
@@ -321,6 +320,21 @@ export function FieldsTab({ scope }: { scope: Scope }) {
   const ticked = useTicked(scope)
   const tickedIds = useMemo(() => new Set(ticked.map((f) => f.id)), [ticked])
   const toggle = useFieldSelection((s) => s.toggle)
+  // The same selection a lab takes, copied as an outline grouped by category to paste into any LLM.
+  const copy = useMutation({
+    mutationFn: async () => {
+      const outline = await catalog.outline(scope, { field_ids: ticked.map((f) => f.id) })
+      await navigator.clipboard.writeText(outline.text)
+      return outline
+    },
+    onSuccess: (outline) =>
+      toast.success(`Copied ${fmt.int(ticked.length - outline.missing.length)} Data Fields`, {
+        description: outline.missing.length
+          ? `Not in this market, so left out: ${outline.missing.join(', ')}`
+          : 'Grouped by Category, Subcategory and Dataset, ready to paste into any LLM.',
+      }),
+    onError: (e) => toast.error('Could not copy the Data Fields', { description: errorMessage(e) }),
+  })
 
   return (
     // The fullscreen element paints its own ground: the page behind it is gone, and an
@@ -334,6 +348,21 @@ export function FieldsTab({ scope }: { scope: Scope }) {
         title="Fields"
         actions={
           <>
+            {ticked.length > 0 && (
+              <Button
+                size="sm"
+                onClick={() => copy.mutate()}
+                disabled={copy.isPending || ticked.length > MAX_PICKED}
+                title={
+                  ticked.length > MAX_PICKED
+                    ? `Copy takes ${fmt.int(MAX_PICKED)} fields at most: untick some, or send them to a lab instead`
+                    : undefined
+                }
+              >
+                <CopyIcon aria-hidden />
+                Copy Selected Data Fields ({fmt.int(ticked.length)})
+              </Button>
+            )}
             <Button variant="ghost" size="sm" onClick={full.toggle}>
               {full.on ? <MinimizeIcon /> : <MaximizeIcon />}
               {full.on ? 'Exit Full Screen' : 'Full Screen'}
@@ -379,7 +408,7 @@ export function FieldsTab({ scope }: { scope: Scope }) {
             empty={
               filtered
                 ? 'No fields match these filters.'
-                : 'No fields in this market yet. Download it in Sync with BRAIN.'
+                : 'No fields in this market yet. Download it in BRAIN › Sync.'
             }
           />
           {query.data && (
@@ -508,9 +537,12 @@ function SelectionLists({ scope, onOpen }: { scope: Scope; onOpen: (id: string) 
 }
 
 /** The labs a selection of fields can be sent to. */
-const FIELD_LABS = LAB_TABS.filter((l): l is (typeof LAB_TABS)[number] & { to: PickFrom } =>
-  ['/labs/search', '/labs/template', '/labs/power-pool', '/labs/region-agnostic'].includes(l.to),
-)
+const FIELD_LABS: { label: string; to: PickFrom }[] = [
+  { label: 'Search Lab', to: '/labs/search' },
+  { label: 'Basic Template Research', to: '/labs/template/basic' },
+  { label: 'LLM Power Pool Lab', to: '/labs/power-pool' },
+  { label: 'Region Agnostic Lab', to: '/labs/region-agnostic' },
+]
 
 /**
  * The fields selected in this market, kept across pages and filters, and the way to send them
@@ -619,10 +651,7 @@ function FieldFilters({ scope }: { scope: Scope }) {
     queryKey: ['catalog', 'datasets', scope, ''],
     queryFn: () => catalog.datasets(scope),
   })
-  const names = useMemo(
-    () => new Map((datasets.data ?? []).map((d) => [d.dataset_id, d.name ?? d.dataset_id])),
-    [datasets.data],
-  )
+  const names = useMemo(() => datasetNames(datasets.data ?? []), [datasets.data])
   const categoryNames = useMemo(
     () => new Map((tree.data?.categories ?? []).map((c) => [c.id, c.name ?? c.id])),
     [tree.data],
@@ -635,7 +664,7 @@ function FieldFilters({ scope }: { scope: Scope }) {
   /**
    * A Pyramid Multiplier cell hands over a category; the Datasets tree speaks dataset ids.
    * Translating as soon as this market's tree is known leaves one selection in one place —
-   * ticked in the tree and summarised as "All of Other" — rather than two that disagree.
+   * ticked in the tree and summarised as "Other" — rather than two that disagree.
    */
   const chosenCategories = filter.category_ids
   const [landed, setLanded] = useState(false)
@@ -675,7 +704,7 @@ function FieldFilters({ scope }: { scope: Scope }) {
 
   const s = stats.data
 
-  // A lab choosing datasets lands here: More filters opens, lit, and scrolls into view.
+  // A lab choosing datasets lands here: More Filters opens, lit, and scrolls into view.
   const more = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (picking) more.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
@@ -725,38 +754,6 @@ function FieldFilters({ scope }: { scope: Scope }) {
             ),
           }))}
         />
-        {/* The fields this market shares with region ALL: the ones an idea here could also be
-            run region-agnostically on. Offered only where such a run is possible — a JPN field
-            being in ALL says nothing a JPN researcher can act on. */}
-        {runsRegionAgnostic(scope) && (
-          <Button
-            variant={filter.region_agnostic ? 'primary' : 'secondary'}
-            size="sm"
-            aria-pressed={Boolean(filter.region_agnostic)}
-            title="Only Fields that also exist in region ALL"
-            onClick={() =>
-              set({ region_agnostic: !filter.region_agnostic, region_exclusive: false })
-            }
-          >
-            <GlobeIcon />
-            Region Agnostic
-          </Button>
-        )}
-        {/* Only as complete as the sync: a region never downloaded cannot share a field. */}
-        {!isRegionAgnostic(scope) && (
-          <Button
-            variant={filter.region_exclusive ? 'primary' : 'secondary'}
-            size="sm"
-            aria-pressed={Boolean(filter.region_exclusive)}
-            title={`Only fields found in ${scope.region} and no other Synced Region`}
-            onClick={() =>
-              set({ region_exclusive: !filter.region_exclusive, region_agnostic: false })
-            }
-          >
-            <MapPinIcon />
-            {scope.region} Exclusive
-          </Button>
-        )}
         {/* Only ever arrived at from the Pyramid Multiplier Map, so it shows only when set —
             but it has to show, or the table is narrowed by something invisible. */}
         {(filter.category_ids?.length ?? 0) > 0 && (
@@ -788,6 +785,7 @@ function FieldFilters({ scope }: { scope: Scope }) {
           Reset filters
         </Button>
       </div>
+      <AvailabilityFilters scope={scope} counts={facets.data?.availability} />
       {facets.isError && <ErrorNotice error={facets.error} title="Could not load filter choices" />}
       {stats.isError && <ErrorNotice error={stats.error} title="Could not load field statistics" />}
       {datasets.isError && (
@@ -806,7 +804,7 @@ function FieldFilters({ scope }: { scope: Scope }) {
           className={cn(picking && 'border-primary ring-1 ring-primary-subtle')}
           summary={
             <>
-              More filters
+              More Filters
               {advancedOn > 0 && <Badge className="num">{advancedOn}</Badge>}
             </>
           }
@@ -816,6 +814,7 @@ function FieldFilters({ scope }: { scope: Scope }) {
               <HalfTitle title="Selection filters" hint="What the table shows." />
               {tree.data ? (
                 <DatasetTree
+                  scope={scope}
                   source={tree.data}
                   counts={facets.data}
                   names={names}
@@ -826,21 +825,68 @@ function FieldFilters({ scope }: { scope: Scope }) {
                 !tree.isError && <Skeleton className="h-40" />
               )}
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                {/* In the table's own column order, so a filter sits where its column does. Each
+                    box shows this market's own bound until something is typed in it. */}
                 <Range
-                  label="Coverage (%)"
-                  hint={
-                    s && `In this market: ${fmt.pct(s.coverage_min)} – ${fmt.pct(s.coverage_max)}`
+                  label="Pyramid Theme Multiplier"
+                  bounds={s && [ratio(s.pyramid_multiplier_min), ratio(s.pyramid_multiplier_max)]}
+                  step={0.1}
+                  min={filter.pyramid_multiplier_min}
+                  max={filter.pyramid_multiplier_max}
+                  onChange={(pyramid_multiplier_min, pyramid_multiplier_max) =>
+                    set({ pyramid_multiplier_min, pyramid_multiplier_max })
                   }
+                />
+                <Range
+                  label="Instrument Coverage (%)"
+                  bounds={s && [percent(s.coverage_min), percent(s.coverage_max)]}
                   scale={100}
                   min={filter.coverage_min}
                   max={filter.coverage_max}
                   onChange={(coverage_min, coverage_max) => set({ coverage_min, coverage_max })}
                 />
+                <Range
+                  label="Date Coverage (%)"
+                  bounds={s && [percent(s.date_coverage_min), percent(s.date_coverage_max)]}
+                  scale={100}
+                  min={filter.date_coverage_min}
+                  max={filter.date_coverage_max}
+                  onChange={(date_coverage_min, date_coverage_max) =>
+                    set({ date_coverage_min, date_coverage_max })
+                  }
+                />
+                <Range
+                  label="Users"
+                  bounds={s && [count(s.user_count_min), count(s.user_count_max)]}
+                  min={filter.user_count_min}
+                  max={filter.user_count_max}
+                  onChange={(user_count_min, user_count_max) =>
+                    set({ user_count_min, user_count_max })
+                  }
+                />
+                <Range
+                  label="Alphas"
+                  bounds={s && [count(s.alpha_count_min), count(s.alpha_count_max)]}
+                  min={filter.alpha_count_min}
+                  max={filter.alpha_count_max}
+                  onChange={(alpha_count_min, alpha_count_max) =>
+                    set({ alpha_count_min, alpha_count_max })
+                  }
+                />
+                <MonthRange
+                  label="Date Added"
+                  months={s?.date_added ?? []}
+                  counts={facets.data?.date_added}
+                  from={filter.date_created_from}
+                  to={filter.date_created_to}
+                  onChange={(date_created_from, date_created_to) =>
+                    set({ date_created_from, date_created_to })
+                  }
+                />
                 {/* Only the region-agnostic market says how many regions hold a field. */}
                 {isRegionAgnostic(scope) && (
                   <Range
-                    label="Regions per field"
-                    hint="How many of USA, EUR, ASI and GLB carry the field."
+                    label="Regions per field (of 4)"
                     min={filter.region_coverage_min}
                     max={filter.region_coverage_max}
                     onChange={(region_coverage_min, region_coverage_max) =>
@@ -848,42 +894,6 @@ function FieldFilters({ scope }: { scope: Scope }) {
                     }
                   />
                 )}
-                <Range
-                  label="Alpha Count"
-                  hint={s && `Highest in this market: ${fmt.int(s.alpha_count_max)}`}
-                  min={filter.alpha_count_min}
-                  max={filter.alpha_count_max}
-                  onChange={(alpha_count_min, alpha_count_max) =>
-                    set({ alpha_count_min, alpha_count_max })
-                  }
-                />
-                <Range
-                  label="User Count"
-                  hint={s && `Highest in this market: ${fmt.int(s.user_count_max)}`}
-                  min={filter.user_count_min}
-                  max={filter.user_count_max}
-                  onChange={(user_count_min, user_count_max) =>
-                    set({ user_count_min, user_count_max })
-                  }
-                />
-                <Field
-                  label="Pyramid Multiplier at least"
-                  hint={s && `Highest in this market: ${multiplier(s.pyramid_multiplier_max)}`}
-                >
-                  <NumberBox
-                    label="Pyramid Multiplier at least"
-                    step={0.1}
-                    value={filter.pyramid_multiplier_min}
-                    onChange={(v) => set({ pyramid_multiplier_min: v })}
-                  />
-                </Field>
-                <DateRange
-                  label="Date added"
-                  hint="From, to, or both. Either end can be left open."
-                  min={filter.date_min}
-                  max={filter.date_max}
-                  onChange={(date_min, date_max) => set({ date_min, date_max })}
-                />
                 <Keywords
                   label="Keywords in Description"
                   hint="Commas between words. A field shows when its Description has any of them."
@@ -959,6 +969,7 @@ function ExclusionFilters({
       )}
       {source ? (
         <DatasetTree
+          scope={scope}
           title="Exclude datasets"
           searchLabel={
             picked
@@ -1104,37 +1115,105 @@ function NumberBox({
   )
 }
 
+/** A bound as a box shows it: a plain number, never a unit, and empty when unknown. */
+const ratio = (v: number | null | undefined) => (v == null ? '' : v.toFixed(1))
+const percent = (v: number | null | undefined) => (v == null ? '' : String(Math.round(v * 100)))
+const count = (v: number | null | undefined) => (v == null ? '' : fmt.int(v))
+
 function Range({
   label,
-  hint,
+  bounds,
   min,
   max,
   onChange,
   scale,
+  step,
 }: {
   label: string
-  hint?: string | null | undefined
+  /** This market's lowest and highest, shown in the empty boxes. */
+  bounds?: [string, string] | null | undefined
   min: number | null | undefined
   max: number | null | undefined
   onChange: (min: number | null, max: number | null) => void
   scale?: number | undefined
+  step?: number
 }) {
   return (
-    <Fieldset legend={label} hint={hint}>
+    <Fieldset legend={label}>
       <div className="grid grid-cols-2 gap-2">
         <NumberBox
           label={`${label} minimum`}
-          placeholder="min"
+          placeholder={bounds?.[0] || 'min'}
           scale={scale}
+          {...(step === undefined ? {} : { step })}
           value={min}
           onChange={(v) => onChange(v, max ?? null)}
         />
         <NumberBox
           label={`${label} maximum`}
-          placeholder="max"
+          placeholder={bounds?.[1] || 'max'}
           scale={scale}
+          {...(step === undefined ? {} : { step })}
           value={max}
           onChange={(v) => onChange(min ?? null, v)}
+        />
+      </div>
+    </Fieldset>
+  )
+}
+
+const ANY = 'any'
+
+/**
+ * From and To months, both inclusive. BRAIN dates a field by month, so the choices are the
+ * months this market actually has, each counted under the other filters, as the table would
+ * show it; neither end can pass the other.
+ */
+function MonthRange({
+  label,
+  months,
+  counts,
+  from,
+  to,
+  onChange,
+}: {
+  label: string
+  /** Every month this market has, so a month the other filters empty stays choosable. */
+  months: { month: string; fields: number }[]
+  /** Fields per month under the other filters: what choosing each would show. */
+  counts: { month: string; fields: number }[] | undefined
+  from: string | null | undefined
+  to: string | null | undefined
+  onChange: (from: string | null, to: string | null) => void
+}) {
+  const shown = new Map(counts?.map((c) => [c.month, c.fields]))
+  const fieldsIn = (m: { month: string; fields: number }) =>
+    counts ? (shown.get(m.month) ?? 0) : m.fields
+  const choices = (keep: (month: string) => boolean) => [
+    { value: ANY, label: 'Any' },
+    ...months
+      .filter((m) => keep(m.month))
+      .map((m) => ({ value: m.month, label: `${fmt.month(m.month)} (${fmt.int(fieldsIn(m))})` })),
+  ]
+  const pick = (value: string) => (value === ANY ? null : value)
+  return (
+    <Fieldset legend={label}>
+      <div className="grid grid-cols-2 gap-2">
+        <Select
+          label={`${label} from`}
+          className="w-full"
+          value={from ?? ANY}
+          items={choices((m) => !to || m <= to)}
+          onChange={(v) => onChange(pick(v), to ?? null)}
+          disabled={months.length === 0}
+        />
+        <Select
+          label={`${label} to`}
+          className="w-full"
+          value={to ?? ANY}
+          items={choices((m) => !from || m >= from)}
+          onChange={(v) => onChange(from ?? null, pick(v))}
+          disabled={months.length === 0}
         />
       </div>
     </Fieldset>
@@ -1235,7 +1314,7 @@ function FieldSheet({
                 ['User Count', fmt.int(d.user_count)],
                 ['Pyramid Theme Multiplier', multiplier(d.pyramid_multiplier)],
                 ['Scope', `${d.region} · D${d.delay} · ${d.universe}`],
-                ['Date added', fmt.date(d.date_created)],
+                ['Date Added', fmt.month(d.date_created)],
                 ['Downloaded', fmt.dateTime(d.synced_at)],
               ]}
             />

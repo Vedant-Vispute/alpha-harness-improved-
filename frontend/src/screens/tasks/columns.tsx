@@ -4,7 +4,7 @@ import type { ComponentProps } from 'react'
 import { cn } from '@/lib/cn'
 import { CORE_METRICS, CORE_ORDER, DASH, fmt } from '@/lib/format'
 import type { LabTask, RankedAlpha, TaskStatus } from '@/screens/tasks/api'
-import { type Badge, MetricBadge, signTone, TEXT_TONE } from '@/ui/kit'
+import { Badge, MetricBadge, signTone, TEXT_TONE } from '@/ui/kit'
 import type { Column, Sort } from '@/ui/table'
 
 export const setting = (r: RankedAlpha, key: string) => String(r.settings?.[key] ?? '')
@@ -65,6 +65,23 @@ export const INVESTABILITY: Column<RankedAlpha> = {
   cell: (r) => <span className="num truncate">{investability(r)}</span>,
 }
 
+/** Marks an Alpha simulated in Quick mode: real figures, but not one BRAIN will take. */
+export function QuickBadge({ alpha }: { alpha: RankedAlpha }) {
+  if (!alpha.quick) return null
+  return (
+    <Badge
+      tone="outline"
+      title={
+        alpha.refusedBy.length === 0
+          ? 'Simulated in Quick mode. It passed every check BRAIN ran, so it is being simulated again in full, the only mode BRAIN takes for submission.'
+          : 'Simulated in Quick mode, which runs only the checks that score an Alpha.'
+      }
+    >
+      Quick
+    </Badge>
+  )
+}
+
 export const FAILED_CHECKS: Column<RankedAlpha> = {
   key: 'failed',
   header: 'Checks Failed',
@@ -72,7 +89,11 @@ export const FAILED_CHECKS: Column<RankedAlpha> = {
   sortable: true,
   cell: (r) =>
     r.failedChecks.length === 0 ? (
-      <span className="text-ink-subtle">{DASH}</span>
+      r.quick ? (
+        <QuickBadge alpha={r} />
+      ) : (
+        <span className="text-ink-subtle">{DASH}</span>
+      )
     ) : (
       <span className="truncate" title={r.failedChecks.join(', ')}>
         {r.failedChecks.map((name, i) => (
@@ -80,7 +101,7 @@ export const FAILED_CHECKS: Column<RankedAlpha> = {
             key={name}
             // A check that failed without refusing the Alpha is shown, because it did fail,
             // but not in the colour that means "this is why you cannot submit".
-            className={r.refusedBy.includes(name) ? 'text-pnl-negative' : 'text-ink-subtle'}
+            className={r.refusedBy.includes(name) ? 'text-pnl-negative-text' : 'text-ink-subtle'}
           >
             {i > 0 && ', '}
             {name}

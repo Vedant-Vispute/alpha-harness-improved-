@@ -28,7 +28,7 @@ export function Header() {
         <SidebarToggle />
         <HeaderCores />
       </div>
-      <div className="flex items-center gap-4">
+      <div className="flex shrink-0 items-center gap-4">
         <Clocks />
         <ConnectionNotice />
         <Button
@@ -72,7 +72,8 @@ function HeaderCores() {
   return (
     <nav
       aria-label={`${slots} simulation cores execution matrix`}
-      className="flex items-center gap-1.5 rounded-md border border-hairline bg-surface-1 p-1"
+      // Scrolls rather than overlaps the clocks when a phone-width bar cannot hold all eight.
+      className="flex min-w-0 items-center gap-1.5 overflow-x-auto rounded-md border border-hairline bg-surface-1 p-1 [scrollbar-width:none]"
     >
       <Link
         to="/matrix"

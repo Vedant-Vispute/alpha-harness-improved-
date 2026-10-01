@@ -30,7 +30,7 @@ from ..brain.errors import (
     BrainValidationError,
 )
 from ..brain.filters import platform_midnight
-from ..brain.schemas import SimulationRequest
+from ..brain.schemas import QUICK_MODE, SimulationRequest
 from ..db.models import ACTIVE, DedupEntry, SimStatus, SimulationRecord, Study, TaskQuota, utcnow
 from ..tasks import spawn
 from .awake import StayAwake
@@ -45,6 +45,7 @@ from .lifecycle import (
     hash_payload,
     new_record,
     record_launch,
+    request_hash,
     transition,
 )
 from .packer import (
@@ -122,6 +123,10 @@ class BatchEngine:
         self.lend_idle_cores = False
         #: Ask the OS not to sleep while work is pending (Settings).
         self.keep_awake = True
+        #: Regions whose simulations run in BRAIN's Quick mode unless one names a mode
+        #: (Settings), and whether the account may run it at all.
+        self.quick_regions: frozenset[str] = frozenset()
+        self.quick_allowed = False
         #: Set when the daily cap is hit. Nothing is submitted until it clears, because
         #: retrying before the US-Eastern reset cannot succeed.
         self._daily_limit_hit = False
@@ -172,13 +177,27 @@ class BatchEngine:
         return not await self._busy()
 
     def configure_from_permissions(self, permissions: list[str]) -> None:
-        """Batching needs MULTI_SIMULATION; without it every batch is a single run.
+        """Batching needs MULTI_SIMULATION, and Quick mode QUICK_MODE; without the first every
+        batch is a single run.
 
         A 403 on a batch outranks the permission list: a re-login must not resume the
         batches BRAIN already refused.
         """
         allowed = "MULTI_SIMULATION" in permissions and not self._batch_refused
         self.max_batch = MAX_BATCH if allowed else 1
+        self.quick_allowed = "QUICK_MODE" in permissions
+
+    def _moded(self, request: SimulationRequest) -> SimulationRequest:
+        """``request`` in Quick mode where Settings ask for it and it names no mode itself."""
+        settings = request.settings
+        if (
+            settings.simulation_mode is not None
+            or not self.quick_allowed
+            or settings.region not in self.quick_regions
+        ):
+            return request
+        quick = settings.model_copy(update={"simulation_mode": QUICK_MODE, "visualization": False})
+        return request.model_copy(update={"settings": quick})
 
     # -- queueing --------------------------------------------------------
 
@@ -198,23 +217,31 @@ class BatchEngine:
         queued: list[int] = []
         skipped: list[dict[str, Any]] = []
         outcomes: list[dict[str, Any]] = []
+        moded = [self._moded(request) for request in requests]
 
         # The duplicate lookup and the insert must not interleave with another enqueue:
         # two callers would each find no active row and both queue, spending quota twice.
         async with self._enqueue_lock, self.db.session() as session:
-            hashes = [hash_payload(request.to_wire()) for request in requests]
+            hashes = [request_hash(request) for request in moded]
+            # A request made Quick is answered as well by a Full Alpha of the same point, which
+            # is worth more: it can be submitted. Never the other way round.
+            fulls = [
+                request_hash(asked) if sent is not asked else None
+                for sent, asked in zip(moded, requests, strict=True)
+            ]
             known: dict[str, str] = {}
             #: Hash -> an active row's id, or the row this call is adding for it.
             in_flight: dict[str, int | SimulationRecord] = {}
             # Looked up in bulk — a harvest enqueues thousands, and two reads per request
             # would scale queueing with round-trips — and chunked to stay under SQLite's
             # variable cap.
-            for chunk in itertools.batched(set(hashes), ENQUEUE_CHUNK, strict=False):
+            looked_up = set(hashes) | {full for full in fulls if full}
+            for chunk in itertools.batched(looked_up, ENQUEUE_CHUNK, strict=False):
                 for entry in await session.scalars(
                     select(DedupEntry).where(DedupEntry.request_hash.in_(chunk))
                 ):
                     known[entry.request_hash] = entry.alpha_id
-                for request_hash, record_id in (
+                for digest, record_id in (
                     await session.execute(
                         select(SimulationRecord.request_hash, SimulationRecord.id).where(
                             SimulationRecord.request_hash.in_(chunk),
@@ -222,13 +249,13 @@ class BatchEngine:
                         )
                     )
                 ).tuples():
-                    in_flight.setdefault(request_hash, record_id)
+                    in_flight.setdefault(digest, record_id)
 
             # (index, hash, status, alpha id, the row: new, or an existing row's id)
             plan: list[tuple[int, str, SimStatus, str | None, int | SimulationRecord]] = []
-            for index, (request, request_hash) in enumerate(zip(requests, hashes, strict=True)):
-                if request_hash in known:
-                    alpha_id = known[request_hash]
+            for index, (request, digest, full) in enumerate(zip(moded, hashes, fulls, strict=True)):
+                if full in known or digest in known:
+                    alpha_id = known[full] if full in known else known[digest]
                     record = new_record(
                         request,
                         task=task,
@@ -238,33 +265,31 @@ class BatchEngine:
                         finished_at=utcnow(),
                     )
                     session.add(record)
-                    plan.append((index, request_hash, SimStatus.SKIPPED, alpha_id, record))
-                elif request_hash in in_flight:
+                    plan.append((index, digest, SimStatus.SKIPPED, alpha_id, record))
+                elif digest in in_flight:
                     # Same payload still queued or running (possibly from earlier in this
                     # call): share that row, so its result reaches both callers for one run.
-                    plan.append(
-                        (index, request_hash, SimStatus.SKIPPED, None, in_flight[request_hash])
-                    )
+                    plan.append((index, digest, SimStatus.SKIPPED, None, in_flight[digest]))
                 else:
                     record = new_record(request, task=task, status=SimStatus.QUEUED)
                     session.add(record)
-                    in_flight[request_hash] = record
-                    plan.append((index, request_hash, SimStatus.QUEUED, None, record))
+                    in_flight[digest] = record
+                    plan.append((index, digest, SimStatus.QUEUED, None, record))
             await session.flush()
 
-            for index, request_hash, status, alpha_id, row in plan:
+            for index, digest, status, alpha_id, row in plan:
                 record_id = row if isinstance(row, int) else row.id
                 if status == SimStatus.QUEUED:
                     queued.append(record_id)
                 else:
-                    skipped.append({"alphaId": alpha_id, "hash": request_hash})
+                    skipped.append({"alphaId": alpha_id, "hash": digest})
                 outcomes.append(
                     {
                         "index": index,
                         "recordId": record_id,
                         "status": str(status),
                         "alphaId": alpha_id,
-                        "hash": request_hash,
+                        "hash": digest,
                     }
                 )
 
@@ -438,6 +463,7 @@ class BatchEngine:
             "dailyLimitHit": self._daily_limit_hit,
             "sessionLost": self._session_lost,
             "awake": self._awake.state,
+            "quickAllowed": self.quick_allowed,
             "lastPause": (
                 {"start": self._last_pause[0], "end": self._last_pause[1]}
                 if self._last_pause

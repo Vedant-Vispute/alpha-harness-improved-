@@ -60,6 +60,14 @@ const templateLab = createRoute({
     'TemplateLabScreen',
   ),
 })
+const templateBasicLab = createRoute({
+  getParentRoute: () => labs,
+  path: 'template/basic',
+  component: lazyRouteComponent(
+    () => import('@/screens/research-labs/template-basic'),
+    'BasicTemplateScreen',
+  ),
+})
 const evolutionLab = createRoute({
   getParentRoute: () => labs,
   path: 'evolution',
@@ -82,6 +90,14 @@ const regionAgnosticLab = createRoute({
   component: lazyRouteComponent(
     () => import('@/screens/research-labs/region-agnostic'),
     'RegionAgnosticLabScreen',
+  ),
+})
+const superAlphaLab = createRoute({
+  getParentRoute: () => labs,
+  path: 'super-alpha',
+  component: lazyRouteComponent(
+    () => import('@/screens/research-labs/super-alpha'),
+    'SuperAlphaLabScreen',
   ),
 })
 const tools = createRoute({ getParentRoute: () => root, path: '/tools' })
@@ -206,6 +222,18 @@ const aiTab = createRoute({
 })
 const aiThread = createRoute({ getParentRoute: () => ai, path: 'assistant/$threadId' })
 
+const competitionsRoute = createRoute({
+  getParentRoute: () => root,
+  path: '/competitions',
+  component: lazyRouteComponent(() => import('@/screens/competitions'), 'CompetitionsScreen'),
+})
+
+const sync = createRoute({
+  getParentRoute: () => root,
+  path: '/sync',
+  component: lazyRouteComponent(() => import('@/screens/sync'), 'SyncScreen'),
+})
+
 const pyramids = createRoute({
   getParentRoute: () => root,
   path: '/pyramids',
@@ -221,18 +249,22 @@ const routeTree = root.addChildren([
     labsIndex,
     searchLab,
     templateLab,
+    templateBasicLab,
     evolutionLab,
     powerPoolLab,
     regionAgnosticLab,
+    superAlphaLab,
   ]),
   tools.addChildren([toolsIndex, settingsSampler, submissionPlanner, correlationBreaker]),
   llmPrompts,
+  competitionsRoute,
   tasks.addChildren([tasksIndex, taskResults]),
   pool.addChildren([poolIndex, poolTab]),
   portfolio,
   alpha,
   ai.addChildren([aiIndex, aiTab, aiThread]),
   pyramids,
+  sync,
 ])
 
 /** A screen that throws says so instead of going blank (CLAUDE.md anti-goal 3), and offers

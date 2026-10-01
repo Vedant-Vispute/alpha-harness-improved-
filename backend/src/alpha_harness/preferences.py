@@ -1,7 +1,7 @@
 """What the consultant chooses on the Settings screen, kept in ``harness.db``.
 
-Every choice defaults to how the app behaves without one, so an install that never opens
-Settings runs exactly as before.
+Every choice has a default, so an install that never opens Settings runs as the app does
+out of the box.
 """
 
 from typing import TYPE_CHECKING, Literal
@@ -25,6 +25,10 @@ class Preferences(Out):
     lend_idle_cores: bool = False
     #: Ask the operating system not to sleep while simulations are pending.
     keep_awake: bool = True
+    #: Regions whose simulations run in BRAIN's Quick mode: the same figures and the checks
+    #: that score an Alpha, without correlation, Theme or Competition. GLB by default, where a
+    #: batch was measured finishing 30% sooner; a Quick Alpha that passes is then run in Full.
+    quick_regions: list[str] = Field(default_factory=lambda: ["GLB"], max_length=20)
     #: Download an Alpha's daily PnL as soon as it lands, when every check that gates it reads
     #: one of ``pnl_check_results``. A series a screen asks for still downloads either way.
     pnl_download: bool = True
@@ -59,6 +63,7 @@ def apply(state: AppState, preferences: Preferences) -> None:
     """Hand every choice to the part of the app that acts on it. Takes effect at once."""
     state.engine.lend_idle_cores = preferences.lend_idle_cores
     state.engine.set_keep_awake(preferences.keep_awake)
+    state.engine.quick_regions = frozenset(preferences.quick_regions)
     state.backfill.pnl_results = (
         frozenset(preferences.pnl_check_results) if preferences.pnl_download else frozenset()
     )

@@ -174,6 +174,11 @@ def field_choices(space: dict[str, Any]) -> dict[str, list[str]]:
     return choices
 
 
+def coverage(space: dict[str, Any]) -> tuple[str, list[str]]:
+    """The parameter the first pass covers, and the fields it gives a trial each."""
+    return "field", list(space["fields"])
+
+
 def first_pass(space: dict[str, Any], field_id: str) -> dict[str, Any]:
     """Fixed choices that try a field once, in the first universe that has it."""
     absent = space.get("absent") or {}
@@ -288,6 +293,7 @@ async def field_pool(
     dataset_ids: list[str],
     allow_vector: bool,
     field_ids: list[str] | None = None,
+    narrow: FieldFilter | None = None,
 ) -> Pool:
     """Fields of the chosen datasets, or only ``field_ids`` of them, and which searched
     universes have each.
@@ -295,18 +301,28 @@ async def field_pool(
     BRAIN scopes fields by universe, so a field missing from one universe is not dropped:
     the search only pairs it with the universes that have it. Ordered by coverage in the
     first universe, the chosen market's, so a capped first pass tries the most complete.
+
+    ``narrow`` is the Data Explorer's filter the datasets were chosen under: only fields it
+    shows are searched, read through the same query so the two can never disagree.
     """
+    wanted = narrow.field_types if narrow and narrow.field_types else ("MATRIX", "VECTOR")
+    types = [t for t in ("MATRIX", "VECTOR") if t in wanted]
+    if not types:
+        return Pool({}, (), {}, 0)
     found: dict[str, dict[str, str]] = {}
     for universe in universes:
         page = await queries.fields(
             Tuple4(region=region, delay=delay, universe=universe),
-            FieldFilter(
-                dataset_ids=list(dataset_ids),
-                field_ids=list(field_ids or []),
-                field_types=["MATRIX", "VECTOR"],
-                sort_by="coverage",
-                sort_desc=True,
-                limit=POOL_LIMIT,
+            (narrow or FieldFilter()).model_copy(
+                update={
+                    "dataset_ids": list(dataset_ids),
+                    "field_ids": list(field_ids or []),
+                    "field_types": types,
+                    "sort_by": "coverage",
+                    "sort_desc": True,
+                    "limit": POOL_LIMIT,
+                    "offset": 0,
+                }
             ),
         )
         rows = page.get("results") or []

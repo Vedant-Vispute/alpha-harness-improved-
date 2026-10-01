@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, ValidationError
 from ..brain.errors import BrainError
 from ..brain.schemas import region_label
 from ..brain.settings_schema import resolve_options
+from ..catalog.queries import FieldFilter
 from ..db.models import Study, StudyStatus
 from ..schemas import Out
 from . import scheduler, search
@@ -26,6 +27,7 @@ from .params import (
     REGION_AGNOSTIC_SAMPLER,
     SEARCH_SAMPLER,
     SETTINGS_SAMPLER,
+    SUPER_LAB,
     TASK_SAMPLERS,
     TEMPLATE_SAMPLER,
 )
@@ -40,6 +42,8 @@ if TYPE_CHECKING:
 
 OPERATORS_UNREAD = "Your BRAIN operators could not be read. Sign in again, then reload."
 NO_SIMULATIONS = "Assign the simulations for this task."
+#: Nothing is searched on a neutralization nobody chose, so an empty choice is refused.
+NO_NEUTRALIZATION = "Choose at least one Neutralization."
 #: Alphas a preview shows.
 SAMPLE_SIZE = 5
 #: What each lab's task names start with, and the objective its trials are scored on.
@@ -51,6 +55,7 @@ _TASKS: dict[str, tuple[str, str]] = {
     REGION_AGNOSTIC_SAMPLER: ("region-agnostic", "sharpe"),
     SETTINGS_SAMPLER: ("settings-sampler", "sharpe"),
     CORRELATION_BREAKER: ("correlation-breaker", "sharpe"),
+    SUPER_LAB: ("super-alpha", "sharpe"),
 }
 
 
@@ -125,8 +130,8 @@ async def neutralizations_for(
     with it would drop ``STATISTICAL`` or ``CROWDING`` from a sweep that asked for them —
     a task that never ran what it was told to.
 
-    Choosing nothing keeps the default, so every lab behaves exactly as before until a reader
-    says otherwise.
+    Nothing chosen falls back to that default, which only Auto Select relies on: every lab
+    refuses a task with no neutralization chosen (:data:`NO_NEUTRALIZATION`).
     """
     schema = await state.metadata.cached_settings_schema()
     if not schema:
@@ -167,12 +172,15 @@ class SearchRequest(BaseModel):
     #: ``dataset_ids`` are theirs.
     field_ids: list[str] = Field(default_factory=list, max_length=MAX_PICKED_FIELDS)
     vector_operators: list[str] = Field(default_factory=list)
-    #: Empty keeps the lab's default four; anything here is searched instead.
+    #: What the lab searches. Empty is refused: see :data:`NO_NEUTRALIZATION`.
     neutralizations: list[str] = Field(default_factory=list, max_length=20)
     decay: int = 0
     cores: int = Field(default=search.MAX_CORES, ge=1, le=search.MAX_CORES)
     #: Needed to add a task; a preview ignores it.
     simulations: int = Field(default=0, ge=0, le=search.MAX_SIMULATIONS)
+    #: The Data Explorer's filter the datasets were chosen under: only the fields it shows are
+    #: searched. Its ordering and paging are the lab's own.
+    field_filter: FieldFilter | None = None
 
 
 async def market_for(body: SearchRequest, state: Any, need: tuple[str, ...] = ()) -> dict[str, Any]:
@@ -201,7 +209,9 @@ async def market_for(body: SearchRequest, state: Any, need: tuple[str, ...] = ()
     neutralizations = await neutralizations_for(
         state, body.region, body.delay, body.neutralizations
     )
-    if schema and not neutralizations:
+    if not body.neutralizations:
+        problems.append(NO_NEUTRALIZATION)
+    elif schema and not neutralizations:
         problems.append(f"BRAIN offers no neutralization for {region_label(body.region)}.")
 
     lacking: set[str] = set()
@@ -246,10 +256,15 @@ async def market_for(body: SearchRequest, state: Any, need: tuple[str, ...] = ()
             dataset_ids=body.dataset_ids,
             field_ids=body.field_ids,
             allow_vector=bool(vector_ops),
+            narrow=body.field_filter,
         )
         if not pool.fields:
             problems.append(
-                "The chosen datasets have no usable fields in this market."
+                (
+                    "No field in the chosen datasets matches the Data Explorer filter."
+                    if body.field_filter
+                    else "The chosen datasets have no usable fields in this market."
+                )
                 + (
                     " Allow a vector operator to use their vector fields."
                     if pool.vector_skipped
@@ -316,13 +331,16 @@ async def add_study(
     template_name: str | None = None,
     run: bool = False,
     seeds: Callable[[int], list[Trial]] | None = None,
+    objective: str | None = None,
 ) -> AddedTask:
     """Store a task: not started, or queued for the scheduler when ``run``.
 
     ``seeds`` are trials the task starts with, written in the same transaction.
+    ``objective`` replaces the lab's own, e.g. Sharpe where no test period splits off a train.
     """
     lab = TASK_SAMPLERS[sampler]
-    prefix, objective = _TASKS[sampler]
+    prefix, own = _TASKS[sampler]
+    objective = objective or own
     task = f"{prefix}-{now:%y%m%d%H%M%S%f}"
     row = Study(
         name=f"{lab} · {task}",

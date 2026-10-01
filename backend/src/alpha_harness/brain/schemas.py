@@ -51,12 +51,15 @@ REGION_AGNOSTIC_REGION = "ALL"
 #: The simulation mode whose Alphas BRAIN refuses to submit — and refuses even to check:
 #: ``GET /alphas/{id}/check`` answers ``400 Cannot check submission for QUICK mode alphas``.
 #:
-#: Measured against the same expression run both ways: every figure is identical to the last
-#: decimal, daily PnL series included. What a quick Alpha does *not* get is the
-#: investability-constrained and risk-neutralized blocks, the yearly-stats recordset, and
-#: every submission check. It costs one simulation and one concurrent core, exactly like a
-#: full one, and finishes in the same time — so there is nothing to spend it on.
+#: Measured against the same expressions run both ways: every figure is identical, train and
+#: test years included. What a quick Alpha does *not* get is the investability-constrained and
+#: risk-neutralized blocks, the yearly-stats recordset, and twelve of the nineteen checks: it
+#: keeps the seven that score it and loses correlation, Theme and Competition. It costs one
+#: simulation and one concurrent core, like a full one, but can finish sooner: a GLB batch of
+#: ten took 334 s against 478 s, sent side by side.
 QUICK_MODE = "QUICK"
+#: BRAIN's default mode: a request that names it is the same request as one that does not.
+FULL_MODE = "FULL"
 
 
 def produced_type(requested: str) -> str:
@@ -150,9 +153,15 @@ class SimulationSettings(BrainModel):
     test_period: str | None = None
     max_trade: str | None = None
     max_position: str | None = None
-    #: ``FULL`` or ``QUICK``; BRAIN defaults it to ``FULL`` and this application never sends
-    #: ``QUICK`` (see :data:`QUICK_MODE`). Read back off an Alpha, where it matters.
+    #: ``FULL`` or ``QUICK``; BRAIN defaults it to ``FULL``. Left unset, the engine sends
+    #: ``QUICK`` in the regions Settings name (see :data:`QUICK_MODE`).
     simulation_mode: str | None = None
+    #: SUPER only. Which selection weights count (``POSITIVE`` is BRAIN's default), how many
+    #: of the top-ranked Alphas are kept (at least 10), and whether each component counts
+    #: from its in-sample start (``IS``) or only from its out-of-sample start (``OS``).
+    selection_handling: str | None = None
+    selection_limit: int | None = None
+    component_activation: str | None = None
 
 
 #: BRAIN's test period: the last two of the ten years are held out.
@@ -409,7 +418,8 @@ class BulkField(msgspec.Struct, rename="camel"):
     user_count: int | None = None
     alpha_count: int | None = None
     pyramid_multiplier: float | None = None
-    #: Names once, ``{id, name}`` objects since: stored as sent, read either way on the way out.
+    #: Untyped: plain names once, ``{id, name, multiplier}`` objects since. Stored as JSON
+    #: and read by name, so either shape works and a third cannot fail a market's sync.
     themes: list[Any] | None = None
     #: When BRAIN first offered the field here. New fields are uncrowded by construction.
     date_created: date | None = None

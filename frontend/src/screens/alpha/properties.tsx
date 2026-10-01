@@ -197,7 +197,10 @@ export function PropertiesPanel({ alpha }: { alpha: AlphaInfo }) {
             <>
               Power Pool Alphas need{' '}
               <span
-                className={cn('num', length >= MINIMUM ? 'text-pnl-positive' : 'text-ink-muted')}
+                className={cn(
+                  'num',
+                  length >= MINIMUM ? 'text-pnl-positive-text' : 'text-ink-muted',
+                )}
               >
                 {length} of {MINIMUM}
               </span>{' '}

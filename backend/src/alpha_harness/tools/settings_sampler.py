@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import math
 import random
+import time
 from datetime import timedelta
 from itertools import batched, product
 from typing import TYPE_CHECKING, Any
@@ -26,7 +27,7 @@ from ..brain.schemas import (
 )
 from ..brain.settings_schema import valid_values
 from ..db.models import MetadataCache, StudyStatus, Trial, TrialState, utcnow
-from ..engine.lifecycle import extract_simulation_id
+from ..engine.lifecycle import RA_CHILDREN, extract_simulation_id
 from ..engine.packer import MAX_BATCH
 from ..labs import scheduler
 from ..labs.fastexpr import GROUPING, ParseError, data_fields, parse
@@ -41,7 +42,7 @@ PENDING_SEND = scheduler.PENDING_SEND
 
 #: Which regions accept Max Position is not in any schema, so it is measured. It changes only
 #: when BRAIN adds a market, so the answer keeps for a day.
-POSITION_CACHE_KEY = "max_position_regions"
+POSITION_CACHE_KEY = "max_position_regions_v2"
 POSITION_MAX_AGE = timedelta(hours=24)
 #: Probes in flight at once. Measured 3.3x faster than one at a time with no throttling, but
 #: bounded so the burst does not grow with the number of markets BRAIN offers.
@@ -49,6 +50,10 @@ PROBE_CONCURRENCY = 4
 #: One probing sweep at a time. Two previews opened together would otherwise each fan a probe
 #: at every market, and a rate-limited probe is an unusable reading rather than a slow one.
 _PROBE_LOCK = asyncio.Lock()
+#: An incomplete sweep is not kept for the day, but neither is it repeated on every preview:
+#: the Template Lab previews as its form is typed in.
+PROBE_RETRY_SECONDS = 600.0
+_last_probe: list[tuple[float, set[str]]] = []
 
 
 def pairs_for(position_ok: bool) -> list[tuple[str, str]]:
@@ -77,7 +82,11 @@ async def position_regions(state: Any) -> set[str]:
         # answer is as good as a fresh sweep.
         if (cached := await _cached_regions(state)) is not None:
             return cached
-        return await _probe_regions(state)
+        if _last_probe and time.monotonic() - _last_probe[0][0] < PROBE_RETRY_SECONDS:
+            return set(_last_probe[0][1])
+        found = await _probe_regions(state)
+        _last_probe[:] = [(time.monotonic(), found)]
+        return found
 
 
 async def _cached_regions(state: Any) -> set[str] | None:
@@ -94,8 +103,7 @@ async def _probe_regions(state: Any) -> set[str]:
     if not schema:
         return set()
     base = {"instrumentType": "EQUITY"}
-    # All regions never reaches the sampler (see `_plan`), so there is nothing to probe.
-    regions = [str(r) for r in valid_values(schema, "region", base) if r != REGION_AGNOSTIC_REGION]
+    regions = [str(r) for r in valid_values(schema, "region", base)]
     gate = asyncio.Semaphore(PROBE_CONCURRENCY)
 
     async def ask(region: str) -> bool | None:
@@ -226,11 +234,7 @@ async def plan(
         here = {
             (str(r["region"]), int(r["delay"]), str(r["universe"])): float(r["coverage"] or 0.0)
             for r in rows
-            # All regions is left out: the catalog holds it once it has been synced, but a
-            # sweep there sends region-agnostic simulations, which cost four of the day's
-            # allowance each. A sampler that quietly spends four times its estimate is worse
-            # than one that does not offer the market.
-            if r["instrument_type"] == "EQUITY" and r["region"] != REGION_AGNOSTIC_REGION
+            if r["instrument_type"] == "EQUITY"
         }
         if not here:
             problems.append(f"{field} is not downloaded in any market. Sync from BRAIN first.")
@@ -303,6 +307,9 @@ def _regions(
                 "neutralizations": neutralizations,
                 "pairs": [{"maxTrade": t, "maxPosition": p} for t, p in pairs],
                 "positionAvailable": region in accepts,
+                # All regions sends region-agnostic simulations, each charged per region it
+                # reaches. Said per region so every estimate can count it, not hide it.
+                "cost": simulation_cost(region),
                 "markets": markets,
                 "total": sum(int(m["total"]) for m in markets),
             }
@@ -312,6 +319,16 @@ def _regions(
     return out
 
 
+def simulation_cost(region: str) -> int:
+    """Simulations of the day's allowance one run in this region uses."""
+    return RA_CHILDREN if region == REGION_AGNOSTIC_REGION else 1
+
+
+def batch_size(region: str) -> int:
+    """How many runs one multi-simulation carries: BRAIN fails a batch of region-agnostic ones."""
+    return 1 if region == REGION_AGNOSTIC_REGION else MAX_BATCH
+
+
 def _totals(regions: list[dict[str, Any]]) -> dict[str, Any]:
     batches = 0
     for region in regions:
@@ -319,8 +336,9 @@ def _totals(regions: list[dict[str, Any]]) -> dict[str, Any]:
         for market in region["markets"]:
             delay = int(market["delay"])
             per_delay[delay] = per_delay.get(delay, 0) + int(market["total"])
-        batches += sum(math.ceil(n / MAX_BATCH) for n in per_delay.values())
-    return {"total": sum(int(r["total"]) for r in regions), "batches": batches}
+        size = batch_size(str(region["region"]))
+        batches += sum(math.ceil(n / size) for n in per_delay.values())
+    return {"total": sum(int(r["total"]) * int(r["cost"]) for r in regions), "batches": batches}
 
 
 def _settings(source: dict[str, Any]) -> dict[str, Any]:

@@ -133,7 +133,7 @@ class AppState:
         # A catalog downloaded before the search index existed still has none; building it
         # costs a couple of seconds and nothing else depends on it, so it must not block.
         if not await search.ready(self.catalog):
-            spawn(search.rebuild(self.catalog), name="catalog-fts-index")
+            spawn(search.build(self.catalog), name="catalog-fts-index")
         # Same shape: an Alpha whose series was stored before After-Cost Sharpe existed has none,
         # and it is worked out from that series rather than downloaded again.
         spawn(self.alphas.rebuild_after_cost_sharpe(), name="vault-after-cost-sharpe")

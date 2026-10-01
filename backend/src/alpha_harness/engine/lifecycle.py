@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 from sqlalchemy import case, update
 
 from ..brain.errors import BrainError
-from ..brain.schemas import SimulationRequest, SimulationStatus, SimulationType
+from ..brain.schemas import FULL_MODE, SimulationRequest, SimulationStatus, SimulationType
 from ..db.models import ACTIVE, DedupEntry, QuotaSnapshot, SimStatus, SimulationRecord, utcnow
 
 if TYPE_CHECKING:
@@ -103,6 +103,16 @@ def hash_payload(payload: Any) -> str:
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
+def request_hash(request: SimulationRequest) -> str:
+    """What an identical request shares. ``FULL`` is BRAIN's default, so naming it changes
+    nothing: a Full re-run matches every Alpha simulated before modes were sent."""
+    payload = request.to_wire()
+    settings = payload.get("settings")
+    if isinstance(settings, dict) and settings.get("simulationMode") == FULL_MODE:
+        del settings["simulationMode"]
+    return hash_payload(payload)
+
+
 async def remember(session: Any, record: SimulationRecord, alpha_id: str) -> None:
     """Record what this payload produced, so an identical request reuses it for free."""
     if await session.get(DedupEntry, record.request_hash) is None:
@@ -177,7 +187,7 @@ def new_record(
     payload = request.to_wire()
     settings = request.settings
     return SimulationRecord(
-        request_hash=hash_payload(payload),
+        request_hash=request_hash(request),
         payload=payload,
         expression=request.regular or request.combo or request.selection,
         sim_type=str(request.type),

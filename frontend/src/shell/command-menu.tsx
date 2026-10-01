@@ -52,7 +52,7 @@ export function CommandMenu() {
           { label: "Dispatch Today's Simulations", href: '/dashboard' },
           { label: 'View Live Simulation Matrix', href: '/matrix' },
           { label: 'Browse Submittable Alphas', href: '/pool/submittable' },
-          { label: 'Sync Data Fields with BRAIN', href: '/pyramids' },
+          { label: 'Sync Data Fields with BRAIN', href: '/sync' },
           { label: 'Ask AI Assistant', href: '/ai/assistant' },
           { label: 'Explore Data Catalog', href: '/data' },
           { label: 'Open Settings', run: () => useSettings.getState().setOpen(true) },

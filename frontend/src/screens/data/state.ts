@@ -5,6 +5,7 @@ import type { FieldFilter, FieldSortKey } from '@/api/catalog'
 import type { Scope } from '@/api/types'
 import { cn } from '@/lib/cn'
 import { DASH, fmt, isNum } from '@/lib/format'
+import { regionLabel } from '@/lib/scope'
 import { useDatasetPick } from '@/screens/data/dataset-pick'
 import { STATUS } from '@/ui/kit'
 import type { Sort } from '@/ui/table'
@@ -104,6 +105,55 @@ export function useDatasetChoice(): [string[], (ids: string[]) => void] {
 
 export const isActive = (v: unknown) =>
   v != null && v !== '' && v !== false && !(Array.isArray(v) && v.length === 0)
+
+/**
+ * The filter a lab takes with its datasets: what is set, bar the datasets themselves, which
+ * are the pick. `null` when nothing narrows the fields, so a lab can tell "no filter" at once.
+ */
+export function labFilter(filter: FieldFilterState): FieldFilterState | null {
+  const kept = Object.fromEntries(
+    Object.entries(filter).filter(([key, value]) => key !== 'dataset_ids' && isActive(value)),
+  ) as FieldFilterState
+  // The search mode only means something beside a search.
+  if (!kept.search) delete kept.search_mode
+  return Object.keys(kept).length > 0 ? kept : null
+}
+
+/** A filter in words, one entry per thing it narrows on, for where it is applied away from here. */
+export function describeFilter(filter: FieldFilterState, region: string): string[] {
+  const range = <T>(
+    name: string,
+    min: T | null | undefined,
+    max: T | null | undefined,
+    show: (v: T) => string,
+  ) => {
+    const lo = min == null ? null : show(min)
+    const hi = max == null ? null : show(max)
+    if (lo && hi) return `${name} ${lo}\u2013${hi}`
+    if (lo) return `${name} \u2265 ${lo}`
+    return hi ? `${name} \u2264 ${hi}` : null
+  }
+  const pct = (v: number) => fmt.pct(v, 0)
+  return [
+    filter.search && `Search \u201c${filter.search}\u201d`,
+    filter.region_agnostic && 'Region Agnostic',
+    filter.region_exclusive && `${regionLabel(region)} Exclusive`,
+    filter.category_ids?.length &&
+      `${fmt.int(filter.category_ids.length)} ${filter.category_ids.length === 1 ? 'Category' : 'Categories'}`,
+    filter.field_types?.length && filter.field_types.join(', '),
+    range('Instrument Coverage', filter.coverage_min, filter.coverage_max, pct),
+    range('Date Coverage', filter.date_coverage_min, filter.date_coverage_max, pct),
+    range('Alphas', filter.alpha_count_min, filter.alpha_count_max, fmt.int),
+    range('Users', filter.user_count_min, filter.user_count_max, fmt.int),
+    range(
+      'Pyramid Theme Multiplier',
+      filter.pyramid_multiplier_min,
+      filter.pyramid_multiplier_max,
+      multiplier,
+    ),
+    range('Date Added', filter.date_created_from, filter.date_created_to, fmt.month),
+  ].filter((part): part is string => typeof part === 'string' && part.length > 0)
+}
 
 export const sameScope = (a: Scope, b: Scope) =>
   a.region === b.region &&

@@ -4,6 +4,7 @@
  * onto whatever they cover.
  */
 
+import { ContextMenu as BContextMenu } from '@base-ui/react/context-menu'
 import { Dialog as BDialog } from '@base-ui/react/dialog'
 import { Menu as BMenu } from '@base-ui/react/menu'
 import { Select as BSelect } from '@base-ui/react/select'
@@ -240,28 +241,48 @@ export function Menu({
       <BMenu.Portal>
         <BMenu.Positioner sideOffset={4} align={align} className="z-50">
           <BMenu.Popup className={cn(POPUP, 'min-w-44')}>
-            {items.map((item, i) => (
-              <BMenu.Item
-                key={i}
-                disabled={item.disabled}
-                onClick={item.onClick}
-                className={cn(
-                  ITEM,
-                  item.danger && 'text-pnl-negative data-[highlighted]:text-pnl-negative',
-                  '[&_svg]:size-3.5 [&_svg]:shrink-0',
-                )}
-              >
-                {item.icon}
-                <span className="truncate">{item.label}</span>
-                {item.shortcut && (
-                  <span className="ml-auto shrink-0 pl-6 text-ink-subtle">{item.shortcut}</span>
-                )}
-              </BMenu.Item>
-            ))}
+            <MenuItems items={items} />
           </BMenu.Popup>
         </BMenu.Positioner>
       </BMenu.Portal>
     </BMenu.Root>
+  )
+}
+
+function MenuItems({ items }: { items: MenuItem[] }) {
+  return items.map((item, i) => (
+    <BMenu.Item
+      key={i}
+      disabled={item.disabled}
+      onClick={item.onClick}
+      className={cn(
+        ITEM,
+        item.danger && 'text-pnl-negative-text data-[highlighted]:text-pnl-negative-text',
+        '[&_svg]:size-3.5 [&_svg]:shrink-0',
+      )}
+    >
+      {item.icon}
+      <span className="truncate">{item.label}</span>
+      {item.shortcut && (
+        <span className="ml-auto shrink-0 pl-6 text-ink-subtle">{item.shortcut}</span>
+      )}
+    </BMenu.Item>
+  ))
+}
+
+/** The same items as {@link Menu}, opened by a right-click (or a long press) on `children`. */
+export function ContextMenu({ children, items }: { children: ReactElement; items: MenuItem[] }) {
+  return (
+    <BContextMenu.Root>
+      <BContextMenu.Trigger render={children} />
+      <BContextMenu.Portal>
+        <BContextMenu.Positioner className="z-50">
+          <BContextMenu.Popup className={cn(POPUP, 'min-w-44')}>
+            <MenuItems items={items} />
+          </BContextMenu.Popup>
+        </BContextMenu.Positioner>
+      </BContextMenu.Portal>
+    </BContextMenu.Root>
   )
 }
 

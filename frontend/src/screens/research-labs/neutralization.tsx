@@ -28,7 +28,7 @@ export function NeutralizationPicker({
   value: string[]
   onChange: (value: string[]) => void
   legend?: string
-  /** What an empty selection means, which is the caller's convention to state. */
+  /** A note under the picker, e.g. what is missing from the choice. */
   hint?: string | undefined
   disabled?: boolean | undefined
 }) {

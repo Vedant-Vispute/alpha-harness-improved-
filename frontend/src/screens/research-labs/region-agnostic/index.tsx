@@ -14,6 +14,7 @@ import { useCores } from '@/lib/preferences'
 import { REGION_AGNOSTIC, useScopeOptions } from '@/lib/scope'
 import { useProviderLabel } from '@/screens/ai/shared'
 import type { PickedField } from '@/screens/data/dataset-pick'
+import type { FieldFilterState } from '@/screens/data/state'
 import { PromptPicker, useChosenPrompt } from '@/screens/prompts/picker'
 import { AddTaskButtons, useAddTask } from '@/screens/research-labs/add-task'
 import {
@@ -60,6 +61,8 @@ interface RegionAgnosticDraft {
   delay: number
   universe: string
   datasetIds: string[]
+  /** Unused here: fields are chosen by id, but every lab's market has one. */
+  fieldFilter: FieldFilterState | null
   fields?: PickedField[]
   rankBy?: string | null
   regions: string[]
@@ -80,6 +83,7 @@ const useDraft = create<RegionAgnosticDraft>()(
       delay: 1,
       universe: '',
       datasetIds: [],
+      fieldFilter: null,
       fields: [],
       rankBy: null,
       regions: ['USA', 'EUR', 'ASI', 'GLB'],

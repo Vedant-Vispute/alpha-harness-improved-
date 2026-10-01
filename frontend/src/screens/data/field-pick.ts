@@ -14,8 +14,26 @@ import { createJSONStorage, persist } from 'zustand/middleware'
 import { catalog, type DataFieldRow, type FieldFilter, type FieldSortKey } from '@/api/catalog'
 import type { Scope } from '@/api/types'
 import type { Sort } from '@/ui/table'
-import { type FieldPick, type PickedField, type PickFrom, useDatasetPick } from './dataset-pick'
-import { type FieldFilterState, RELEVANCE, useFieldFilter } from './state'
+import {
+  type DatasetPickExtra,
+  type FieldPick,
+  type PickedField,
+  type PickFrom,
+  useDatasetPick,
+} from './dataset-pick'
+import { type FieldFilterState, labFilter, RELEVANCE, useFieldFilter } from './state'
+
+/**
+ * The labs that take single fields. Advanced Template Research does not: its variables are
+ * datasets under a filter, so ticks made while picking for it are left out and the datasets
+ * go with the filter that was showing.
+ */
+export const TAKES_FIELDS: ReadonlySet<PickFrom> = new Set<PickFrom>([
+  '/labs/search',
+  '/labs/template/basic',
+  '/labs/power-pool',
+  '/labs/region-agnostic',
+])
 
 /** Matches `labs.launch.MAX_PICKED_FIELDS`: past this, a lab wants whole datasets. */
 export const MAX_PICKED_FIELDS = 500
@@ -236,7 +254,8 @@ export function useHandOver() {
   return useMutation({
     mutationFn: async ({ scope, to, finish }: { scope: Scope; to: PickFrom; finish: boolean }) => {
       const selection = useFieldSelection.getState()
-      const ticked = sameMarket(selection.scope, scope) ? selection.fields : []
+      const ticked =
+        TAKES_FIELDS.has(to) && sameMarket(selection.scope, scope) ? selection.fields : []
       const { sort, filter } = useFieldFilter.getState()
       const pick: FieldPick = ticked.length
         ? await rankFields(scope, ticked, sort, filter)
@@ -249,11 +268,17 @@ export function useHandOver() {
       if (ticked.length > 0 && pick.fields.length === 0)
         throw new Error('Every selected field is excluded. Loosen the exclusion filters.')
       const datasets = useDatasetPick.getState()
+      // Ticked fields are exactly what was wanted; with none, the datasets go under the
+      // filter that was showing, so the lab uses only the fields it shows.
+      const extra: DatasetPickExtra = {
+        ...pick,
+        filter: pick.fields.length ? null : labFilter(filter),
+      }
       if (finish) {
         if (pick.fields.length) useDatasetPick.setState({ ids: datasetsOf(pick.fields) })
-        datasets.finish(pick)
+        datasets.finish(extra)
       } else {
-        datasets.hand(scope, datasetsOf(pick.fields), to, pick)
+        datasets.hand(scope, datasetsOf(pick.fields), to, extra)
       }
       selection.clear()
       await navigate({ to })

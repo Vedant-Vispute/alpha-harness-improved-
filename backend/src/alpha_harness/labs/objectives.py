@@ -17,7 +17,7 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-from ..brain.schemas import Alpha, Check, CheckResult, SampleStats
+from ..brain.schemas import QUICK_MODE, Alpha, Check, CheckResult, SampleStats
 from ..vault.yields import without_quota_checks
 
 #: A missing number scores this: deliberately terrible, so a broken trial is never mistaken
@@ -172,4 +172,5 @@ def summarise(alpha: Alpha) -> dict[str, Any]:
         "constraint": violations,
         "feasible": feasible(violations),
         "failedChecks": [d["name"] for d in detail if d["violation"] > 0],
+        "quick": alpha.settings is not None and alpha.settings.simulation_mode == QUICK_MODE,
     }

@@ -10,13 +10,13 @@ import json
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from sqlalchemy import String, func, or_, select, type_coerce, update
+from sqlalchemy import String, func, not_, or_, select, type_coerce, update
 
-from ..brain.schemas import SimulationRequest, SimulationSettings
+from ..brain.schemas import SimulationRequest, SimulationSettings, SimulationType
 from ..brain.settings_schema import validate_settings
 from ..db.models import SimStatus, SimulationRecord, Study, StudyStatus, Trial, TrialState, utcnow
 from ..engine.packer import MAX_BATCH
-from . import ga, search, template
+from . import ga, search, template, template_v1
 from .objectives import StudyNotFoundError
 from .params import (
     CORRELATION_BREAKER,
@@ -25,6 +25,7 @@ from .params import (
     REGION_AGNOSTIC_SAMPLER,
     SEARCH_SAMPLER,
     SETTINGS_SAMPLER,
+    SUPER_LAB,
     TASK_SAMPLERS,
     TEMPLATE_SAMPLER,
     SearchParams,
@@ -48,6 +49,9 @@ FREE = "Matched an Alpha already simulated; no quota spent."
 #: Parks a written simulation outside every count until it is sent.
 PENDING_SEND = "Waiting for cores."
 
+#: Parks the Full re-run a Quick Alpha that passed is owed, until there is room to send it.
+PENDING_FULL = "Waiting to run in Full mode."
+
 
 def queued(outcome: dict[str, Any]) -> dict[str, Any]:
     """A trial's fields once the engine has taken its request, per ``enqueue``'s outcome."""
@@ -59,18 +63,27 @@ def queued(outcome: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def request_of(trial: Trial) -> SimulationRequest:
+    """The simulation a written trial stands for: a SuperAlpha keeps its selection in params."""
+    settings = SimulationSettings.model_validate(trial.settings)
+    params = trial.params or {}
+    if params.get("selection"):
+        return SimulationRequest(
+            type=SimulationType.SUPER,
+            settings=settings,
+            selection=str(params["selection"]),
+            combo=str(params.get("combo") or trial.expression or "1"),
+        )
+    return SimulationRequest(settings=settings, regular=trial.expression)
+
+
 async def send_parked(optimizer: Optimizer, row: Study, batch: Sequence[Trial]) -> int:
     """Send trials written up front and parked until cores were free.
 
     ``batch`` must still be attached to the caller's session: the outcome is written by
     assigning to those rows, which is what saves a round trip per trial.
     """
-    requests = [
-        SimulationRequest(
-            settings=SimulationSettings.model_validate(t.settings), regular=t.expression
-        )
-        for t in batch
-    ]
+    requests = [request_of(t) for t in batch]
     outcomes = (await optimizer.engine.enqueue(requests, task=row.task)).get("outcomes", [])
     for index, trial in enumerate(batch):
         for field, value in queued(outcomes[index] if index < len(outcomes) else {}).items():
@@ -180,9 +193,9 @@ def ask_points(
     space = run.space
     if cover and not study.get_trials(deepcopy=False, states=(OptunaState.WAITING,)):
         for field_id in cover:
-            study.enqueue_trial(search.first_pass(space, field_id))
+            study.enqueue_trial(lab.first_pass(space, field_id))
 
-    choices = search.field_choices(space)
+    choices = lab.field_choices(space)
     picked: list[tuple[Any, dict[str, Any], SimulationRequest]] = []
     keys: set[tuple[str, str]] = set()
     for _ in range(want * 5):
@@ -239,8 +252,11 @@ async def advance(optimizer: Optimizer, study_id: int) -> int:
                 select(
                     func.count().filter(Trial.state.in_([TrialState.QUEUED, TrialState.RUNNING])),
                     # Every trial not pruned or answered for free has spent, or is spending,
-                    # a simulation.
-                    func.count().filter(Trial.state != TrialState.PRUNED, _not_free()),
+                    # a simulation. A Full run is spent on top of the target, so a tool that
+                    # wrote its simulations up front still sends every one.
+                    func.count().filter(
+                        Trial.state != TrialState.PRUNED, _not_free(), not_(full_run())
+                    ),
                     func.max(Trial.number),
                 ).where(Trial.study_id == study_id)
             )
@@ -260,13 +276,32 @@ async def advance(optimizer: Optimizer, study_id: int) -> int:
     stopping = task_params(row).stopping
     waiting = bool(open_count)
     last_number = -1 if last is None else int(last)
+    # Borrowed cores only run what is queued, so a task queues for them too; the engine then
+    # hands them to whichever tasks have work beyond their own cores.
+    room = row.batch_size + optimizer.lendable_cores * MAX_BATCH
+    space = room - int(in_flight or 0)
+    if not stopping and space > 0:
+        # Ahead of the task's own budget: a passing Quick Alpha is only submittable once it is
+        # run in Full, and a task that had spent its simulations would otherwise strand it.
+        async with optimizer.db.session() as session:
+            owed = (
+                await session.scalars(
+                    select(Trial)
+                    .where(
+                        Trial.study_id == row.id,
+                        Trial.state == TrialState.PRUNED,
+                        Trial.message == PENDING_FULL,
+                    )
+                    .order_by(Trial.number)
+                    .limit(space)
+                )
+            ).all()
+            if owed:
+                return await send_parked(optimizer, row, owed)
     if stopping or committed >= row.max_trials:
         if not waiting:
             await optimizer.set_status(study_id, StudyStatus.COMPLETE)
         return 0
-    # Borrowed cores only run what is queued, so a task queues for them too; the engine then
-    # hands them to whichever tasks have work beyond their own cores.
-    room = row.batch_size + optimizer.lendable_cores * MAX_BATCH
     want = to_ask(room, int(in_flight or 0), row.max_trials - committed)
     if row.sampler in (GA_SAMPLER, SEARCH_SAMPLER, TEMPLATE_SAMPLER) and want > 0:
         # Only after a crash between writing a round's trials and sending them (`_queue`).
@@ -292,7 +327,7 @@ async def advance(optimizer: Optimizer, study_id: int) -> int:
 
         return await power_pool.refill(optimizer, row, want, waiting)
     # Both write every simulation up front, so both are drained the same way.
-    if row.sampler in (SETTINGS_SAMPLER, CORRELATION_BREAKER):
+    if row.sampler in (SETTINGS_SAMPLER, CORRELATION_BREAKER, SUPER_LAB):
         from ..tools import settings_sampler  # same cycle: it builds on this module
 
         return await settings_sampler.refill(optimizer, row, want, waiting)
@@ -300,13 +335,15 @@ async def advance(optimizer: Optimizer, study_id: int) -> int:
         return 0
 
     if row.sampler == TEMPLATE_SAMPLER:
-        lab = template
-        run: SearchParams = params_of(row, TemplateParams)
+        typed = params_of(row, TemplateParams)
+        lab = template_v1 if typed.tree else template
+        run: SearchParams = typed
     else:
         lab = search
         run = params_of(row, SearchParams)
 
     space = run.space
+    key, coverable = lab.coverage(space)
     async with optimizer.db.session() as session:
         counted = (
             await session.execute(
@@ -319,11 +356,11 @@ async def advance(optimizer: Optimizer, study_id: int) -> int:
                 ).where(Trial.study_id == study_id, Trial.state != TrialState.PRUNED)
             )
         ).all()
-    tried, seen = await asyncio.to_thread(_search_memory, counted)
+    tried, seen = await asyncio.to_thread(_search_memory, counted, key)
     limit = row.max_trials // 2
     cover: list[str] = []
     if len(tried) < limit:
-        untried = [f for f in space["fields"] if f not in tried]
+        untried = [f for f in coverable if f not in tried]
         cover = untried[: min(want, limit - len(tried))]
 
     study = await optimizer.optuna_study(study_id, row)
@@ -348,10 +385,15 @@ def _not_free() -> Any:
     return or_(Trial.message.is_(None), Trial.message != FREE)
 
 
+def full_run() -> Any:
+    """SQL for a trial that runs a passing Quick Alpha again in Full mode."""
+    return func.json_extract(Trial.params, "$.fullOf").is_not(None)
+
+
 def _search_memory(
-    rows: Sequence[Any],
+    rows: Sequence[Any], covers: str
 ) -> tuple[set[Any], dict[tuple[str, str], float | bool]]:
-    """The fields tried and every point already scored, from unpruned trial rows.
+    """The fields tried as ``covers`` and every point already scored, from unpruned trials.
 
     Runs in a worker thread: identity keys validate each trial's settings, which costs
     seconds at the largest task sizes.
@@ -359,7 +401,7 @@ def _search_memory(
     tried: set[Any] = set()
     seen: dict[tuple[str, str], float | bool] = {}
     for state, params, expression, settings, values in rows:
-        tried.add((json.loads(params or "null") or {}).get("field"))
+        tried.add((json.loads(params or "null") or {}).get(covers))
         key = search.identity_of(expression, json.loads(settings or "null"))
         scores = json.loads(values or "null")
         if state == TrialState.COMPLETE and scores:

@@ -1,26 +1,35 @@
 /** The Fields tab's dataset filter: a Category → Subcategory → Dataset tree. */
 
-import { ChevronRightIcon, XIcon } from 'lucide-react'
+import { ChevronRightIcon, CopyIcon, DownloadIcon } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import type { CatalogFacets } from '@/api/catalog'
+import { toast } from 'sonner'
+import { type CatalogFacets, catalog } from '@/api/catalog'
+import { errorMessage } from '@/api/http'
+import type { Scope } from '@/api/types'
 import { cn } from '@/lib/cn'
+import { saveText } from '@/lib/download'
 import { fmt } from '@/lib/format'
 import { Button, Input } from '@/ui/kit'
-import { buildTree, summarize } from './dataset-tree'
+import { ContextMenu } from '@/ui/overlay'
+import { DatasetChips } from './dataset-chips'
+import { buildTree } from './dataset-tree'
 
 /**
  * The dataset filter as a Category → Subcategory → Dataset tree. The choice is always the
  * dataset ids under what is ticked, which is what the fields query and the labs take.
  */
 export function DatasetTree({
+  scope,
   source,
   counts,
   names,
   value,
   onChange,
   title = 'Datasets',
-  searchLabel = 'Search categories, subcategories and datasets',
+  searchLabel = 'Search Categories, Subcategories and Datasets',
 }: {
+  /** The market, for copying a node's fields. */
+  scope: Scope
   /** The market's whole tree, unfiltered, so a ticked category takes every dataset in it. */
   source: CatalogFacets
   counts: CatalogFacets | undefined
@@ -39,6 +48,32 @@ export function DatasetTree({
   const nameOf = (id: string) => names.get(id) ?? id
   const matches = (text: string) => text.toLowerCase().includes(term)
   const hit = (id: string) => matches(id) || matches(nameOf(id))
+  // Every field of a category, subcategory or dataset, as Copy Selected Data Fields writes it:
+  // to the clipboard, or to a Markdown file named by the node's BRAIN id.
+  const actions = (ids: string[], where: string, file: string) => ({
+    onCopy: () =>
+      catalog
+        .outline(scope, { dataset_ids: ids })
+        .then(async (outline) => {
+          await navigator.clipboard.writeText(outline.text)
+          toast.success(`Copied ${fmt.int(outline.fields)} Data Fields`, { description: where })
+        })
+        .catch((e: unknown) =>
+          toast.error('Could not copy the Data Fields', { description: errorMessage(e) }),
+        ),
+    onDownload: () =>
+      catalog
+        .outline(scope, { dataset_ids: ids })
+        .then((outline) => {
+          saveText(`${file}.md`, `${outline.text}\n`)
+          toast.success(`Downloaded ${file}.md`, {
+            description: `${fmt.int(outline.fields)} Data Fields from ${where}`,
+          })
+        })
+        .catch((e: unknown) =>
+          toast.error('Could not download the Data Fields', { description: errorMessage(e) }),
+        ),
+  })
 
   const fieldsIn = counts && new Map(counts.datasets.map((d) => [d.id, d.n]))
   const total = (ids: string[]) =>
@@ -62,18 +97,37 @@ export function DatasetTree({
   // A search opens everything it shows.
   const isOpen = (key: string) => term !== '' || open.has(key)
 
-  // A matching category or subcategory shows all of itself; otherwise only the datasets that match.
-  const shown = tree.flatMap((trunk) => {
-    const whole = !term || matches(trunk.name)
-    const subs = trunk.subcategories.flatMap((branch) => {
-      const ids = whole || matches(branch.name) ? branch.ids : branch.ids.filter(hit)
-      return ids.length > 0 ? [{ branch, ids }] : []
-    })
-    const loose = whole ? trunk.loose : trunk.loose.filter(hit)
-    return whole || subs.length > 0 || loose.length > 0 ? [{ trunk, subs, loose }] : []
-  })
+  // Most fields first at every level, by the counts shown beside each row: those follow the
+  // other filters, so the order does too. Ties, and the moment before counts arrive, go by name.
+  const byCount = <T,>(items: T[], ids: (item: T) => string[], name: (item: T) => string) =>
+    [...items].sort(
+      (a, b) => (total(ids(b)) ?? 0) - (total(ids(a)) ?? 0) || name(a).localeCompare(name(b)),
+    )
+  const byDataset = (ids: string[]) =>
+    byCount(
+      ids,
+      (id) => [id],
+      (id) => nameOf(id),
+    )
 
-  const summary = summarize(tree, value, nameOf)
+  // A matching category or subcategory shows all of itself; otherwise only the datasets that match.
+  const shown = byCount(
+    tree.flatMap((trunk) => {
+      const whole = !term || matches(trunk.name)
+      const subs = byCount(
+        trunk.subcategories.flatMap((branch) => {
+          const ids = whole || matches(branch.name) ? branch.ids : branch.ids.filter(hit)
+          return ids.length > 0 ? [{ branch, ids: byDataset(ids) }] : []
+        }),
+        (s) => s.branch.ids,
+        (s) => s.branch.name,
+      )
+      const loose = byDataset(whole ? trunk.loose : trunk.loose.filter(hit))
+      return whole || subs.length > 0 || loose.length > 0 ? [{ trunk, subs, loose }] : []
+    }),
+    (t) => t.trunk.ids,
+    (t) => t.trunk.name,
+  )
 
   return (
     <div className="flex min-w-0 flex-col gap-2">
@@ -90,27 +144,12 @@ export function DatasetTree({
           </Button>
         )}
       </div>
-      {summary.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {summary.map((item) => (
-            <span
-              key={item.key}
-              title={item.label}
-              className="inline-flex h-7 max-w-full items-center gap-1 rounded-sm border border-hairline-strong bg-surface-3 pr-1 pl-3 text-body-compact text-ink"
-            >
-              <span className="truncate">{item.label}</span>
-              <button
-                type="button"
-                aria-label={`Remove ${item.label}`}
-                className="shrink-0 rounded-xs p-0.5 text-ink-subtle transition-colors hover:text-ink"
-                onClick={() => toggle(item.ids, false)}
-              >
-                <XIcon className="size-3.5" />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
+      <DatasetChips
+        tree={tree}
+        value={value}
+        nameOf={nameOf}
+        onRemove={(ids) => toggle(ids, false)}
+      />
       <Input
         placeholder={searchLabel}
         aria-label={searchLabel}
@@ -124,7 +163,7 @@ export function DatasetTree({
       >
         {tree.length === 0 ? (
           <p className="px-3 py-2 text-body-compact text-pretty text-ink-subtle">
-            No datasets in this market yet. Download it in Sync with BRAIN.
+            No datasets in this market yet. Download it in BRAIN › Sync.
           </p>
         ) : shown.length === 0 ? (
           <p className="px-3 py-2 text-body-compact text-ink-subtle">No match.</p>
@@ -140,6 +179,7 @@ export function DatasetTree({
                 open={isOpen(trunk.key)}
                 onExpand={() => expand(trunk.key)}
                 onToggle={(on) => toggle(trunk.ids, on)}
+                {...actions(trunk.ids, trunk.name, trunk.id || 'uncategorised')}
               />
               {isOpen(trunk.key) && (
                 <>
@@ -154,6 +194,7 @@ export function DatasetTree({
                         open={isOpen(branch.key)}
                         onExpand={() => expand(branch.key)}
                         onToggle={(on) => toggle(branch.ids, on)}
+                        {...actions(branch.ids, `${trunk.name} > ${branch.name}`, branch.id)}
                       />
                       {isOpen(branch.key) &&
                         ids.map((id) => (
@@ -166,6 +207,7 @@ export function DatasetTree({
                             chosen={chosen}
                             count={total([id])}
                             onToggle={(on) => toggle([id], on)}
+                            {...actions([id], `${trunk.name} > ${branch.name} > ${nameOf(id)}`, id)}
                           />
                         ))}
                     </div>
@@ -180,6 +222,7 @@ export function DatasetTree({
                       chosen={chosen}
                       count={total([id])}
                       onToggle={(on) => toggle([id], on)}
+                      {...actions([id], `${trunk.name} > ${nameOf(id)}`, id)}
                     />
                   ))}
                 </>
@@ -203,6 +246,8 @@ function TreeRow({
   open,
   onExpand,
   onToggle,
+  onCopy,
+  onDownload,
 }: {
   depth: 0 | 1 | 2
   label: string
@@ -213,58 +258,67 @@ function TreeRow({
   open?: boolean
   onExpand?: () => void
   onToggle: (on: boolean) => void
+  onCopy: () => void
+  onDownload: () => void
 }) {
   const on = ids.filter((id) => chosen.has(id)).length
   const all = on === ids.length
   const some = on > 0 && !all
 
   return (
-    <div
-      className={cn(
-        'flex h-7 shrink-0 items-center gap-1 pr-3 text-body-compact transition-colors hover:bg-surface-2',
-        depth === 0 ? 'pl-1.5' : depth === 1 ? 'pl-6' : 'pl-10.5',
-      )}
+    <ContextMenu
+      items={[
+        { label: 'Copy Data Fields', icon: <CopyIcon />, onClick: onCopy },
+        { label: 'Download as Markdown', icon: <DownloadIcon />, onClick: onDownload },
+      ]}
     >
-      {onExpand ? (
-        <button
-          type="button"
-          aria-label={`${open ? 'Collapse' : 'Expand'} ${label}`}
-          aria-expanded={open}
-          onClick={onExpand}
-          className="shrink-0 rounded-xs p-0.5 text-ink-subtle transition-colors hover:text-ink"
-        >
-          <ChevronRightIcon
-            className={cn('size-3.5 transition-transform', open && 'rotate-90')}
-            aria-hidden
-          />
-        </button>
-      ) : (
-        <span className="w-4.5 shrink-0" aria-hidden />
-      )}
-      <label
-        title={title ?? label}
-        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2"
+      <div
+        className={cn(
+          'flex h-7 shrink-0 items-center gap-1 pr-3 text-body-compact transition-colors hover:bg-surface-2 data-[popup-open]:bg-surface-2',
+          depth === 0 ? 'pl-1.5' : depth === 1 ? 'pl-6' : 'pl-10.5',
+        )}
       >
-        <input
-          type="checkbox"
-          className="size-3.5 shrink-0"
-          checked={all}
-          ref={(el) => {
-            if (el) el.indeterminate = some
-          }}
-          onChange={(e) => onToggle(e.target.checked)}
-        />
-        <span
-          className={cn(
-            'truncate',
-            depth === 0 && 'font-medium',
-            on > 0 ? 'text-ink' : 'text-ink-muted',
-          )}
+        {onExpand ? (
+          <button
+            type="button"
+            aria-label={`${open ? 'Collapse' : 'Expand'} ${label}`}
+            aria-expanded={open}
+            onClick={onExpand}
+            className="shrink-0 rounded-xs p-0.5 text-ink-subtle transition-colors hover:text-ink"
+          >
+            <ChevronRightIcon
+              className={cn('size-3.5 transition-transform', open && 'rotate-90')}
+              aria-hidden
+            />
+          </button>
+        ) : (
+          <span className="w-4.5 shrink-0" aria-hidden />
+        )}
+        <label
+          title={title ?? label}
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2"
         >
-          {label}
-        </span>
-      </label>
-      {count != null && <span className="num shrink-0 text-ink-subtle">{fmt.int(count)}</span>}
-    </div>
+          <input
+            type="checkbox"
+            className="size-3.5 shrink-0"
+            checked={all}
+            ref={(el) => {
+              if (el) el.indeterminate = some
+            }}
+            onChange={(e) => onToggle(e.target.checked)}
+          />
+          <span
+            className={cn(
+              'truncate',
+              depth === 0 && 'font-medium',
+              on > 0 ? 'text-ink' : 'text-ink-muted',
+            )}
+          >
+            {label}
+          </span>
+        </label>
+        {count != null && <span className="num shrink-0 text-ink-subtle">{fmt.int(count)}</span>}
+      </div>
+    </ContextMenu>
   )
 }

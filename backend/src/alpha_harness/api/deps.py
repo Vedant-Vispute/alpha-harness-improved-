@@ -190,6 +190,18 @@ def install_exception_handlers(app: FastAPI) -> None:
             keys=[s.to_dict() for s in exc.states],
         )
 
+    # Starlette answers anything unhandled with a bare "Internal Server Error", which leaves
+    # a bug report with nothing to go on. Naming the error is enough to find it; the
+    # traceback still reaches the log, since Starlette re-raises after this responds.
+    @app.exception_handler(Exception)
+    async def _unexpected(_r: Request, exc: Exception) -> JSONResponse:
+        return _problem(
+            500,
+            "internal_error",
+            "Alpha Harness hit an unexpected error.",
+            detail=f"{type(exc).__name__}: {exc}"[:500],
+        )
+
     @app.exception_handler(BrainError)
     async def _generic(_r: Request, exc: BrainError) -> JSONResponse:
         return _problem(

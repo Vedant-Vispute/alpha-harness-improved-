@@ -177,7 +177,7 @@ export function VerdictPanel({
               `Status ${alpha.status}${alpha.dateSubmitted ? `, submitted ${fmt.date(alpha.dateSubmitted)}` : ''}.`}
             {kind === 'blocked' &&
               (isQuickMode(alpha)
-                ? 'This was run in Quick mode. Every figure on this page is the real one, but BRAIN does not run the submission checks on a Quick mode alpha and will not accept it. Simulate the same expression again with Quick mode off.'
+                ? 'This was run in Quick mode. Every figure on this page is the real one, but BRAIN does not run the submission checks on a Quick mode alpha and will not accept it. A task simulates each Quick Alpha that passes every check again in full, and that Alpha can be submitted.'
                 : 'Each bar shows the value against the limit it must clear. Fix these, then run Check Submission again.')}
             {kind === 'pending' &&
               (groups.pending.length === 0
@@ -191,8 +191,8 @@ export function VerdictPanel({
       </div>
       {shown.length > 0 && (
         <ul className="divide-y divide-hairline-subtle border-t border-hairline-subtle">
-          {shown.map((c) => (
-            <CheckRow key={c.name} check={c} />
+          {shown.map((c, i) => (
+            <CheckRow key={`${c.name}-${i}`} check={c} />
           ))}
         </ul>
       )}
@@ -211,15 +211,15 @@ export function ChecksPanel({ groups }: { groups: CheckGroups }) {
       bodyClassName="flex flex-col gap-3 py-2"
     >
       <ul className="divide-y divide-hairline-subtle">
-        {[...groups.failing, ...groups.pending, ...groups.passing].map((c) => (
-          <CheckRow key={c.name} check={c} />
+        {[...groups.failing, ...groups.pending, ...groups.passing].map((c, i) => (
+          <CheckRow key={`${c.name}-${i}`} check={c} />
         ))}
       </ul>
       {groups.notes.length > 0 && (
         <Disclosure summary={`${groups.notes.length} notes that do not block submission`}>
           <ul className="divide-y divide-hairline-subtle">
-            {groups.notes.map((c) => (
-              <CheckRow key={c.name} check={c} />
+            {groups.notes.map((c, i) => (
+              <CheckRow key={`${c.name}-${i}`} check={c} />
             ))}
           </ul>
         </Disclosure>
@@ -254,7 +254,7 @@ export function AggregatesPanel({ alpha }: { alpha: AlphaInfo }) {
     <Panel
       title="In-sample aggregates"
       description="Beside the same Alpha under BRAIN's investability constraint"
-      bodyClassName="p-0"
+      bodyClassName="overflow-x-auto p-0"
     >
       <table className="w-full text-body">
         <thead>
@@ -425,8 +425,8 @@ export function YearlyPanel({ years, cutoff }: { years: AlphaYear[]; cutoff: num
 // ── Eligibility ────────────────────────────────────────────────────────────────────────────
 
 const RULE_ICON: Record<Rule, ReactNode> = {
-  pass: <CheckIcon className="size-3.5 text-pnl-positive" aria-label="Passes" />,
-  fail: <XIcon className="size-3.5 text-pnl-negative" aria-label="Fails" />,
+  pass: <CheckIcon className="size-3.5 text-pnl-positive-text" aria-label="Passes" />,
+  fail: <XIcon className="size-3.5 text-pnl-negative-text" aria-label="Fails" />,
   unknown: <CircleDashedIcon className="size-3.5 text-ink-subtle" aria-label="Not known yet" />,
 }
 
@@ -543,7 +543,9 @@ function CorrelationRow({
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <span className="text-body text-ink">{label}</span>
         {isNum(max) && (
-          <span className={cn('num text-body', max >= limit ? 'text-pnl-negative' : 'text-ink')}>
+          <span
+            className={cn('num text-body', max >= limit ? 'text-pnl-negative-text' : 'text-ink')}
+          >
             max {fmt.ratio(max)}
             <span className="text-ink-subtle"> of {fmt.ratio(limit, 1)}</span>
           </span>
@@ -709,8 +711,8 @@ export function ComparisonPanel({ alphaId }: { alphaId: string }) {
                         better === null
                           ? 'text-ink'
                           : better
-                            ? 'text-pnl-positive'
-                            : 'text-pnl-negative',
+                            ? 'text-pnl-positive-text'
+                            : 'text-pnl-negative-text',
                       )}
                     >
                       {format(a)}

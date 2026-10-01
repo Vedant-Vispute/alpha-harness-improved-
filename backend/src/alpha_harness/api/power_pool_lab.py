@@ -8,10 +8,12 @@ from typing import Any
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
+from ..catalog.queries import FieldFilter
 from ..db.models import utcnow
 from ..labs import power_pool, search
 from ..labs.launch import (
     MAX_PICKED_FIELDS,
+    NO_NEUTRALIZATION,
     NO_SIMULATIONS,
     OPERATORS_UNREAD,
     AddedTask,
@@ -42,10 +44,12 @@ class PowerPoolRequest(BaseModel):
     model: str | None = None
     #: A saved prompt from LLM Prompts; null sends the built-in.
     prompt_id: int | None = None
-    #: Empty keeps every neutralization BRAIN offers; anything here is drawn from instead.
+    #: What the LLM draws from. Empty is refused: see ``NO_NEUTRALIZATION``.
     neutralizations: list[str] = Field(default_factory=list, max_length=20)
     cores: int = Field(default=search.MAX_CORES, ge=1, le=search.MAX_CORES)
     simulations: int = Field(default=0, ge=0, le=search.MAX_SIMULATIONS)
+    #: The Data Explorer's filter the datasets were chosen under: only fields it shows are used.
+    field_filter: FieldFilter | None = None
 
 
 class PowerPoolModel(Out):
@@ -131,19 +135,21 @@ async def _plan(body: PowerPoolRequest, state: Any) -> dict[str, Any]:
     schema = await state.metadata.cached_settings_schema()
     legal = legal_choices(schema, body.region, body.delay)
     universes = await synced_universes(state, legal, body.region, body.delay, body.universe)
-    # Every neutralization BRAIN offers, not only the four the other labs default to: the LLM
-    # draws from the market's whole list, which is deliberate diversity. A chosen few narrow
-    # that; choosing none keeps the whole list.
+    # The LLM draws from whichever the reader chose, in BRAIN's order.
     offered = [str(n) for n in choices(legal, "neutralization") if n != "NONE"]
     wanted = set(body.neutralizations)
-    neutralizations = [n for n in offered if n in wanted] or offered
+    neutralizations = [n for n in offered if n in wanted]
     if not universes:
         problems.append(
             f"No {body.region} delay {body.delay} market is downloaded. "
             "Sync it in the Data Explorer."
         )
-    if not neutralizations:
+    if not body.neutralizations:
+        problems.append(NO_NEUTRALIZATION)
+    elif not offered:
         problems.append("BRAIN's settings list is not loaded. Sign in again.")
+    elif not neutralizations:
+        problems.append(f"BRAIN offers none of the chosen neutralizations in {body.region}.")
 
     prompt_name, system = await chosen(state, power_pool.KIND, body.prompt_id)
     fields = 0
@@ -224,9 +230,20 @@ async def _contexts(
     out: list[tuple[power_pool.Context | None, str]] = []
     for dataset in body.dataset_ids:
         ctx = await power_pool.context_for(
-            state.catalog, body.region, body.delay, universes, dataset
+            state.catalog, body.region, body.delay, universes, dataset, body.field_filter
         )
-        out.append((ctx, "" if ctx else f"{dataset} is not in {where}."))
+        if ctx is None:
+            out.append((None, f"{dataset} is not in {where}."))
+        elif body.field_filter and not ctx.fields:
+            out.append(
+                (
+                    None,
+                    f"No field in {dataset} matches the Data Explorer filter. "
+                    "Untick it, or loosen the filter.",
+                )
+            )
+        else:
+            out.append((ctx, ""))
     return out
 
 
@@ -256,6 +273,11 @@ async def add_task(body: PowerPoolRequest, state: State) -> AddedTask:
             dataset_ids=body.dataset_ids,
             field_ids=body.field_ids,
             rank_by=body.rank_by if body.field_ids else None,
+            field_filter=(
+                body.field_filter.model_dump(mode="json", exclude_defaults=True)
+                if body.field_filter
+                else None
+            ),
             model=plan["model"],
             prompt_id=body.prompt_id,
             prompt_name=plan["promptName"] if body.prompt_id is not None else None,

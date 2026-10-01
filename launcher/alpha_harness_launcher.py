@@ -1,9 +1,10 @@
-"""Alpha Harness on Windows: keep a Python and a venv, run the app, apply updates.
+"""Alpha Harness on the desktop: keep a Python and a venv, run the app, apply updates.
 
-Frozen with PyInstaller into ``AlphaHarness.exe``. It carries ``uv.exe`` and nothing else —
-the app's own dependencies are a third of a gigabyte, and a user who updates weekly should
-not re-download ``pyarrow`` every week. So the heavy half is installed once into
-``%LOCALAPPDATA%\\AlphaHarness`` and an update is just this project's wheel, a few megabytes.
+Frozen with PyInstaller into ``AlphaHarness.exe``, ``AlphaHarness.app`` or the Linux
+``AlphaHarness``. It carries ``uv`` and nothing else — the app's own dependencies are a third
+of a gigabyte, and a user who updates weekly should not re-download ``pyarrow`` every week. So
+the heavy half is installed once into a per-user folder (:func:`home`) and an update is just
+this project's wheel, a few megabytes.
 
 The launcher is the *parent* of the app, which is what makes updating safe. Windows keeps a
 running process's extension modules open, so an install that replaces ``duckdb`` under a live
@@ -23,9 +24,12 @@ import sys
 import threading
 import time
 import urllib.request
-import webbrowser
 from pathlib import Path
 from typing import Any
+
+# The one module the launcher shares with the app: standard library only, and bundled from
+# backend/src by the release build (`--paths backend/src`). From source, put that on PYTHONPATH.
+from alpha_harness.window import open_window
 
 #: Written in by the release workflow; the version a fresh machine installs.
 BUILD_VERSION = "0.0.0"
@@ -36,6 +40,9 @@ HOME_VARIABLE = "ALPHA_HARNESS_HOME"
 #: The exe's own version, handed to the app. The in-app update replaces the wheel and never
 #: this program, so without it the app cannot tell that the exe around it is years older.
 LAUNCHER_VARIABLE = "ALPHA_HARNESS_LAUNCHER"
+#: This process's id, handed to the app so it can tell when the launcher is gone — even if it
+#: went before the app first looked, when the app's parent is already someone else.
+PID_VARIABLE = "ALPHA_HARNESS_LAUNCHER_PID"
 REQUEST_FILE = "update-request.json"
 ERROR_FILE = "update-error.json"
 ACTIVE_FILE = "active-slot.txt"
@@ -43,6 +50,16 @@ LOCK_FILE = "running.lock"
 LOG_FILE = "launcher.log"
 #: Where the app serves; kept in step with ``alpha_harness.__main__``.
 APP_PORT = 8000
+
+WINDOWS = sys.platform == "win32"
+MACOS = sys.platform == "darwin"
+#: Set on the background copy macOS and Linux run the supervisor in (see :func:`detach`).
+DETACHED_VARIABLE = "ALPHA_HARNESS_DETACHED"
+#: The claim's file descriptor, handed to that copy so the claim passes on with no gap.
+LOCK_FD_VARIABLE = "ALPHA_HARNESS_LOCK_FD"
+UV_NAME = "uv.exe" if WINDOWS else "uv"
+#: The mark, bundled for the Linux applications menu; Windows and macOS read the exe's own.
+ICON_NAME = "mark.svg"
 
 #: Two environments, one live and one spare. An update builds the spare and flips the
 #: pointer, so a failed install cannot touch what is currently working and a version that
@@ -61,7 +78,12 @@ def home() -> Path:
     override = os.environ.get(HOME_VARIABLE)
     if override:
         return Path(override)
-    base = os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local"
+    if WINDOWS:
+        base = os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local"
+    elif MACOS:
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share"
     return Path(base) / "AlphaHarness"
 
 
@@ -85,13 +107,39 @@ def recent(root: Path, lines: int = 8) -> str:
 def fail(root: Path, message: str) -> None:
     """Report a failure the user can act on. Windowed processes have nowhere else to speak."""
     say(root, f"FATAL {message}")
-    # Looked up rather than imported: ``ctypes.windll`` exists only on Windows, and this
-    # module is read and exercised on other platforms.
+    text = f"{message}\n\nDetails: {root / LOG_FILE}"
+    # Looked up rather than imported: ``ctypes.windll`` exists only on Windows.
     windll = getattr(ctypes, "windll", None)
     if windll is not None:
-        windll.user32.MessageBoxW(
-            None, f"{message}\n\nDetails: {root / LOG_FILE}", "Alpha Harness", 0x10
-        )
+        windll.user32.MessageBoxW(None, text, "Alpha Harness", 0x10)
+        return
+    # The message goes in as an argument, never pasted into the script, so no quote in it
+    # can end the string early.
+    if MACOS:
+        dialog = [
+            "osascript",
+            "-e",
+            "on run argv",
+            "-e",
+            'display dialog (item 1 of argv) with title "Alpha Harness" buttons {"OK"} '
+            "default button 1 with icon stop",
+            "-e",
+            "end run",
+            text,
+        ]
+    elif shutil.which("zenity"):
+        # --no-markup: a path or an error with `<` or `&` in it is text, not Pango markup.
+        dialog = ["zenity", "--error", "--title=Alpha Harness", "--no-markup", f"--text={text}"]
+    elif shutil.which("kdialog"):
+        dialog = ["kdialog", "--title", "Alpha Harness", "--error", text]
+    elif shutil.which("notify-send"):
+        dialog = ["notify-send", "--urgency=critical", "Alpha Harness", text]
+    else:
+        return
+    try:
+        subprocess.run(dialog, check=False, timeout=600)  # noqa: S603
+    except (OSError, subprocess.SubprocessError) as exc:
+        say(root, f"could not show the message: {exc}")
 
 
 #: Held open for the life of the process; the OS drops it however this one ends.
@@ -107,8 +155,8 @@ def claim(root: Path) -> bool:
     slow one.
     """
     global _lock
-    if sys.platform != "win32":
-        return True  # The launcher is exercised here, never shipped here.
+    if not WINDOWS:
+        return _claim_unix(root)
 
     import msvcrt
 
@@ -131,19 +179,68 @@ def claim(root: Path) -> bool:
     return True
 
 
-def bundled_uv() -> Path:
-    """``uv.exe`` as PyInstaller unpacked it, or beside this script when run from source."""
+def _claim_unix(root: Path) -> bool:
+    """The same claim on macOS and Linux: an advisory lock the kernel drops with the process."""
+    global _lock
+    import fcntl
+
+    try:
+        handle = os.open(root / LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as exc:
+        say(root, f"could not open the lock file, running unguarded: {exc}")
+        return True
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(handle)
+        return False
+    _lock = handle
+    return True
+
+
+def release() -> None:
+    """Let go of the claim, for a process that hands the running over to another."""
+    global _lock
+    if _lock is not None:
+        os.close(_lock)
+        _lock = None
+
+
+def bundled(name: str) -> Path:
+    """A file PyInstaller unpacked, or one beside this script when run from source."""
     base = getattr(sys, "_MEIPASS", None)
-    return Path(base or Path(__file__).parent) / "uv.exe"
+    return Path(base or Path(__file__).parent) / name
 
 
 def ensure_uv(root: Path) -> Path:
     """Copy the bundled uv out once, so an install is not reading from a temporary folder."""
-    target = root / "uv.exe"
-    source = bundled_uv()
+    target = root / UV_NAME
+    source = bundled(UV_NAME)
     if source.exists() and (not target.exists() or source.stat().st_size != target.stat().st_size):
-        target.write_bytes(source.read_bytes())
+        shutil.copy2(source, target)
+    if not WINDOWS and target.exists():
+        target.chmod(0o755)
     return target
+
+
+def clean_environment() -> None:
+    """Take back what PyInstaller put in this process's environment for itself, in place.
+
+    A frozen launcher points ``LD_LIBRARY_PATH`` (Linux) and ``DYLD_*`` (macOS) at its own
+    bundled libraries, and anything it starts inherits them: the venv's Python would then load
+    our copy of OpenSSL instead of its own. PyInstaller keeps the original beside it. Done once,
+    first, so every program started from here — uv, the app, the browser, a dialog — is clean.
+    """
+    for name in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH"):
+        original = os.environ.pop(f"{name}_ORIG", None)
+        if original is not None:
+            os.environ[name] = original
+        elif getattr(sys, "frozen", False):
+            os.environ.pop(name, None)
+    # Not PyInstaller's, but a user's: set globally, either points the venv's Python at some
+    # other standard library, and the app fails to import before it can say why.
+    for name in ("PYTHONHOME", "PYTHONPATH"):
+        os.environ.pop(name, None)
 
 
 def other(slot: str) -> str:
@@ -167,12 +264,19 @@ def activate(root: Path, slot: str) -> None:
 
 def venv_python(root: Path, slot: str) -> Path:
     """The console interpreter, which is what ``uv`` expects to be pointed at."""
-    return root / f"venv-{slot}" / "Scripts" / "python.exe"
+    if WINDOWS:
+        return root / f"venv-{slot}" / "Scripts" / "python.exe"
+    return root / f"venv-{slot}" / "bin" / "python"
 
 
 def venv_pythonw(root: Path, slot: str) -> Path:
-    """The windowed interpreter, so running the app flashes no console at the user."""
-    return root / f"venv-{slot}" / "Scripts" / "pythonw.exe"
+    """The windowed interpreter, so running the app flashes no console at the user.
+
+    Only Windows has a separate one; elsewhere a process started without a terminal has none.
+    """
+    if WINDOWS:
+        return root / f"venv-{slot}" / "Scripts" / "pythonw.exe"
+    return venv_python(root, slot)
 
 
 def slot_version(root: Path, slot: str) -> str | None:
@@ -236,6 +340,10 @@ def install(root: Path, uv: Path, slot: str, version: str, wheel: str | None = N
         "UV_PYTHON_INSTALL_DIR": str(root / "python"),
         "UV_CACHE_DIR": str(root / "cache"),
         "UV_NO_CONFIG": "1",
+        # Never a Python found on the machine. Measured: uv took one from ~/.local/bin, and a
+        # Homebrew or python.org one is moved or removed by its own upgrades, taking the venv
+        # built on it down too.
+        "UV_PYTHON_PREFERENCE": "only-managed",
     }
 
     def run(*arguments: str) -> None:
@@ -294,8 +402,8 @@ _child: subprocess.Popen[bytes] | None = None
 
 
 def open_app() -> None:
-    """Show the app. It is a local web page, so this is the whole of "open the window"."""
-    webbrowser.open(f"http://127.0.0.1:{APP_PORT}")
+    """Show the app: its own window where the default browser can draw one, else a tab."""
+    open_window(f"http://127.0.0.1:{APP_PORT}")
 
 
 def close_app(root: Path) -> None:
@@ -336,8 +444,8 @@ class Tray:
 
     Win32 through ctypes rather than a library, because the launcher is frozen separately
     from the app and stays standard library only — and an icon is one hidden window and one
-    message loop. Off Windows every method does nothing; the launcher is exercised there but
-    never shipped there.
+    message loop. Off Windows every method does nothing: macOS and Linux have no icon, and the
+    app's own Quit Alpha Harness (in the account menu) closes it instead.
 
     Without this the app cannot be closed at all: it is a server with no window, so closing
     the browser leaves it running, holding port 8000 and the catalog lock.
@@ -600,6 +708,9 @@ class Tray:
 #: Terminate everything in the job once the last handle to it closes. Windows closes ours
 #: however this process ends — including a kill that runs no code here, which is the point.
 _JOB_KILL_ON_CLOSE = 0x2000
+#: Lets a process the app starts with ``CREATE_BREAKAWAY_FROM_JOB`` leave the job: the
+#: browser window it opens, which must outlive Alpha Harness.
+_JOB_BREAKAWAY_OK = 0x0800
 _JOB_EXTENDED_LIMITS = 9
 _PROCESS_SET_QUOTA, _PROCESS_TERMINATE = 0x0100, 0x0001
 
@@ -685,7 +796,7 @@ def guard_children(root: Path) -> None:
         say(root, f"could not create the job object: {ctypes.get_last_error()}")
         return
     limits = ExtendedLimits()
-    limits.BasicLimitInformation.LimitFlags = _JOB_KILL_ON_CLOSE
+    limits.BasicLimitInformation.LimitFlags = _JOB_KILL_ON_CLOSE | _JOB_BREAKAWAY_OK
     if not kernel32.SetInformationJobObject(
         job, _JOB_EXTENDED_LIMITS, ctypes.byref(limits), ctypes.sizeof(limits)
     ):
@@ -721,6 +832,7 @@ def start(root: Path, slot: str) -> int:
     environment = os.environ | {
         HOME_VARIABLE: str(root),
         LAUNCHER_VARIABLE: BUILD_VERSION,
+        PID_VARIABLE: str(os.getpid()),
         "PYTHONUTF8": "1",
     }
     say(root, f"starting app from slot {slot}")
@@ -741,17 +853,130 @@ def start(root: Path, slot: str) -> int:
     return code
 
 
+def detach(root: Path) -> int:
+    """Hand the running to a background copy of this launcher, and return straight away.
+
+    macOS and Linux only. macOS opens an app that is already running by bringing it forward,
+    never by starting it again, so a launcher that stayed running as the app would make a
+    second double-click do nothing at all; and a windowless app that lingers reads as Not
+    Responding. Handed on, the app the user clicked is gone within a second. The next click
+    starts it afresh, meets the supervisor's claim, and opens the browser, as on Windows.
+    """
+    frozen = getattr(sys, "frozen", False)
+    command = [sys.executable] if frozen else [sys.executable, str(Path(__file__).resolve())]
+    # PYINSTALLER_RESET_ENVIRONMENT: without it the new copy takes itself for a child of this
+    # one and runs from our unpacked folder, which is deleted the moment we exit.
+    # The claim goes with it: an flock belongs to the open file, not to a process, so the copy
+    # holds it the moment it starts and it is never free in between. Let go and claim again
+    # instead, and a second double-click in that gap starts a second supervisor.
+    handed = () if _lock is None else (_lock,)
+    environment = os.environ | {
+        DETACHED_VARIABLE: "1",
+        "PYINSTALLER_RESET_ENVIRONMENT": "1",
+        **({LOCK_FD_VARIABLE: str(_lock)} if _lock is not None else {}),
+    }
+    try:
+        subprocess.Popen(  # noqa: S603 - this very program
+            command,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+            pass_fds=handed,
+        )
+    except OSError as exc:
+        fail(root, f"Could not start Alpha Harness: {exc}")
+        return 1
+    finally:
+        # Only this process's copy of the descriptor: the lock stays with the one handed on.
+        release()
+    say(root, "supervisor started in the background")
+    return 0
+
+
+def _desktop_quoted(path: str) -> str:
+    """A path as a Desktop Entry ``Exec`` argument, so one with a space or a quote still runs.
+
+    The spec applies its string escapes before its quoting rules, which is why one literal
+    backslash takes four.
+    """
+    escaped = "".join("\\\\\\\\" if c == "\\" else f"\\{c}" if c in '"`$' else c for c in path)
+    return '"' + escaped.replace("%", "%%") + '"'
+
+
+def register_menu(root: Path) -> None:
+    """Put Alpha Harness in the Linux applications menu, pointing at wherever this file is.
+
+    A downloaded binary is otherwise found again only by hunting through Downloads. Rewritten
+    whenever the launcher has moved, so the entry never points at a file that is gone.
+    """
+    if WINDOWS or MACOS or not getattr(sys, "frozen", False):
+        return
+    data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    entry = data / "applications" / "alpha-harness.desktop"
+    icon = root / "alpha-harness.svg"
+    source = bundled(ICON_NAME)
+    try:
+        if source.exists() and (not icon.exists() or icon.read_bytes() != source.read_bytes()):
+            icon.write_bytes(source.read_bytes())
+        path = str(Path(sys.executable).resolve())
+        text = "\n".join(
+            (
+                "[Desktop Entry]",
+                "Type=Application",
+                "Name=Alpha Harness",
+                "Comment=Alpha generation for WorldQuant BRAIN",
+                f"Exec={_desktop_quoted(path)}",
+                f"Icon={icon}",
+                "Terminal=false",
+                "Categories=Office;Finance;",
+                "",
+            )
+        )
+        if not entry.exists() or entry.read_text(encoding="utf-8") != text:
+            entry.parent.mkdir(parents=True, exist_ok=True)
+            entry.write_text(text, encoding="utf-8")
+            say(root, f"applications menu entry -> {path}")
+    except OSError as exc:
+        say(root, f"could not add the applications menu entry: {exc}")
+
+
+def take_claim(root: Path) -> bool:
+    """Take over the claim the copy that started this one handed on (see :func:`detach`)."""
+    global _lock
+    import fcntl
+
+    handed = os.environ.pop(LOCK_FD_VARIABLE, "")
+    if not handed.isdigit():
+        return claim(root)
+    try:
+        # Already ours, so this succeeds at once; it is here to prove the descriptor is.
+        fcntl.flock(int(handed), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        say(root, f"the handed-on claim was not usable, claiming afresh: {exc}")
+        return claim(root)
+    # Handed on as inheritable, which it must not stay: subprocess closes it in every child
+    # today, but a program started any other way would keep the claim alive after us.
+    os.set_inheritable(int(handed), False)
+    _lock = int(handed)
+    return True
+
+
 def main() -> int:
+    clean_environment()
     root = home()
     root.mkdir(parents=True, exist_ok=True)
     say(root, f"launcher {BUILD_VERSION}")
-    if not claim(root):
+    handed_over = bool(os.environ.get(DETACHED_VARIABLE))
+    if not (take_claim(root) if handed_over else claim(root)):
         # Double-clicking a second time is not an error, it is someone asking to see the app.
         # Unless the first copy is still doing its first install, in which case there is
         # nothing to show yet and a browser tab would just fail to connect.
         if any(slot_version(root, slot) for slot in SLOTS):
             say(root, "already running; opening the browser at it")
-            webbrowser.open(f"http://127.0.0.1:{APP_PORT}")
+            open_app()
         else:
             fail(
                 root,
@@ -759,6 +984,9 @@ def main() -> int:
                 "first time. It opens in your browser when it is ready.",
             )
         return 0
+    if not WINDOWS and not handed_over:
+        register_menu(root)
+        return detach(root)
     try:
         uv = ensure_uv(root)
     except OSError as exc:

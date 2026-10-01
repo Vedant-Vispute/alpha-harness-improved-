@@ -9,7 +9,7 @@ import { PlusIcon, Trash2Icon } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { errorMessage } from '@/api/http'
-import { scopeLabel, toScopeBody } from '@/api/types'
+import { type Scope, scopeLabel, toScopeBody } from '@/api/types'
 import { cn } from '@/lib/cn'
 import { fmt } from '@/lib/format'
 import { useScope } from '@/lib/scope'
@@ -21,9 +21,9 @@ import {
   chat,
   type Reasoning,
 } from '@/screens/ai/api'
+import { DatasetChips, useDatasetTree } from '@/screens/data/dataset-chips'
 import { PromptPicker, useChosenPrompt } from '@/screens/prompts/picker'
 import {
-  Badge,
   Button,
   Empty,
   ErrorNotice,
@@ -288,7 +288,12 @@ export function Assistant({ threadId }: { threadId: number | null }) {
                 </Empty>
               ))}
             {messages.map((m) => (
-              <Turn key={m.id} message={m} reply={m.id === lastAssistantId ? extrasFor : null} />
+              <Turn
+                key={m.id}
+                message={m}
+                reply={m.id === lastAssistantId ? extrasFor : null}
+                scope={scope}
+              />
             ))}
             {say.isPending && (
               <>
@@ -407,6 +412,17 @@ export function Assistant({ threadId }: { threadId: number | null }) {
   )
 }
 
+/** The datasets a reply drew its fields from, placed in the chat's market. */
+function ReplyDatasets({ scope, ids }: { scope: Scope; ids: string[] }) {
+  const { tree, nameOf, ready } = useDatasetTree(scope)
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-body-compact text-ink-subtle">Datasets</span>
+      <DatasetChips tree={tree} value={ids} nameOf={nameOf} ready={ready} />
+    </div>
+  )
+}
+
 function UserBubble({ text }: { text: string }) {
   return (
     <div className="max-w-[85%] self-end rounded-lg bg-surface-2 px-3 py-2 text-body break-words whitespace-pre-wrap text-ink">
@@ -415,7 +431,15 @@ function UserBubble({ text }: { text: string }) {
   )
 }
 
-function Turn({ message, reply }: { message: ChatMessage; reply: ChatReply | null }) {
+function Turn({
+  message,
+  reply,
+  scope,
+}: {
+  message: ChatMessage
+  reply: ChatReply | null
+  scope: Scope
+}) {
   if (message.role === 'user') return <UserBubble text={message.text} />
 
   const { meta } = message
@@ -440,16 +464,7 @@ function Turn({ message, reply }: { message: ChatMessage; reply: ChatReply | nul
         {message.text}
       </p>
       <Picks picks={reply?.picks ?? meta.picks ?? []} />
-      {datasets.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1 text-body-compact text-ink-subtle">
-          Datasets
-          {datasets.map((d) => (
-            <Badge key={d} tone="outline" className="num">
-              {d}
-            </Badge>
-          ))}
-        </div>
-      )}
+      {datasets.length > 0 && <ReplyDatasets scope={scope} ids={datasets} />}
       {dropped.length > 0 && (
         <Notice tone="warn" title="Named by the model but not in the catalogue, so dropped">
           <span className="num">{dropped.join(', ')}</span>

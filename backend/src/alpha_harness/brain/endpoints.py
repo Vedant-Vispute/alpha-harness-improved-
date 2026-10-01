@@ -287,6 +287,19 @@ class BrainEndpoints:
         r = await self.client.request("GET", "/users/self/alphas/summary", version=V_ALPHA_SUMMARY)
         return r.body if isinstance(r.body, dict) else {}
 
+    # -- competitions ----------------------------------------------------
+
+    async def competitions(self) -> list[dict[str, Any]]:
+        """Every competition, past and ongoing, with this account's ``status`` in each."""
+        r = await self.client.request("GET", "/competitions")
+        body = r.body if isinstance(r.body, dict) else {}
+        return list(body.get("results") or [])
+
+    async def competition(self, competition_id: str) -> dict[str, Any]:
+        """One competition. Only this carries the account's ``leaderboard`` standing."""
+        r = await self.client.request("GET", f"/competitions/{competition_id}")
+        return r.body if isinstance(r.body, dict) else {}
+
     # -- data catalog ----------------------------------------------------
 
     async def list_data_categories(self) -> list[DataCategory]:

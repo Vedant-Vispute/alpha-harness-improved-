@@ -22,6 +22,8 @@ colors:
   ink-tertiary: "#52565e"
   pnl-positive: "#27a644"
   pnl-negative: "#e5484d"
+  pnl-positive-text: "#54cb67"
+  pnl-negative-text: "#ff9792"
   status-running: "#3b82f6"
   status-queued: "#8a8f98"
   status-warning: "#f59e0b"
@@ -149,7 +151,7 @@ components:
     rounded: "{rounded.sm}"
   button-danger:
     backgroundColor: "{colors.surface-1}"
-    textColor: "{colors.pnl-negative}"
+    textColor: "{colors.pnl-negative-text}"
     typography: "{typography.body}"
     rounded: "{rounded.sm}"
   input:
@@ -201,11 +203,11 @@ components:
     backgroundColor: "{colors.surface-2}"
     textColor: "{colors.ink-subtle}"
   metric-badge-profit:
-    textColor: "{colors.pnl-positive}"
+    textColor: "{colors.pnl-positive-text}"
     typography: "{typography.mono-metric}"
     rounded: "{rounded.xs}"
   metric-badge-loss:
-    textColor: "{colors.pnl-negative}"
+    textColor: "{colors.pnl-negative-text}"
     typography: "{typography.mono-metric}"
     rounded: "{rounded.xs}"
   metric-badge-warn:
@@ -223,6 +225,14 @@ components:
     height: 34px
   data-table-row-hover:
     backgroundColor: "{colors.surface-2}"
+  check-bar-pass:
+    backgroundColor: "{colors.pnl-positive}"
+    rounded: "{rounded.pill}"
+    height: 4px
+  check-bar-fail:
+    backgroundColor: "{colors.pnl-negative}"
+    rounded: "{rounded.pill}"
+    height: 4px
   quota-gauge-track:
     backgroundColor: "{colors.surface-2}"
     rounded: "{rounded.pill}"
@@ -303,7 +313,9 @@ one component.
   selection: the primary button, the focus ring, the selected row, the progress fill. Never
   decoration.
 - **`pnl-positive` / `pnl-negative`** — the sign of a number. Applied through `signTone(value)`,
-  never chosen by hand, so a red figure always means a negative figure.
+  never chosen by hand, so a red figure always means a negative figure. These two paint marks,
+  fills and edges; a figure is written in **`pnl-positive-text` / `pnl-negative-text`**, the same
+  hues lifted in OKLCH lightness until they clear the Lc 60 floor (see Floors).
 - **`status-idle` / `status-queued` / `status-running` / `status-warning`** — what a simulation
   core is doing. The four states of the core matrix in the top bar.
 - **`ink` → `ink-muted` → `ink-subtle` → `ink-tertiary`** — four text steps. Body copy is `ink`,
@@ -336,14 +348,18 @@ text on near-black and this canvas is #010102. Measured with `frontend/tools/okl
 | --- | --- | --- | --- |
 | `ink` | 102.7 | 17.90:1 | Body text at any size |
 | `ink-muted` | 81.0 | 13.04:1 | Body text at any size |
+| `pnl-positive-text` | 61.7 | 9.17:1 | Figures a consultant acts on |
+| `pnl-negative-text` | 61.5 | 9.16:1 | Figures a consultant acts on |
 | `status-warning` | 60.0 | 8.87:1 | Fluent text, 14px+ |
-| `pnl-positive` | 43.0 | 6.01:1 | Large or bold only |
+| `pnl-positive` | 43.0 | 6.01:1 | Marks, fills and edges; not text |
 | `ink-subtle` | 41.5 | 5.86:1 | Large or bold only |
-| `pnl-negative` | 35.8 | 4.87:1 | Large or bold only |
+| `pnl-negative` | 35.8 | 4.87:1 | Marks, fills and edges; not text |
 | `ink-tertiary` | 16.0 | 2.59:1 | Non-text only, which is all it is used for |
 
 The floor for new work is **Lc 75 for anything a consultant reads as a sentence** and **Lc 60 for
-a figure they have to act on**. Three tokens sit below that today; see Known Gaps. Note that APCA
+a figure they have to act on**. The two `-text` tokens hold Lc 60 on every surface a figure sits
+on, not just `surface-1`: the lowest is 60.2, on the profit and loss tints. One token sits below
+the floor today; see Known Gaps. Note that APCA
 is the stricter judge here — `ink-subtle` passes WCAG AA at 5.86:1 while APCA puts it below the
 body-text threshold — which is why deferring to it is not a relaxation.
 
@@ -525,12 +541,10 @@ than 300ms.
 
 ## Known Gaps
 
-- **Three tokens sit under the contrast floor.** `ink-subtle` (Lc 41.5) carries metric labels and
-  table column headers at 11px, and `pnl-positive` (43.0) and `pnl-negative` (35.8) carry figures
-  at 13px — all below the Lc 60 floor for a figure a consultant acts on. Raising them means
-  lightening the three tokens, which changes every screen, so it is a deliberate debt rather than
-  an oversight. The sign of a number is never carried by its colour alone, which is what keeps
-  this survivable.
+- **One token sits under the contrast floor.** `ink-subtle` (Lc 41.5) carries metric labels and
+  table column headers at 11px, below the Lc 60 floor. Raising it means lightening a token every
+  screen uses, so it is a deliberate debt rather than an oversight. Figures cleared the same
+  floor through their own `-text` tokens, which left the fills and edges untouched.
 - **No automated contrast gate.** `tools/oklch.ts` can measure APCA, ΔE_OK and colour-vision
   simulation, but nothing runs it: the frontend has no test runner. `design-lint.sh` reports the
   format's own WCAG 2 findings as advisories and does not fail on them, because WCAG 2 is not

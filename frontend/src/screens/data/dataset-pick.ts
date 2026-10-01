@@ -1,10 +1,12 @@
 /** Picking datasets, or single fields of them, in the Data Explorer's Fields table for a lab. */
 
 import { createPick } from '@/lib/pick'
+import type { FieldFilterState } from '@/screens/data/state'
 
 export type PickFrom =
   | '/labs/search'
   | '/labs/template'
+  | '/labs/template/basic'
   | '/labs/power-pool'
   | '/labs/region-agnostic'
 
@@ -23,7 +25,16 @@ export interface FieldPick {
   rankBy: string | null
 }
 
-export const useDatasetPick = createPick<PickFrom, FieldPick>(
+/**
+ * What a pick carries back besides its dataset ids: the filter they were chosen under, which
+ * the lab applies to their fields, or the single fields ticked instead, ranked. Fields win:
+ * with some, the filter is `null` because the fields are already exactly what was wanted.
+ */
+export interface DatasetPickExtra extends FieldPick {
+  filter: FieldFilterState | null
+}
+
+export const useDatasetPick = createPick<PickFrom, DatasetPickExtra>(
   'alpha-harness-dataset-pick',
   '/labs/search',
 )

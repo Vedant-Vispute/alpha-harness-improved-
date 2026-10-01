@@ -9,6 +9,7 @@ import { useCores } from '@/lib/preferences'
 import { DEFAULT_SCOPE, useScopeOptions } from '@/lib/scope'
 import { useProviderLabel } from '@/screens/ai/shared'
 import type { PickedField } from '@/screens/data/dataset-pick'
+import type { FieldFilterState } from '@/screens/data/state'
 import { PromptPicker, useChosenPrompt } from '@/screens/prompts/picker'
 import { AddTaskButtons, useAddTask } from '@/screens/research-labs/add-task'
 import {
@@ -43,6 +44,7 @@ interface PowerPoolDraft {
   delay: number
   universe: string
   datasetIds: string[]
+  fieldFilter: FieldFilterState | null
   /** Single fields, ranked; the prompt shows only these. Absent from an older saved draft. */
   fields?: PickedField[]
   rankBy?: string | null
@@ -63,6 +65,7 @@ const useDraft = create<PowerPoolDraft>()(
       delay: DEFAULT_SCOPE.delay,
       universe: DEFAULT_SCOPE.universe,
       datasetIds: [],
+      fieldFilter: null,
       fields: [],
       rankBy: null,
       cores: null,
@@ -119,6 +122,7 @@ export function PowerPoolLabScreen() {
     dataset_ids: draft.datasetIds,
     field_ids: fieldIdsOf(draft),
     rank_by: draft.fields?.length ? (draft.rankBy ?? null) : null,
+    field_filter: draft.fieldFilter ?? null,
     model,
     prompt_id: promptId,
     neutralizations: draft.neutralizations,
@@ -195,7 +199,6 @@ export function PowerPoolLabScreen() {
               available={scopeOptions.neutralizations}
               value={draft.neutralizations}
               onChange={(next) => set({ neutralizations: next })}
-              hint="None chosen draws from every one BRAIN offers here."
             />
           )}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">

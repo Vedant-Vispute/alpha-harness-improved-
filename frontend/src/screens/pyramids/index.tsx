@@ -1,6 +1,6 @@
 /**
- * Sync with BRAIN: the sync matrix that downloads every market's Data Fields, above BRAIN's
- * Pyramid Multiplier for every Region · Delay · Dataset Category.
+ * Pyramids: BRAIN's Pyramid Multiplier for every Region · Delay · Dataset Category, and the
+ * Alphas submitted in each this quarter. A cell opens its market in the Data Explorer.
  */
 
 import { useQuery } from '@tanstack/react-query'
@@ -13,7 +13,6 @@ import { DASH, fmt } from '@/lib/format'
 import { useScope } from '@/lib/scope'
 import { useFieldFilter } from '@/screens/data/state'
 import { Empty, ErrorNotice, Page, PageHeader, Panel, Segmented, Skeleton } from '@/ui/kit'
-import { RegionAgnosticHero, SyncHero } from './sync-matrix'
 
 const REFRESH_MS = 10 * 60 * 1000
 
@@ -201,7 +200,7 @@ export function PyramidsScreen() {
     }
   }, [data?.cells])
   const navigate = useNavigate()
-  const [scope, update] = useScope('data')
+  const [, update] = useScope('data')
   const open = (change: Partial<Scope>) => {
     update(change)
     void navigate({ to: '/data' })
@@ -222,9 +221,10 @@ export function PyramidsScreen() {
 
   return (
     <Page>
-      <PageHeader title="Sync with BRAIN" description="Download Data Fields" />
-      <SyncHero scope={scope} onPick={open} />
-      <RegionAgnosticHero scope={scope} onPick={open} />
+      <PageHeader
+        title="Pyramids"
+        description="BRAIN's Pyramid Multiplier for every Region, Delay and Dataset Category, and the Alphas you submitted in each this quarter."
+      />
       <Panel
         title={view === 'alphas' ? 'Pyramid Alpha Distribution' : 'Pyramid Multiplier Map'}
         description={

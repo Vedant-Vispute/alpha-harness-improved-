@@ -14,10 +14,11 @@
 #
 # The wheel carries the app and its built UI; `constraints.txt` pins every transitive
 # dependency to `uv.lock`, so an install a year from now resolves to what was tested today.
-# `AlphaHarness.exe` only changes when the launcher does — users who already have it keep it
-# and take the wheel alone, which is the point of splitting them.
+# The launcher (`AlphaHarness.exe`, `AlphaHarness.app`, the Linux `AlphaHarness`) only changes
+# when the launcher does — users who already have it keep it and take the wheel alone, which is
+# the point of splitting them.
 #
-# The exe must be built on Windows: neither PyInstaller nor Nuitka cross-compiles.
+# Each launcher is built on its own system: neither PyInstaller nor Nuitka cross-compiles.
 
 name: release
 
@@ -122,12 +123,37 @@ jobs:
           path: backend/dist/*
 
   launcher:
-    # After the wheel job, so the version baked into the exe is the one that passed the
+    # After the wheel job, so the version baked into the launcher is the one that passed the
     # canonical check rather than whatever the tag happened to say.
     needs: wheel
-    runs-on: windows-latest
+    strategy:
+      # One platform failing must not cancel the others: a run should report every build.
+      # Publishing still needs all four, so a partial release can never go out.
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            asset: AlphaHarness.exe
+          # Apple Silicon.
+          - os: macos-latest
+            asset: AlphaHarness-macOS-arm64.zip
+          # The last Intel label there will be: macOS 26 is the final release for Intel Macs,
+          # and there is no -latest alias for Intel on the standard runners.
+          - os: macos-26-intel
+            asset: AlphaHarness-macOS-x86_64.zip
+          # The binary needs glibc 2.35 or newer, so it runs on Ubuntu 22.04 and later. Measured
+          # on a glibc 2.43 build: the floor is libgcc_s, which PyInstaller bundles from the
+          # runner; uv and the bundled Python need only 2.17.
+          - os: ubuntu-latest
+            asset: AlphaHarness-linux-x86_64
+    runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.wheel.outputs.version }}
+      ASSET: ${{ matrix.asset }}
+      # uv's own Python, never one the runner has installed. Measured on v2026.10.1rc2: the
+      # macOS runners' own Python 3.14 is built for the runner's macOS, and the launchers it
+      # froze ran on macOS 26 or 15 only. uv's own needs 11.0 (Apple Silicon) or 10.15 (Intel).
+      UV_PYTHON_PREFERENCE: only-managed
     steps:
       - uses: actions/checkout@v7
       # Pinned, not `latest`: this binary ships inside the exe, so an upstream release must
@@ -139,12 +165,23 @@ jobs:
           version: "0.12.18"
           python-version: "3.14"
       - name: Bundle uv.exe
+        if: runner.os == 'Windows'
         shell: pwsh
         env:
           UV_PATH: ${{ steps.uv.outputs.uv-path }}
+        # setup-uv reports the binary without its extension on Windows (measured: `...\uv`),
+        # while the file on disk is uv.exe.
         run: |
-          Copy-Item $env:UV_PATH launcher/uv.exe
+          $uv = if (Test-Path -LiteralPath $env:UV_PATH -PathType Leaf) { $env:UV_PATH } else { "$env:UV_PATH.exe" }
+          Copy-Item -LiteralPath $uv launcher/uv.exe
           ./launcher/uv.exe --version
+      - name: Bundle uv
+        if: runner.os != 'Windows'
+        env:
+          UV_PATH: ${{ steps.uv.outputs.uv-path }}
+        run: |
+          cp "$UV_PATH" launcher/uv
+          ./launcher/uv --version
 
       # A fresh machine installs exactly the version this launcher shipped with; the in-app
       # updater moves it on from there.
@@ -169,22 +206,101 @@ jobs:
           PY
 
       - name: Build AlphaHarness.exe
+        if: runner.os == 'Windows'
         shell: bash
         run: |
           # Semicolon: PyInstaller splits SOURCE from DEST on os.pathsep, and this runs on
           # Windows however bash-shaped the step looks.
+          # --paths: the launcher shares one module with the app, alpha_harness.window.
           # --icon: the tray reads the running exe's own icon, so this is what puts our
           # mark in the notification area rather than Windows' generic one.
           uvx --from pyinstaller==6.22.3 pyinstaller --onefile --windowed --name AlphaHarness \
             --add-binary "launcher/uv.exe;." \
             --icon launcher/mark.ico \
             --distpath dist \
+            --paths backend/src \
             launcher/alpha_harness_launcher.py
+
+      # An .app is a folder, so macOS builds one-folder rather than one-file. LSUIElement keeps
+      # it out of the Dock: it hands itself to a background copy within a second, and a Dock
+      # icon that bounces and vanishes reads as a crash. Editing Info.plist breaks PyInstaller's
+      # ad-hoc signature, and Apple Silicon refuses to run an unsigned binary, so it is
+      # re-signed; ditto keeps the bundle's symlinks, which a plain zip would flatten.
+      # Pillow turns the .ico into the .icns an .app needs.
+      - name: Build AlphaHarness.app
+        if: runner.os == 'macOS'
+        run: |
+          uvx --from pyinstaller==6.22.3 --with pillow==12.3.0 pyinstaller --windowed \
+            --name AlphaHarness \
+            --osx-bundle-identifier io.github.residual-lab.alpha-harness \
+            --add-binary "launcher/uv:." \
+            --icon launcher/mark.ico \
+            --distpath dist \
+            --paths backend/src \
+            launcher/alpha_harness_launcher.py
+          plutil -replace LSUIElement -bool true dist/AlphaHarness.app/Contents/Info.plist
+          codesign --force --deep --sign - dist/AlphaHarness.app
+          ditto -c -k --keepParent dist/AlphaHarness.app "dist/$ASSET"
+
+      # Nothing else would notice a launcher that only opens on the runner's own macOS: CI
+      # builds it without complaint and the Macs it refuses are the users'.
+      - name: Check the oldest macOS it runs on
+        if: runner.os == 'macOS'
+        run: |
+          uv run --no-project python - <<'PY'
+          import pathlib, struct, sys
+
+          FLOOR = (11, 0)
+
+
+          def minimums(data):
+              """Each architecture's minimum macOS, from a thin or fat Mach-O's load commands."""
+              if data[:4] == b"\xca\xfe\xba\xbe":
+                  count = struct.unpack(">I", data[4:8])[0]
+                  arches = [struct.unpack(">5I", data[8 + 20 * i : 28 + 20 * i]) for i in range(count)]
+                  return [v for _, _, at, size, _ in arches for v in minimums(data[at : at + size])]
+              if data[:4] != b"\xcf\xfa\xed\xfe":
+                  return []
+              found, at = [], 32
+              for _ in range(struct.unpack("<I", data[16:20])[0]):
+                  command, size = struct.unpack("<II", data[at : at + 8])
+                  # LC_BUILD_VERSION holds it 12 bytes in; the older LC_VERSION_MIN_MACOSX, 8.
+                  offset = {0x32: 12, 0x24: 8}.get(command)
+                  if offset:
+                      value = struct.unpack("<I", data[at + offset : at + offset + 4])[0]
+                      found.append((value >> 16, (value >> 8) & 0xFF))
+                  at += size
+              return found
+
+
+          too_new = sorted(
+              {(version, file.name)
+               for file in pathlib.Path("dist/AlphaHarness.app").rglob("*")
+               if file.is_file() and not file.is_symlink()
+               for version in minimums(file.read_bytes())
+               if version > FLOOR}
+          )
+          for (major, minor), name in too_new:
+              print(f"::error::{name} needs macOS {major}.{minor}; the floor is {FLOOR[0]}.{FLOOR[1]}")
+          sys.exit(1 if too_new else 0)
+          PY
+
+      # The mark goes in for the applications menu entry the launcher writes on first run.
+      - name: Build the Linux launcher
+        if: runner.os == 'Linux'
+        run: |
+          uvx --from pyinstaller==6.22.3 pyinstaller --onefile --name AlphaHarness \
+            --add-binary "launcher/uv:." \
+            --add-data "frontend/public/mark.svg:." \
+            --distpath dist \
+            --paths backend/src \
+            launcher/alpha_harness_launcher.py
+          mv dist/AlphaHarness "dist/$ASSET"
 
       - uses: actions/upload-artifact@v7
         with:
-          name: launcher
-          path: dist/AlphaHarness.exe
+          name: launcher-${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
 
   publish:
     needs: [wheel, launcher]
@@ -203,10 +319,12 @@ jobs:
           prerelease: ${{ needs.wheel.outputs.prerelease == 'true' }}
           files: release/*
           body: |
-            **New here?** Download `AlphaHarness.exe` and run it. It installs everything on
-            first start, which takes a couple of minutes, then opens in your browser.
+            **New here?** Download the one for your computer and open it. It installs everything on first start, which takes a couple of minutes, then opens in your browser.
 
-            Windows will warn that it does not recognise the app — it is unsigned. Choose
-            **More info** then **Run anyway**.
+            - **Windows:** `AlphaHarness.exe`. Windows warns that it does not recognise the app — it is unsigned. Choose **More info**, then **Run anyway**.
+            - **Mac:** `AlphaHarness-macOS-arm64.zip` for Apple Silicon (M1 or later), or `AlphaHarness-macOS-x86_64.zip` for Intel. Open the zip and drag **AlphaHarness** into Applications. The first time, macOS will not open it because it is unsigned: open **System Settings › Privacy & Security**, scroll down, and choose **Open Anyway**.
+            - **Linux:** `AlphaHarness-linux-x86_64`. Right-click it › **Properties** › **Allow executing file as program** (or `chmod +x` it), then open it. It adds Alpha Harness to your applications menu.
+
+            To close it: the tray icon on Windows, or **Quit Alpha Harness** in the account menu at the bottom of the sidebar.
 
             **Already have it?** Do nothing. Alpha Harness offers this version in the app.

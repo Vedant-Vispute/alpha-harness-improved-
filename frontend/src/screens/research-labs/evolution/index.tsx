@@ -359,7 +359,6 @@ export function EvolutionLabScreen() {
               available={scopeOptions.neutralizations}
               value={draft.neutralizations}
               onChange={(next) => set({ neutralizations: next })}
-              hint="None chosen breeds within Market, Sector, Industry and Subindustry."
             />
           )}
           <Disclosure summary="Advanced">

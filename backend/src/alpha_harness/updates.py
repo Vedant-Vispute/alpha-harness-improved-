@@ -2,9 +2,9 @@
 
 The app never upgrades itself in place. On Windows a running process keeps its extension
 modules open, so an install that touches ``duckdb`` or ``numpy`` fails part-way and leaves a
-broken tree behind. The Windows launcher supervises the app instead: Update writes the wanted
-version to a file, the app exits, the launcher installs that version with ``uv`` and starts
-the app again.
+broken tree behind. The launcher supervises the app instead, on Windows, macOS and Linux alike:
+Update writes the wanted version to a file, the app exits, the launcher installs that version
+with ``uv`` and starts the app again.
 
 The file is what matters, not the restart. If the app cannot close itself the request still
 sits there, and the next start applies it — so a failed shutdown costs the user one manual
@@ -18,6 +18,8 @@ why, rather than failing at the last step.
 import asyncio
 import json
 import os
+import platform
+import sys
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -46,6 +48,8 @@ HOME_VARIABLE = "ALPHA_HARNESS_HOME"
 #: Set by the launcher to its own version. Absent when the app was started another way, and
 #: on any exe built before this variable existed.
 LAUNCHER_VARIABLE = "ALPHA_HARNESS_LAUNCHER"
+#: The launcher's process id, from a launcher new enough to say so.
+PID_VARIABLE = "ALPHA_HARNESS_LAUNCHER_PID"
 
 #: The oldest ``AlphaHarness.exe`` this release works fully with.
 #:
@@ -53,8 +57,27 @@ LAUNCHER_VARIABLE = "ALPHA_HARNESS_LAUNCHER"
 #: release, so comparing it to the wheel would nag after every update for nothing. The system
 #: tray arrived in this one, and an older exe simply has no tray.
 LAUNCHER_NEEDED = "2026.9.21.1"
+
+
+def _launcher_asset() -> str:
+    """The release download for this machine, named as the release names it."""
+    if sys.platform == "win32":
+        return "AlphaHarness.exe"
+    arm = platform.machine().lower() in ("arm64", "aarch64")
+    if sys.platform == "darwin":
+        return f"AlphaHarness-macOS-{'arm64' if arm else 'x86_64'}.zip"
+    return "AlphaHarness-linux-x86_64"
+
+
+#: The launcher download to fetch for this machine, for the notice that asks for a newer one.
+LAUNCHER_FILE = _launcher_asset()
 #: Read by the launcher once the app has exited, then deleted.
 REQUEST_FILE = "update-request.json"
+#: Left by an app handing itself over to an update: its page reloads itself once the new one
+#: answers, so the new one must not open a second window beside it.
+RELOADING_FILE = "page-reloads.json"
+#: Longer than any install takes. Past it the page has surely given up, and a start opens one.
+RELOADING_SECONDS = 1800
 #: Written by the launcher when an install failed, so the app can say why rather than offer
 #: the same update again with no explanation.
 ERROR_FILE = "update-error.json"
@@ -113,7 +136,7 @@ def is_release() -> bool:
 
 
 def launcher_version() -> str | None:
-    """Which ``AlphaHarness.exe`` started this app, when one did and it says so."""
+    """Which launcher started this app, when one did and it says so."""
     return os.environ.get(LAUNCHER_VARIABLE) or None
 
 
@@ -307,8 +330,21 @@ def request(version: str, *, wheel_url: str | None = None) -> Path:
         ),
         encoding="utf-8",
     )
+    (home / RELOADING_FILE).write_text(json.dumps({"at": time.time()}), encoding="utf-8")
     log.warning("update.requested", version=version, path=str(path))
     return path
+
+
+def page_reloads() -> bool:
+    """Whether a page left open by the version before this one will reload onto it.
+
+    Taken once: only the start straight after an update is spared from opening a window.
+    """
+    at = _launcher_json(RELOADING_FILE).get("at")
+    home = launcher_home()
+    if home is not None:
+        (home / RELOADING_FILE).unlink(missing_ok=True)
+    return isinstance(at, int | float) and time.time() - at < RELOADING_SECONDS
 
 
 def _launcher_json(name: str) -> dict[str, Any]:

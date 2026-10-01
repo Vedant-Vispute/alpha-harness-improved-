@@ -41,7 +41,7 @@ export function useAddTask(add: () => Promise<AddedTask>) {
     },
     onSuccess: (_task, run) => {
       refresh()
-      toast.success(run ? 'Task started' : 'Added to Tasks', {
+      toast.success(run ? 'Task Started' : 'Added to Tasks', {
         description: run
           ? 'It runs as soon as its cores are free. Follow it in Tasks.'
           : "Not started yet. Press Run on it in Tasks when you're ready.",

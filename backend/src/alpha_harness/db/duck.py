@@ -394,23 +394,16 @@ class CatalogLockedError(RuntimeError):
 
 
 def _load_fts(conn: duckdb.DuckDBPyConnection) -> bool:
-    """Whether full-text search can be used at all.
+    """Whether full-text search can be used: ``fts`` is on disk and loads.
 
-    DuckDB ships ``fts`` from its repository rather than statically, so the first
-    ``INSTALL`` needs a network. Loading is tried first, because once the extension is on
-    disk that is the whole job and ``INSTALL`` is a registry round trip for nothing. A
-    machine that has never had a network keeps substring search, which is worse but not
-    broken — so this reports rather than raises.
+    DuckDB ships ``fts`` from its repository rather than statically, and fetching it is
+    :meth:`Catalog.install_fts`'s job, never opening's. A machine that cannot reach the
+    repository keeps substring search, which is worse but not broken.
     """
     try:
         conn.execute("LOAD fts")
     except duckdb.Error:
-        try:
-            conn.execute("INSTALL fts")
-            conn.execute("LOAD fts")
-        except Exception:
-            log.info("catalog.fts_unavailable", exc_info=True)
-            return False
+        return False
     return True
 
 
@@ -436,15 +429,18 @@ class Catalog:
 
     def _open_sync(self) -> None:
         try:
-            # DuckDB's zone otherwise defaults to the machine's, shifting every stored
-            # time by the local offset. Set here, not with SET, so read cursors get it too.
-            self._conn = duckdb.connect(str(self.path), config={"TimeZone": "UTC"})
+            self._conn = duckdb.connect(str(self.path))
         except duckdb.IOException as exc:
             # DuckDB is single-writer, so a second backend is the likely cause. The raw
             # exception is a wall of text ending in a URL; say the useful thing instead.
             if "lock" not in str(exc).lower():
                 raise
             raise CatalogLockedError(self.path, str(exc)) from exc
+        # DuckDB's zone otherwise defaults to the machine's, shifting every stored time by the
+        # local offset. GLOBAL, so read cursors get it too. Never as a ``connect`` option: that
+        # makes DuckDB download its time zone extension before loading the one built in, and
+        # where the download is blocked the catalog does not open at all.
+        self._conn.execute("SET GLOBAL TimeZone = 'UTC'")
         self._conn.execute(SCHEMA)
         for table, column, kind in self._conn.execute(
             "SELECT table_name, column_name, data_type FROM duckdb_columns() "
@@ -453,6 +449,25 @@ class Catalog:
             if kind in _ARROW:
                 self._types.setdefault(table, {})[column] = _ARROW[kind]
         self.fts = _load_fts(self._conn)
+
+    async def install_fts(self) -> bool:
+        """Download ``fts`` from DuckDB's repository, then load it. Whether search can use it.
+
+        On a scratch connection, so the download holds no lock: where the repository is
+        blocked, DuckDB retries for up to a couple of minutes before it gives up.
+        """
+
+        def download() -> None:
+            with duckdb.connect() as scratch:
+                scratch.execute("INSTALL fts")
+
+        try:
+            await asyncio.to_thread(download)
+        except duckdb.Error:
+            log.info("catalog.fts_unavailable", exc_info=True)
+            return False
+        self.fts = await self._locked(_load_fts, self._require())
+        return self.fts
 
     async def execute(self, sql: str, params: list[Any] | None = None) -> None:
         """Run one statement. For DDL and small writes; bulk loads go through Arrow."""

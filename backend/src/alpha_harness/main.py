@@ -30,6 +30,7 @@ from .api import (
     auth,
     catalog,
     chat,
+    competitions,
     ga,
     lab_tasks,
     llm,
@@ -41,7 +42,9 @@ from .api import (
     region_agnostic_lab,
     search_lab,
     sims,
+    super_lab,
     tasks,
+    template_basic_lab,
     template_lab,
     today,
     tools,
@@ -100,9 +103,15 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-        state = AppState()
-        app.state.harness = state
-        await state.startup()
+        try:
+            state = AppState()
+            app.state.harness = state
+            await state.startup()
+        except Exception as exc:
+            # uvicorn reports this and then exits through a traceback of its own, whose last
+            # lines are all the launcher shows; ``__main__`` says this instead.
+            app.state.startup_failure = exc
+            raise
 
         async def install(release: updates.Release) -> None:
             updates.request(release.version, wheel_url=release.wheel_url)
@@ -125,6 +134,11 @@ def create_app() -> FastAPI:
         version=updates.current(),
         lifespan=lifespan,
     )
+
+    # Set by the first request a page of ours makes, so a start straight after an update can
+    # tell whether the page that asked for it came back (see ``__main__``).
+    page_seen = asyncio.Event()
+    app.state.page_seen = page_seen
 
     # DNS rebinding: a page whose hostname resolves to 127.0.0.1 is "same-origin" to the
     # browser, so the header checks below pass. Its Host header still names that hostname.
@@ -151,6 +165,7 @@ def create_app() -> FastAPI:
                 {"detail": {"code": "forbidden", "message": "Writes must come from the app."}},
                 status_code=403,
             )
+        page_seen.set()
         return await call_next(request)
 
     install_exception_handlers(app)
@@ -160,6 +175,7 @@ def create_app() -> FastAPI:
     app.include_router(sims.router)
     app.include_router(alphas.router)
     app.include_router(template_lab.router)
+    app.include_router(template_basic_lab.router)
     app.include_router(ga.router)
     app.include_router(llm.router)
     app.include_router(prompts.router)
@@ -173,7 +189,9 @@ def create_app() -> FastAPI:
     app.include_router(lab_tasks.router)
     app.include_router(power_pool_lab.router)
     app.include_router(region_agnostic_lab.router)
+    app.include_router(super_lab.router)
     app.include_router(chat.router)
+    app.include_router(competitions.router)
     app.include_router(update.router)
     app.include_router(preferences.router)
     app.include_router(ws.router)

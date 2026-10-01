@@ -24,6 +24,7 @@ import type { components } from '@/api/generated'
 import { errorMessage } from '@/api/http'
 import { fmt } from '@/lib/format'
 import { usePreferences, useSavePreferences } from '@/lib/preferences'
+import { DEFAULT_SCOPE, REGION_AGNOSTIC, useScopeOptions } from '@/lib/scope'
 import { Button, Chips, ErrorNotice, Segmented, Skeleton, Switch } from '@/ui/kit'
 import { BACKDROP, Select } from '@/ui/overlay'
 import { useApplyUpdate, useUpdateStatus } from './update'
@@ -120,7 +121,7 @@ export function SettingsDialog() {
 }
 
 const ABOUT: Record<SectionId, string> = {
-  simulations: 'How the engine shares its eight cores, and keeps working through the day.',
+  simulations: 'How simulations run, share the eight cores, and keep going through the day.',
   tasks: 'What a new task in any lab or tool starts with.',
   alphas: 'What is kept on this computer as Alphas come back from BRAIN.',
   updates: 'How Alpha Harness finds and installs new versions.',
@@ -170,11 +171,40 @@ const AWAKE: Record<components['schemas']['EngineStatus']['awake'], string> = {
     'This system does not let an app keep it awake (WSL, for one). Keep it on yourself while simulations run.',
 }
 
+const LIST_FORMAT = new Intl.ListFormat('en', { type: 'conjunction' })
+
 function SimulationRows({ current, change }: Rows) {
   const engine = useQuery({ queryKey: ['simulations', 'engine'], queryFn: simulations.engine })
   const awake = engine.data?.awake
+  // Region-agnostic runs are scored as a family of regions, which Quick mode has not been
+  // tried against, so only single regions are offered.
+  const regions = useScopeOptions(DEFAULT_SCOPE).regions.filter((r) => r.value !== REGION_AGNOSTIC)
+  const quick = current.quickRegions ?? []
+  const quickAllowed = engine.data?.quickAllowed ?? true
   return (
     <>
+      <SettingRow
+        title="Quick mode"
+        description="Simulates with only the checks that score an Alpha, leaving out correlation, Theme and Competition. The figures are the same as in full, and a GLB batch finished 30% sooner. A Quick Alpha cannot be submitted, so each one that passes every check is simulated again in full, which costs one more simulation."
+        control={() => (
+          <Chips
+            label="Regions that simulate in Quick mode"
+            items={ticked(regions, quick)}
+            value={quick}
+            disabled={!quickAllowed}
+            onChange={(next) => change({ quickRegions: next })}
+          />
+        )}
+        stacked
+      >
+        <Status>
+          {!quickAllowed
+            ? 'Your BRAIN account does not have Quick mode, so every simulation runs in full.'
+            : quick.length === 0
+              ? 'Off: every simulation runs in full.'
+              : `Quick in ${LIST_FORMAT.format(quick)}. Every other region runs in full.`}
+        </Status>
+      </SettingRow>
       <SettingRow
         title="Lend idle cores"
         description="Running tasks borrow the cores no task holds, so a one-core task can use all eight while nothing else is queued. A task you start later gets its own cores first, once the borrowed batches come back: a few minutes at most. Off, every task stays within its own cores."
@@ -282,18 +312,7 @@ function AlphaRows({ current, change }: Rows) {
         </span>
         <Chips
           label="Check results that allow the download"
-          // A tick on the chosen ones: pressed and unpressed chips alone read as on and disabled.
-          items={RESULTS.map((r) => ({
-            ...r,
-            label: chosen.includes(r.value) ? (
-              <span className="flex items-center gap-1">
-                <CheckIcon className="size-3.5" aria-hidden />
-                {r.label}
-              </span>
-            ) : (
-              r.label
-            ),
-          }))}
+          items={ticked(RESULTS, chosen)}
           value={chosen}
           disabled={!current.pnlDownload}
           // Nothing chosen would download nothing; turning it off says that plainly.
@@ -434,6 +453,21 @@ function UpdateRows({ current, change }: Rows) {
 }
 
 // ── Layout ───────────────────────────────────────────────────────────────────────────────
+
+/** A tick on the chosen chips: pressed and unpressed alone read as on and disabled. */
+function ticked<V extends string, T extends { value: V; label: string }>(items: T[], chosen: V[]) {
+  return items.map((item) => ({
+    ...item,
+    label: chosen.includes(item.value) ? (
+      <span className="flex items-center gap-1">
+        <CheckIcon className="size-3.5" aria-hidden />
+        {item.label}
+      </span>
+    ) : (
+      item.label
+    ),
+  }))
+}
 
 function Status({ children }: { children: ReactNode }) {
   return <p className="text-body-compact text-ink-subtle">{children}</p>

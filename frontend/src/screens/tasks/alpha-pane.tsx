@@ -74,10 +74,10 @@ function poolColumn(by: ReadonlyMap<string, PowerPoolRow>): Column<RankedAlpha> 
           className={cn(
             'num',
             tone === 'clear'
-              ? 'text-pnl-positive'
+              ? 'text-pnl-positive-text'
               : tone === 'beats'
                 ? 'text-status-warning'
-                : 'text-pnl-negative',
+                : 'text-pnl-negative-text',
           )}
         >
           {fmt.ratio(found.correlation, 4)}

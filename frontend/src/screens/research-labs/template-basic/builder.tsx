@@ -17,7 +17,7 @@ import {
   useState,
 } from 'react'
 import { cn } from '@/lib/cn'
-import type { TemplateLabOptions } from '@/screens/research-labs/template/api'
+import type { TemplateLabOptions } from '@/screens/research-labs/template-basic/api'
 import {
   accepts,
   argumentRows,
@@ -44,7 +44,7 @@ import {
   tagsOf,
   unwrap,
   type VariableNode,
-} from '@/screens/research-labs/template/tree'
+} from '@/screens/research-labs/template-basic/tree'
 import { Button, Checkbox, Chips, Disclosure, Fieldset, Input, Notice, Panel } from '@/ui/kit'
 import { SplitPane } from '@/ui/panels'
 

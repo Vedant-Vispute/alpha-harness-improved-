@@ -11,14 +11,22 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { today } from '@/api/core'
 import { cn } from '@/lib/cn'
 import { DASH, fmt } from '@/lib/format'
 import { neutralizationLabel } from '@/lib/neutralization'
 import { useCores } from '@/lib/preferences'
-import { DEFAULT_SCOPE, marketKey, regionLabel, useScopeOptions } from '@/lib/scope'
+import {
+  DEFAULT_SCOPE,
+  marketKey,
+  REGION_AGNOSTIC,
+  regionLabel,
+  useScopeOptions,
+} from '@/lib/scope'
 import { AstInspector } from '@/screens/pool/shared'
 import { AddTaskButtons, useAddTask } from '@/screens/research-labs/add-task'
 import { NeutralizationPicker } from '@/screens/research-labs/neutralization'
+import { SimulationSettingsFields, testPeriodOf } from '@/screens/research-labs/simulation-settings'
 import {
   Button,
   Chips,
@@ -36,7 +44,6 @@ import {
   Skeleton,
   Textarea,
 } from '@/ui/kit'
-import { Select } from '@/ui/overlay'
 import {
   type Holding,
   type MarketPick,
@@ -47,8 +54,14 @@ import {
   settingsSampler,
 } from './api'
 
-/** A multi-simulation carries at most ten children, all sharing region and delay. */
+/** A multi-simulation carries at most ten children, all sharing region and delay. BRAIN fails
+ *  a batch of region-agnostic ones, so those go one at a time. */
 const BATCH = 10
+const batchOf = (region: string) => (region === REGION_AGNOSTIC ? 1 : BATCH)
+
+const REGION_AGNOSTIC_NOTE =
+  'Region Agnostic: each Simulation runs in every Region its Fields reach and uses 4 of the ' +
+  "day's simulations. Not chosen until you tick it."
 
 const pairKey = (p: Pair) => `${p.maxTrade}|${p.maxPosition}`
 
@@ -63,11 +76,16 @@ const byName = (a: string, b: string) => a.localeCompare(b, undefined, { numeric
 
 const allMarkets = (plan: SettingsPlan) => plan.regions.flatMap((r) => r.markets)
 
-/** Everything on: the sweep starts as the whole space and is narrowed by unticking. */
+/** Every market but All Regions, which costs four a simulation and so is only swept on
+ *  purpose, and every pair; no neutralization, which the reader ticks before anything runs. */
 function defaults(plan: SettingsPlan) {
   return {
-    chosen: new Set(allMarkets(plan).map(marketKey)),
-    neutralizations: [...new Set(plan.regions.flatMap((r) => r.neutralizations))].sort(),
+    chosen: new Set(
+      allMarkets(plan)
+        .filter((m) => m.region !== REGION_AGNOSTIC)
+        .map(marketKey),
+    ),
+    neutralizations: [] as string[],
     pairs: [...new Set(plan.regions.flatMap((r) => r.pairs.map(pairKey)))],
   }
 }
@@ -90,6 +108,8 @@ const groupOf = (
 interface Branch {
   region: string
   positionAvailable: boolean
+  /** Simulations of the day's allowance one run here uses. */
+  cost: number
   group: Group
   neutralizations: number
   pairs: number
@@ -130,7 +150,7 @@ function resolve(
       legalPairs.some((p) => p.maxTrade === 'OFF' && p.maxPosition === 'OFF')
         ? 1
         : 0
-    const per = neutHere * pairsHere - unhedged
+    const runs = neutHere * pairsHere - unhedged
 
     const byDelay = new Map<number, typeof live>()
     for (const market of live) {
@@ -145,12 +165,13 @@ function resolve(
       covers.push(market.coverage)
       picks.push({ region: market.region, delay: market.delay, universe: market.universe })
       const key = `${market.region}|${market.delay}`
-      perDelay.set(key, (perDelay.get(key) ?? 0) + per)
+      perDelay.set(key, (perDelay.get(key) ?? 0) + runs)
     }
 
     branches.push({
       region: region.region,
       positionAvailable: region.positionAvailable,
+      cost: region.cost,
       group: groupOf(live, chosen),
       neutralizations: neutHere,
       pairs: pairsHere,
@@ -164,13 +185,14 @@ function resolve(
             .sort((a, b) => byName(a.name, b.name)),
         })),
       markets,
-      total: markets * per,
+      total: markets * runs * region.cost,
       coverage: covers.length ? [Math.min(...covers), Math.max(...covers)] : null,
     })
   }
 
   let batches = 0
-  for (const count of perDelay.values()) batches += Math.ceil(count / BATCH)
+  for (const [key, count] of perDelay)
+    batches += Math.ceil(count / batchOf(key.slice(0, key.indexOf('|'))))
   return {
     branches,
     picks,
@@ -191,7 +213,11 @@ function coverageLabel(span: [number, number] | null): string {
 /** Region, its three factors, then what they multiply to. The units are named once in the
  *  header above the list, so no row has to carry them. */
 const GRID =
-  'grid min-w-176 grid-cols-[5.5rem_4rem_6.5rem_3rem_5.5rem_4.5rem_1fr] items-center gap-x-3'
+  'grid min-w-184 grid-cols-[7.5rem_4rem_6.5rem_3rem_5.5rem_4.5rem_1fr] items-center gap-x-3'
+
+/** Keeps the Region column in view when the list scrolls sideways. A surface, not a shadow:
+ *  shadows belong to what floats over the page. */
+const STICKY = 'sticky left-0 z-10 bg-surface-1'
 
 /**
  * A chip standing for a group of markets: full, part-full, or empty. Clicking clears the
@@ -203,12 +229,14 @@ function GroupChip({
   onChange,
   size = 'md',
   disabled,
+  title,
 }: {
   label: ReactNode
   group: Group
   onChange: (keys: string[], on: boolean) => void
   size?: 'md' | 'sm'
   disabled?: boolean
+  title?: string | undefined
 }) {
   const { keys, on } = group
   const part = on > 0 && on < keys.length
@@ -217,7 +245,7 @@ function GroupChip({
       type="button"
       disabled={disabled || keys.length === 0}
       aria-pressed={on > 0}
-      title={part ? `${on} of ${keys.length} chosen` : undefined}
+      title={part ? `${on} of ${keys.length} chosen` : title}
       onClick={() => onChange(keys, on === 0)}
       className={cn(
         'num flex items-center gap-1.5 rounded-sm border whitespace-nowrap transition-colors',
@@ -251,7 +279,7 @@ function Tree({
         aria-hidden
         className={cn(GRID, 'px-3 pb-1.5 text-caption tracking-wide text-ink-subtle uppercase')}
       >
-        <span>Region</span>
+        <span className={STICKY}>Region</span>
         <span className="text-right">Markets</span>
         <span className="text-right">Neutralizations</span>
         <span className="text-right">Pairs</span>
@@ -269,11 +297,14 @@ function Tree({
             )}
           >
             <div className={GRID}>
-              <GroupChip
-                label={<span className="font-medium">{regionLabel(branch.region)}</span>}
-                group={branch.group}
-                onChange={onChange}
-              />
+              <div className={STICKY}>
+                <GroupChip
+                  label={<span className="font-medium">{regionLabel(branch.region)}</span>}
+                  group={branch.group}
+                  onChange={onChange}
+                  title={branch.region === REGION_AGNOSTIC ? REGION_AGNOSTIC_NOTE : undefined}
+                />
+              </div>
               <span className="num text-right text-body-compact text-ink-muted">
                 {branch.markets}
               </span>
@@ -290,7 +321,12 @@ function Tree({
                 {coverageLabel(branch.coverage)}
               </span>
               <span className="text-body-compact text-ink-subtle">
-                {branch.positionAvailable ? '' : 'no Max Position'}
+                {[
+                  branch.cost > 1 && `${branch.cost} simulations each`,
+                  !branch.positionAvailable && 'no Max Position',
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
               </span>
             </div>
 
@@ -319,103 +355,6 @@ function Tree({
           </li>
         ))}
       </ul>
-    </div>
-  )
-}
-
-/** A typed number held inside BRAIN's own bounds. */
-const clamp = (text: string, max: number) =>
-  Math.min(max, Math.max(0, Math.round(Number(text) || 0)))
-
-/**
- * How every simulation in the sweep is held: BRAIN's own four, laid out as BRAIN lays them
- * out — Test Period is years *and* months, not a number of whole years.
- */
-function SettingsFields({
-  decay,
-  setDecay,
-  truncation,
-  setTruncation,
-  nanHandling,
-  setNanHandling,
-  testYears,
-  setTestYears,
-  testMonths,
-  setTestMonths,
-}: {
-  decay: string
-  setDecay: (v: string) => void
-  truncation: string
-  setTruncation: (v: string) => void
-  nanHandling: 'ON' | 'OFF'
-  setNanHandling: (v: 'ON' | 'OFF') => void
-  testYears: string
-  setTestYears: (v: string) => void
-  testMonths: string
-  setTestMonths: (v: string) => void
-}) {
-  return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      <Field label="Decay">
-        <Input
-          type="number"
-          min={0}
-          max={512}
-          step={1}
-          value={decay}
-          onChange={(e) => setDecay(e.target.value)}
-        />
-      </Field>
-      <Field label="Truncation">
-        <Input
-          type="number"
-          min={0}
-          max={1}
-          step={0.01}
-          value={truncation}
-          onChange={(e) => setTruncation(e.target.value)}
-        />
-      </Field>
-      <Field label="NaN Handling">
-        <Select
-          label="NaN Handling"
-          value={nanHandling}
-          onChange={(v) => setNanHandling(v as 'ON' | 'OFF')}
-          items={[
-            { value: 'ON', label: 'On' },
-            { value: 'OFF', label: 'Off' },
-          ]}
-        />
-      </Field>
-      {/* BRAIN takes P0Y0M0D up to P6Y0M0D, and its own form splits the two. The units sit
-          beside the boxes rather than above them, so this reads as one control on one line
-          and its inputs share a baseline with Decay and Truncation. */}
-      <Fieldset legend="Test Period">
-        <div className="flex items-center gap-2">
-          <Input
-            type="number"
-            min={0}
-            max={6}
-            step={1}
-            aria-label="Test period, years"
-            className="w-16"
-            value={testYears}
-            onChange={(e) => setTestYears(e.target.value)}
-          />
-          <span className="text-body-compact text-ink-subtle">Years</span>
-          <Input
-            type="number"
-            min={0}
-            max={11}
-            step={1}
-            aria-label="Test period, months"
-            className="w-16"
-            value={testMonths}
-            onChange={(e) => setTestMonths(e.target.value)}
-          />
-          <span className="text-body-compact text-ink-subtle">Months</span>
-        </div>
-      </Fieldset>
     </div>
   )
 }
@@ -456,7 +395,7 @@ export function SettingsSamplerScreen() {
     decay: Math.max(0, Math.round(Number(decay) || 0)),
     truncation: Number(truncation) || 0.08,
     nanHandling,
-    testPeriod: `P${clamp(testYears, 6)}Y${clamp(testMonths, 11)}M0D`,
+    testPeriod: testPeriodOf(testYears, testMonths),
   }
   const source: Source | null = mode === 'alpha' ? (alphaId ? { alphaId } : null) : typed
   const query = useQuery({
@@ -586,6 +525,15 @@ export function SettingsSamplerScreen() {
       .map((value) => ({ value, label: neutralizationLabel(value, labels.get(value)) }))
   }, [plan, labelled])
 
+  // The header's own query, so both read one cache. What is already queued will spend first.
+  const bar = useQuery({ queryKey: ['bar'], queryFn: () => today.bar() })
+  const quota = bar.data?.simulations
+  const left = quota ? Math.max(0, quota.remaining - quota.queued) : null
+  const overQuota = left !== null && simulations > left
+  const leftLabel = quota
+    ? `${quota.exact ? '' : '~'}${fmt.int(left)} left today${quota.queued ? ' after queued work' : ''}`
+    : undefined
+
   const add = useAddTask(() =>
     settingsSampler.addTask({
       ...(source ?? { alphaId: '' }),
@@ -706,7 +654,7 @@ export function SettingsSamplerScreen() {
               : 'Every market in the sweep runs at these.'
           }
         >
-          <SettingsFields
+          <SimulationSettingsFields
             decay={decay}
             setDecay={setDecay}
             truncation={truncation}
@@ -763,6 +711,7 @@ export function SettingsSamplerScreen() {
                     <span className="text-ink-subtle"> / {fmt.int(whole)}</span>
                   </span>
                 }
+                tone={overQuota ? 'warn' : 'neutral'}
               />
               <Metric boxed label="Markets" value={fmt.int(markets)} />
               <Metric
@@ -778,8 +727,39 @@ export function SettingsSamplerScreen() {
               />
             </div>
 
+            {overQuota && (
+              <Notice tone="warn" title="This sweep needs more than today has left">
+                {fmt.int(simulations)} simulations against {leftLabel}. The rest waits in the queue
+                and starts once BRAIN resets the quota.
+              </Notice>
+            )}
+
             <div className="flex flex-col gap-3">
-              <Fieldset legend="Region">
+              <Fieldset
+                legend={
+                  // Region, Delay and Universe are views of one set of markets, so one pair
+                  // serves all three rows.
+                  <span className="flex items-center justify-between gap-3">
+                    Region
+                    <span className="flex gap-1">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => change(all.map(marketKey), true)}
+                      >
+                        All
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => change(all.map(marketKey), false)}
+                      >
+                        Clear
+                      </Button>
+                    </span>
+                  </span>
+                }
+              >
                 <div className="flex flex-wrap gap-1.5">
                   {axes.regions.map((axis) => (
                     <GroupChip
@@ -787,6 +767,7 @@ export function SettingsSamplerScreen() {
                       label={axis.value}
                       group={axis.group}
                       onChange={change}
+                      title={axis.value === REGION_AGNOSTIC ? REGION_AGNOSTIC_NOTE : undefined}
                     />
                   ))}
                 </div>
@@ -819,6 +800,9 @@ export function SettingsSamplerScreen() {
                 available={allNeutralizations}
                 value={neutralizations}
                 onChange={setNeutralizations}
+                hint={
+                  neutralizations.length === 0 ? 'Choose at least one Neutralization.' : undefined
+                }
               />
               {/* A chip, like every other choice in this column, rather than a checkbox
                   that would be the only one of its kind here. It sits between the two pickers
@@ -865,7 +849,7 @@ export function SettingsSamplerScreen() {
                   By market
                 </h3>
                 <Button size="sm" variant="ghost" onClick={() => reset(plan)}>
-                  Reset to Everything
+                  Reset to Defaults
                 </Button>
               </div>
               <Tree branches={branches} onChange={change} />

@@ -139,8 +139,9 @@ FEATURES: dict[str, tuple[str, str]] = {
     # BRAIN's own words for the matching check: "Quick mode alphas cannot be submitted."
     "QUICK_MODE": (
         "Quick mode",
-        "You can run a faster, rougher simulation to try an idea out. Alphas made this way "
-        "cannot be submitted.",
+        "You can simulate with only the checks that score an alpha, which finishes sooner in "
+        "some regions. The numbers are the same, but the alpha must be simulated again in "
+        "full before it can be submitted.",
     ),
     "WORKDAY": ("Workday", "You can sign in to BRAIN through Workday."),
 }

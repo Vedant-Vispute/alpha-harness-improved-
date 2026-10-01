@@ -432,7 +432,9 @@ function PerformancePanel({
             {series.episodes.map((e) => (
               <tr key={e.peak} className="border-b border-hairline-subtle last:border-b-0">
                 <td className="num py-1.5 text-ink-muted">From {fmt.date(e.peak)}</td>
-                <td className="num py-1.5 text-right text-pnl-negative">{fmt.pct(e.depth, 2)}</td>
+                <td className="num py-1.5 text-right text-pnl-negative-text">
+                  {fmt.pct(e.depth, 2)}
+                </td>
                 <td className="num py-1.5 text-right text-ink-muted">{fmt.date(e.trough)}</td>
                 <td
                   className={cn(

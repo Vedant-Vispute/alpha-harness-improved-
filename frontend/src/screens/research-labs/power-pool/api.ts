@@ -2,6 +2,7 @@
 
 import type { components } from '@/api/generated'
 import { http } from '@/api/http'
+import type { FieldFilterState } from '@/screens/data/state'
 
 type Schemas = components['schemas']
 
@@ -17,6 +18,8 @@ export interface PowerPoolRequest {
   field_ids: string[]
   /** How `field_ids` were ranked, as the prompt says it. */
   rank_by: string | null
+  /** The Data Explorer's filter the datasets were chosen under; `null` uses every field. */
+  field_filter?: FieldFilterState | null
   model: string | null
   /** A saved prompt from LLM Prompts; null sends the built-in. */
   prompt_id: number | null

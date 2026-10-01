@@ -116,7 +116,7 @@ function CheckSets({ rows }: { rows: RankedAlpha[] }) {
               s.checks.length === 0 ? (
                 <span className="text-ink-subtle">{DASH}</span>
               ) : (
-                <span className="num truncate text-pnl-negative" title={s.checks.join(', ')}>
+                <span className="num truncate text-pnl-negative-text" title={s.checks.join(', ')}>
                   {s.checks.join(', ')}
                 </span>
               ),
@@ -136,7 +136,7 @@ function CheckSets({ rows }: { rows: RankedAlpha[] }) {
             align: 'right',
             sortable: true,
             cell: (s) => (
-              <span className={cn('num', s.checks.length === 0 && 'text-pnl-positive')}>
+              <span className={cn('num', s.checks.length === 0 && 'text-pnl-positive-text')}>
                 {fmt.int(s.alphas)}
               </span>
             ),
@@ -314,7 +314,7 @@ export function TaskResultsScreen() {
                 width: 'minmax(96px,1fr)',
                 align: 'right',
                 cell: (r) => (
-                  <span className={cn('num', r.submittable > 0 && 'text-pnl-positive')}>
+                  <span className={cn('num', r.submittable > 0 && 'text-pnl-positive-text')}>
                     {fmt.int(r.submittable)}
                   </span>
                 ),
@@ -325,7 +325,7 @@ export function TaskResultsScreen() {
                 width: 'minmax(84px,0.8fr)',
                 align: 'right',
                 cell: (r) => (
-                  <span className={cn('num', r.failed > 0 && 'text-pnl-negative')}>
+                  <span className={cn('num', r.failed > 0 && 'text-pnl-negative-text')}>
                     {fmt.int(r.failed)}
                   </span>
                 ),

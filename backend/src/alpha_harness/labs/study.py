@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from sqlalchemy import func, select
 
+from ..brain.schemas import FULL_MODE, QUICK_MODE
 from ..db.models import (
     SimStatus,
     SimulationRecord,
@@ -35,7 +36,7 @@ from ..db.models import (
     TrialState,
     utcnow,
 )
-from ..vault.yields import IGNORED_CHECKS, QUOTA_CHECKS, checks_of, clean, verdict
+from ..vault.yields import IGNORED_CHECKS, QUOTA_CHECKS, checks_of, clean, gating_results, verdict
 from . import objectives as obj
 from . import scheduler
 from .objectives import StudyNotFoundError
@@ -349,7 +350,29 @@ class Optimizer:
             study = await self.optuna_study(study_id, row)
             await asyncio.to_thread(_tell_many, study, finished)
 
+        # A Quick Alpha that passed every check BRAIN ran is owed a run in Full mode, which is
+        # what BRAIN submits. Parked here; the scheduler sends it ahead of the search.
+        owed = [
+            t for _, t, values, summary in finished if values is not None and passed_quick(summary)
+        ]
         async with self.db.session() as session:
+            if owed:
+                last = await session.scalar(
+                    select(func.max(Trial.number)).where(Trial.study_id == study_id)
+                )
+                for number, quick in enumerate(owed, start=int(last or 0) + 1):
+                    session.add(
+                        Trial(
+                            study_id=study_id,
+                            number=number,
+                            params={"fullOf": quick.number},
+                            distributions={},
+                            expression=quick.expression,
+                            settings={**(quick.settings or {}), "simulationMode": FULL_MODE},
+                            state=TrialState.PRUNED,
+                            message=scheduler.PENDING_FULL,
+                        )
+                    )
             for _optuna_trial, trial, values, summary in finished:
                 live.pop(trial.number, None)
                 stored = await session.get(Trial, trial.id)
@@ -480,8 +503,10 @@ def _tell_many(
                     study.tell(optuna_trial, values, skip_if_finished=True)
                 continue
 
-            if values is None:
-                continue  # A failed replayed trial teaches the sampler nothing.
+            if values is None or not stored.distributions:
+                # A failed replayed trial teaches the sampler nothing, and nor does a Full
+                # re-run: the search never asked for it.
+                continue
             distributions = _load_distributions(stored.distributions or {})
             study.add_trial(
                 create_trial(
@@ -523,7 +548,8 @@ def _rebuild(sampler: Any, history: list[dict[str, Any]]) -> optuna.Study:
 
     for entry in history:
         state = state_map.get(str(entry["state"]))
-        if state is None:
+        # A Full re-run of a Quick Alpha asked nothing of the search.
+        if state is None or not entry["distributions"]:
             continue
         distributions = _load_distributions(entry["distributions"] or {})
         params = _optuna_params(entry["params"] or {}, distributions)
@@ -566,6 +592,12 @@ def _optuna_params(params: dict[str, Any], distributions: dict[str, Any]) -> dic
     return found
 
 
+def passed_quick(result: dict[str, Any]) -> bool:
+    """A Quick Alpha that passed every check BRAIN ran on it: owed a run in Full mode."""
+    results = gating_results(result.get("checks") or [])
+    return bool(result.get("quick")) and bool(results) and results <= {"PASS", "WARNING"}
+
+
 def submittable(result: dict[str, Any]) -> bool:
     """Whether anything BRAIN has reported so far refuses this Alpha.
 
@@ -573,7 +605,7 @@ def submittable(result: dict[str, Any]) -> bool:
     shows on the Tasks list, which fills in while BRAIN works. An Alpha with no gating checks
     is not submittable -- the usual reason is erroring out before BRAIN judged anything.
     """
-    return clean(result.get("checks") or [])
+    return not result.get("quick") and clean(result.get("checks") or [])
 
 
 def still_judging(result: dict[str, Any]) -> bool:
@@ -582,7 +614,8 @@ def still_judging(result: dict[str, Any]) -> bool:
     Exactly the Alphas :func:`submittable` shows and the Submission Planner does not, so a green
     row on the Tasks screen never promises a candidate the Planner will then refuse.
     """
-    return verdict(result.get("checks") or []) == "pending"
+    mode = QUICK_MODE if result.get("quick") else None
+    return verdict(result.get("checks") or [], mode) == "pending"
 
 
 def ranked(
@@ -595,8 +628,17 @@ def ranked(
     """
     done = [(t, t.values[0]) for t in trials if t.state == TrialState.COMPLETE and t.values]
     done.sort(key=lambda pair: float(pair[1]), reverse=True)
+    # Once its Full run is back, that stands in for a Quick Alpha: the same figures, judged in
+    # full. Keyed by task, because a trial's number is only its place in its own sweep.
+    superseded = {
+        (t.study_id, full_of)
+        for t, _ in done
+        if (full_of := (t.params or {}).get("fullOf")) is not None
+    }
     rows = []
     for t, value in done:
+        if (t.study_id, t.number) in superseded:
+            continue
         result: dict[str, Any] = t.result or {}
         if current and t.alpha_id in current:
             result = {**result, "checks": current[t.alpha_id]}
@@ -629,6 +671,7 @@ def ranked(
                 "submittable": submittable(result),
                 "pending": still_judging(result),
                 "source": bool((t.params or {}).get("source")),
+                "quick": bool(result.get("quick")),
             }
         )
     return rows
@@ -651,4 +694,5 @@ def vault_summary(saved: dict[str, Any]) -> dict[str, Any]:
         "checks": checks,
         "feasible": not failed if checks else None,
         "failedChecks": failed,
+        "quick": saved.get("simulation_mode") == QUICK_MODE,
     }

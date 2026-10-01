@@ -10,9 +10,10 @@ import {
   ExternalLinkIcon,
   LogOutIcon,
   PanelLeftIcon,
+  PowerIcon,
   SettingsIcon,
 } from 'lucide-react'
-import { Fragment, useEffect } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { auth } from '@/api/core'
@@ -21,10 +22,10 @@ import { cn } from '@/lib/cn'
 import { useRefetchOn } from '@/lib/ws'
 import { pool } from '@/screens/pool/api'
 import { Button, Kbd } from '@/ui/kit'
-import { Menu, Tooltip } from '@/ui/overlay'
+import { Confirm, Menu, Tooltip } from '@/ui/overlay'
 import { NAV } from './nav'
 import { SETTINGS_SHORTCUT, useSettings } from './settings'
-import { UpdateBadge, VersionBadge } from './update'
+import { UpdateBadge, useQuitApp, useUpdateStatus, VersionBadge } from './update'
 
 /** Areas a new consultant has to open once: Data (download fields) and AI (add a key). They flash until visited. */
 const ONBOARDING: readonly string[] = ['data', 'ai']
@@ -147,6 +148,10 @@ export function Sidebar({
   useRefetchOn('simulations', pool.everywhere.queryKey, 5000)
   const total = submittable.data?.total ?? 0
 
+  const [quitting, setQuitting] = useState(false)
+  const quit = useQuitApp()
+  const launched = useUpdateStatus().data?.launcher != null
+
   const signOut = useMutation({
     mutationFn: () => auth.logout(),
     onSuccess: async () => {
@@ -206,7 +211,7 @@ export function Sidebar({
               {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
               {!collapsed && item.to === '/pool' && total > 0 && (
                 <span
-                  className="num rounded-pill border border-pnl-positive-edge bg-pnl-positive-tint px-1.5 py-0.5 text-caption font-medium text-pnl-positive"
+                  className="num rounded-pill border border-pnl-positive-edge bg-pnl-positive-tint px-1.5 py-0.5 text-caption font-medium text-pnl-positive-text"
                   title="Submittable Alphas"
                 >
                   {total}
@@ -279,9 +284,31 @@ export function Sidebar({
               disabled: signOut.isPending,
               onClick: () => signOut.mutate(),
             },
+            // Only a launcher can bring the app back, so only a launched app offers to close.
+            // On macOS and Linux this is the only way to close it: there is no tray icon.
+            ...(launched
+              ? [
+                  {
+                    label: 'Quit Alpha Harness',
+                    icon: <PowerIcon />,
+                    onClick: () => setQuitting(true),
+                  },
+                ]
+              : []),
           ]}
         />
       </div>
+      <Confirm
+        open={quitting}
+        onOpenChange={setQuitting}
+        title="Quit Alpha Harness?"
+        confirmLabel="Quit"
+        pending={quit.isPending}
+        onConfirm={() => quit.mutate()}
+      >
+        Simulations already on BRAIN keep running there. Queued work waits until you open Alpha
+        Harness again.
+      </Confirm>
     </aside>
   )
 }

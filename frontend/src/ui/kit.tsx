@@ -33,8 +33,8 @@ export type Tone = 'neutral' | 'muted' | 'profit' | 'loss' | 'warn'
 export const TEXT_TONE: Record<Tone, string> = {
   neutral: 'text-ink',
   muted: 'text-ink-subtle',
-  profit: 'text-pnl-positive',
-  loss: 'text-pnl-negative',
+  profit: 'text-pnl-positive-text',
+  loss: 'text-pnl-negative-text',
   warn: 'text-status-warning',
 }
 
@@ -145,7 +145,7 @@ const BUTTON_VARIANT = {
     'border border-hairline bg-surface-2 text-ink hover:border-hairline-strong hover:bg-surface-3 active:bg-surface-4',
   ghost: 'text-ink-muted hover:bg-surface-2 hover:text-ink active:bg-surface-3',
   danger:
-    'border border-hairline bg-surface-1 text-pnl-negative hover:border-(--btn-danger-border-hover) hover:bg-pnl-negative-tint active:border-pnl-negative',
+    'border border-hairline bg-surface-1 text-pnl-negative-text hover:border-(--btn-danger-border-hover) hover:bg-pnl-negative-tint active:border-pnl-negative',
 }
 const BUTTON_SIZE = {
   md: 'rounded-sm px-3 py-1.5 text-body [&_svg]:size-4',
@@ -241,7 +241,7 @@ export function Field({
 
 function FieldNote({ hint, error }: { hint?: ReactNode; error?: ReactNode }) {
   return error ? (
-    <span role="alert" className="text-body-compact break-words text-pnl-negative">
+    <span role="alert" className="text-body-compact break-words text-pnl-negative-text">
       {error}
     </span>
   ) : (
@@ -487,8 +487,8 @@ export function Metric({
 const BADGE: Record<Tone | 'outline', string> = {
   neutral: 'bg-surface-3 text-ink-muted',
   muted: 'bg-surface-2 text-ink-subtle',
-  profit: 'text-pnl-positive',
-  loss: 'text-pnl-negative',
+  profit: 'text-pnl-positive-text',
+  loss: 'text-pnl-negative-text',
   warn: 'text-status-warning',
   outline: 'border border-hairline-strong text-ink-subtle',
 }
@@ -519,8 +519,8 @@ export function Badge({
 }
 
 const METRIC_BADGE = {
-  profit: 'bg-pnl-positive-tint text-pnl-positive border border-pnl-positive-edge',
-  loss: 'bg-pnl-negative-tint text-pnl-negative border border-pnl-negative-edge',
+  profit: 'bg-pnl-positive-tint text-pnl-positive-text border border-pnl-positive-edge',
+  loss: 'bg-pnl-negative-tint text-pnl-negative-text border border-pnl-negative-edge',
   neutral: 'bg-surface-2 text-ink border border-hairline',
 }
 
@@ -636,7 +636,7 @@ const NOTICE = {
   error: {
     border: 'border-pnl-negative-edge',
     icon: CircleAlertIcon,
-    color: 'text-pnl-negative',
+    color: 'text-pnl-negative-text',
   },
 }
 

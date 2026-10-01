@@ -1,12 +1,15 @@
 /** The Datasets and Settings panels of a lab task, and the task settings every lab asks for. */
 
-import { DatabaseIcon, XIcon } from 'lucide-react'
+import { DatabaseIcon, FilterIcon, XIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
+import type { Scope } from '@/api/types'
 import { cn } from '@/lib/cn'
 import { DASH, fmt } from '@/lib/format'
 import { useCores } from '@/lib/preferences'
 import { isRegionAgnostic, regionLabel, useScopeOptions } from '@/lib/scope'
+import { DatasetChips, useDatasetTree } from '@/screens/data/dataset-chips'
 import type { PickedField } from '@/screens/data/dataset-pick'
+import { describeFilter, type FieldFilterState } from '@/screens/data/state'
 import { NeutralizationPicker } from '@/screens/research-labs/neutralization'
 import {
   Button,
@@ -119,33 +122,44 @@ function Chip({
 
 export function DatasetsPanel({
   ids,
+  scope,
   fields = [],
   rankBy,
-  names,
   onChoose,
   onRemove,
   onRemoveField,
   onUseDatasets,
+  filter,
+  onClearFilter,
+  title = 'Datasets and Fields',
   children,
 }: {
   ids: string[]
+  /** The market the datasets belong to, which places each under its category. */
+  scope: Scope
   /** Single fields chosen instead of whole datasets, in rank order; `ids` are theirs. */
   fields?: PickedField[]
   rankBy?: string | null
-  names: Map<string, string>
   onChoose: () => void
-  onRemove: (id: string) => void
+  onRemove: (ids: string[]) => void
   onRemoveField?: (id: string) => void
   /** Drops the chosen fields and keeps their datasets, whole. */
   onUseDatasets?: () => void
+  /** The Data Explorer's filter the datasets were chosen under, which narrows their fields. */
+  filter?: FieldFilterState | null | undefined
+  onClearFilter?: () => void
+  title?: string
   /** More of what the task is given to work from, under the datasets: the LLM lab's prompt. */
   children?: ReactNode
 }) {
   const chosen = ids.length > 0 || fields.length > 0
-  const name = (id: string) => names.get(id) ?? id
+  const { tree, nameOf, ready } = useDatasetTree(chosen ? scope : null)
+  const chips = (
+    <DatasetChips tree={tree} value={ids} nameOf={nameOf} onRemove={onRemove} ready={ready} />
+  )
   return (
     <Panel
-      title="Datasets and Fields"
+      title={title}
       actions={
         chosen && (
           <Button size="sm" onClick={onChoose}>
@@ -180,25 +194,34 @@ export function DatasetsPanel({
                 <Chip
                   rank={i + 1}
                   label={f.id}
-                  title={`${f.id} · ${name(f.dataset)}`}
+                  title={`${f.id} · ${nameOf(f.dataset)}`}
                   mono
                   onRemove={() => onRemoveField?.(f.id)}
                 />
               </li>
             ))}
           </ol>
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="flex flex-col gap-1.5">
             <span className="text-caption font-medium text-ink-subtle">From</span>
-            {ids.map((id) => (
-              <Chip key={id} label={name(id)} title={id} onRemove={() => onRemove(id)} />
-            ))}
+            {chips}
           </div>
         </div>
       ) : chosen ? (
-        <div className="flex flex-wrap gap-1.5">
-          {ids.map((id) => (
-            <Chip key={id} label={name(id)} title={id} onRemove={() => onRemove(id)} />
-          ))}
+        <div className="flex flex-col gap-3">
+          {chips}
+          {filter && (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-body-compact text-ink-subtle">
+              <FilterIcon className="size-3.5 shrink-0" aria-hidden />
+              <span className="min-w-0">
+                Only fields matching {describeFilter(filter, scope.region).join(' · ')}
+              </span>
+              {onClearFilter && (
+                <Button size="sm" variant="ghost" onClick={onClearFilter}>
+                  Use All Fields
+                </Button>
+              )}
+            </div>
+          )}
         </div>
       ) : (
         <Empty title="No datasets or fields chosen" icon={<DatabaseIcon />}>
@@ -279,7 +302,6 @@ export function SettingsPanel({
             available={neutralizations}
             value={draft.neutralizations}
             onChange={(next) => set({ neutralizations: next })}
-            hint="None chosen searches Market, Sector, Industry and Subindustry."
           />
         )}
         <div className="grid gap-3 sm:grid-cols-3">

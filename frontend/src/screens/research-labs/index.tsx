@@ -3,9 +3,10 @@
 import { Link } from '@tanstack/react-router'
 import {
   ArrowUpRightIcon,
-  BlocksIcon,
+  BracesIcon,
   DnaIcon,
   GlobeIcon,
+  LayersIcon,
   type LucideIcon,
   SearchIcon,
   ZapIcon,
@@ -15,20 +16,23 @@ import { Page, PageHeader } from '@/ui/kit'
 
 const ICONS: Record<(typeof LAB_TABS)[number]['tab'], LucideIcon> = {
   search: SearchIcon,
-  template: BlocksIcon,
+  template: BracesIcon,
   evolution: DnaIcon,
   'power-pool': ZapIcon,
   'region-agnostic': GlobeIcon,
+  'super-alpha': LayersIcon,
 }
 
 /** What each one searches, since a name alone does not say which to start with. */
 const ABOUT: Record<(typeof LAB_TABS)[number]['tab'], string> = {
   search: 'Writes one- and two-operator Alphas from the datasets you pick, steering to Sharpe.',
-  template: 'Tries every choice and value a template allows, and keeps the best Sharpe.',
+  template:
+    'Searches a template you type with $variables for fields, values and operators, or one you build from blocks.',
   evolution: 'Breeds new Alphas from seeds you pick, holding the last two years back as a test.',
   'power-pool': 'An LLM writes Power Pool Alphas for the datasets you pick.',
   'region-agnostic':
     'An LLM writes Alphas from region-agnostic fields, each run in every region that carries them.',
+  'super-alpha': "Combines your submitted Alphas into SuperAlphas that pass BRAIN's checks.",
 }
 
 /** The card a hub screen links each of its entries with; the `Link` carries it. */

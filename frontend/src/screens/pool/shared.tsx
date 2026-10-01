@@ -145,7 +145,7 @@ export function AstInspector({
           className="flex size-6 shrink-0 items-center justify-center rounded-xs text-ink-subtle opacity-70 transition-all hover:bg-surface-2 hover:text-ink hover:opacity-100 group-hover:opacity-100"
         >
           {copied ? (
-            <CheckIcon className="size-3.5 text-pnl-positive" />
+            <CheckIcon className="size-3.5 text-pnl-positive-text" />
           ) : (
             <CopyIcon className="size-3.5" />
           )}

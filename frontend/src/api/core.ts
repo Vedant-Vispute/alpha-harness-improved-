@@ -35,6 +35,13 @@ export const preferences = {
   put: (body: Preferences) => http.put<Preferences>('/api/preferences', body),
 }
 
+export type Competition = Schemas['Competition']
+
+export const competitions = {
+  /** Ongoing first, soonest to end. One BRAIN read, plus one per ongoing competition. */
+  list: () => http.get<Schemas['Competitions']>('/api/competitions'),
+}
+
 export const today = {
   /** The first screen in one call. Scope defaults to USA / D1 / TOP3000. */
   get: (scope?: Partial<Scope>) => http.get<Today>(`/api/today${scopeQs(scope)}`),
@@ -86,4 +93,6 @@ export const update = {
     http.get<UpdateStatus>(`/api/update${qs({ refresh: refresh || null })}`),
   /** Hands the install to the launcher and closes the app so it can run. */
   apply: () => http.post<UpdateStarted>('/api/update'),
+  /** Closes the app for good: the launcher exits with it rather than starting it again. */
+  quit: () => http.post<Schemas['Quitting']>('/api/quit'),
 }
