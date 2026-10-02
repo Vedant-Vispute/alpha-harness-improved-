@@ -27,6 +27,7 @@ from ..labs.params import POWER_POOL_SAMPLER, PowerPoolParams
 from ..llm.text import estimate_tokens
 from ..schemas import Out
 from .deps import State, refuse
+from .prompts import chosen
 
 router = APIRouter(prefix="/api/power-pool-lab", tags=["power-pool-lab"])
 
@@ -137,13 +138,13 @@ async def _plan(body: PowerPoolRequest, state: Any) -> dict[str, Any]:
     legal = legal_choices(schema, body.region, body.delay)
     universes = await synced_universes(state, legal, body.region, body.delay, body.universe)
     if body.universes and universes:
-        chosen = [u for u in universes if u in set(body.universes)]
-        if not chosen:
+        selected_universes = [u for u in universes if u in set(body.universes)]
+        if not selected_universes:
             problems.append(
                 f"None of the chosen universes is downloaded for {body.region} delay "
                 f"{body.delay}. Sync it in the Data Explorer, or choose another."
             )
-        universes = chosen
+        universes = selected_universes
     # The LLM draws from whichever the reader chose, in BRAIN's order.
     offered = [str(n) for n in choices(legal, "neutralization") if n != "NONE"]
     wanted = set(body.neutralizations)
