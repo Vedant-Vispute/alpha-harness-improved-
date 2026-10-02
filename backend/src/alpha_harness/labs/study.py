@@ -348,7 +348,11 @@ class Optimizer:
 
         if tell:
             study = await self.optuna_study(study_id, row)
-            await asyncio.to_thread(_tell_many, study, finished)
+            # Only a trial asked before a restart is replayed, and only it needs what it was
+            # asked over; the column is deferred, so it is read for those alone.
+            replayed = [t.id for asked, t, _, _ in finished if asked is None]
+            asked_over = await self._distributions(replayed) if replayed else {}
+            await asyncio.to_thread(_tell_many, study, finished, asked_over)
 
         # A Quick Alpha that passed every check BRAIN ran is owed a run in Full mode, which is
         # what BRAIN submits. Parked here; the scheduler sends it ahead of the search.
@@ -394,6 +398,14 @@ class Optimizer:
         log.info("optimize.told", study_id=study_id, trials=len(finished))
         return len(finished)
 
+    async def _distributions(self, trial_ids: list[int]) -> dict[int, dict[str, Any]]:
+        """Each trial's stored distributions, by trial id."""
+        async with self.db.session() as session:
+            rows = await session.execute(
+                select(Trial.id, Trial.distributions).where(Trial.id.in_(trial_ids))
+            )
+            return {trial_id: raw or {} for trial_id, raw in rows.tuples()}
+
     async def _mark_running(self, trial_ids: list[int]) -> None:
         async with self.db.session() as session:
             for trial_id in trial_ids:
@@ -411,22 +423,27 @@ class Optimizer:
             return cached
 
         async with self.db.session() as session:
-            trials = list(
-                (
-                    await session.scalars(
-                        select(Trial).where(Trial.study_id == study_id).order_by(Trial.number)
-                    )
-                ).all()
-            )
             history = [
                 {
-                    "params": t.params or {},
-                    "distributions": t.distributions or {},
-                    "values": t.values,
-                    "state": t.state,
-                    "constraint": t.constraint or {},
+                    "params": params or {},
+                    "distributions": distributions or {},
+                    "values": values,
+                    "state": state,
+                    "constraint": constraint or {},
                 }
-                for t in trials
+                for params, distributions, values, state, constraint in (
+                    await session.execute(
+                        select(
+                            Trial.params,
+                            Trial.distributions,
+                            Trial.values,
+                            Trial.state,
+                            Trial.constraint,
+                        )
+                        .where(Trial.study_id == study_id)
+                        .order_by(Trial.number)
+                    )
+                ).tuples()
             ]
 
         from optuna.samplers import TPESampler
@@ -481,6 +498,7 @@ class Optimizer:
 def _tell_many(
     study: optuna.Study,
     finished: list[tuple[Any, Any, list[float] | None, dict[str, Any]]],
+    asked_over: dict[int, dict[str, Any]],
 ) -> None:
     """Report results.
 
@@ -503,11 +521,12 @@ def _tell_many(
                     study.tell(optuna_trial, values, skip_if_finished=True)
                 continue
 
-            if values is None or not stored.distributions:
+            raw = asked_over.get(stored.id) or {}
+            if values is None or not raw:
                 # A failed replayed trial teaches the sampler nothing, and nor does a Full
                 # re-run: the search never asked for it.
                 continue
-            distributions = _load_distributions(stored.distributions or {})
+            distributions = _load_distributions(raw)
             study.add_trial(
                 create_trial(
                     params=_optuna_params(stored.params or {}, distributions),
@@ -672,6 +691,7 @@ def ranked(
                 "pending": still_judging(result),
                 "source": bool((t.params or {}).get("source")),
                 "quick": bool(result.get("quick")),
+                "errored": "ERROR" in gating_results(result.get("checks") or []),
             }
         )
     return rows

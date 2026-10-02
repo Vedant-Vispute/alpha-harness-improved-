@@ -71,6 +71,12 @@ async def rebuild(catalog: Catalog) -> int:
     except Exception:
         await catalog.execute(f"DROP TABLE IF EXISTS {TABLE}")
         raise
+    # Into the file at once: an index rebuild left in the write-ahead log was reported failing
+    # to replay ("Cannot drop entry fts_main_field_search"), which kept the app from starting.
+    try:
+        await catalog.execute("CHECKPOINT")
+    except Exception:
+        log.warning("catalog.search_checkpoint_failed", exc_info=True)
     indexed = int(await catalog.scalar(f"SELECT count(*) FROM {TABLE}") or 0)  # noqa: S608
     log.info("catalog.search_indexed", fields=indexed)
     return indexed

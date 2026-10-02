@@ -33,7 +33,9 @@ export class ApiError extends Error {
 
 function describe(status: number): string {
   if (status === 0)
-    return 'Cannot reach the Alpha Harness backend. Start it on port 8000 and try again.'
+    return import.meta.env.DEV
+      ? 'Cannot reach the Alpha Harness backend. Start it on port 8000 and try again.'
+      : 'Cannot reach Alpha Harness: it is not running. Open it again.'
   if (status >= 500) return 'The backend failed while handling that request.'
   return `The request was refused (${status}).`
 }

@@ -248,16 +248,17 @@ export function UpdateBadge({ collapsed = false }: { collapsed?: boolean }) {
   // An update installs the wheel and never the launcher, so a launcher change — the
   // system tray, say — reaches nobody until they fetch the exe themselves. Nothing else in
   // the app can say so: from inside, an out-of-date launcher looks exactly like a current one.
-  if (data?.launcherOutdated)
-    return (
-      <LauncherNotice
-        version={data.launcher}
-        file={data.launcherFile}
-        url={data.url || data.releasesUrl}
-        collapsed={collapsed}
-      />
-    )
-  if (!data?.available) return null
+  // Beside the update, never instead of it: an older exe still installs one, and hiding the
+  // button sent everyone with an early exe to GitHub for every release.
+  const notice = data?.launcherOutdated ? (
+    <LauncherNotice
+      version={data.launcher}
+      file={data.launcherFile}
+      url={data.url || data.releasesUrl}
+      collapsed={collapsed}
+    />
+  ) : null
+  if (!data?.available) return notice
 
   return (
     <>
@@ -334,6 +335,7 @@ export function UpdateBadge({ collapsed = false }: { collapsed?: boolean }) {
           )}
         </div>
       </Dialog>
+      {notice}
     </>
   )
 }

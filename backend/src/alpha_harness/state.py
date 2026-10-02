@@ -240,6 +240,11 @@ class AppState:
                     return False
             if now - self._last_login_attempt < LOGIN_RETRY_SECONDS:
                 return False
+            if self.auth.session.inquiry:
+                # An identity check only the person can finish. A silent sign-in would start
+                # yet another, and each spends BRAIN's lockout budget: hourly, that locked an
+                # account out without anyone signing in.
+                return False
             if await self.auth.get_credential() is None:
                 return False
             # Set only for a sign-in BRAIN actually answered: the hour exists to protect the

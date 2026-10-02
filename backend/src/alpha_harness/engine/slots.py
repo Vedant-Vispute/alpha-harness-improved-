@@ -68,6 +68,9 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+#: Added to a batched simulation's outcome when BRAIN named no child, so it was matched by order.
+POSITIONAL_NOTE = "Matched to this request by submission order."
+
 #: Concurrent simulations the platform allows. Accounts without MULTI_SIMULATION get the
 #: same slots, one simulation per batch.
 DEFAULT_SLOTS = 8
@@ -1085,8 +1088,7 @@ class BatchEngine:
 
                 outcome = outcomes[found["platform_id"]]
                 if found.get("positional"):
-                    note = "Matched to this request by submission order."
-                    joined = f"{outcome.message} {note}" if outcome.message else note
+                    joined = f"{outcome.message or ''} {POSITIONAL_NOTE}".strip()
                     outcome = dataclasses.replace(outcome, message=joined)
                 if alpha_id := await finish(
                     session, record, outcome, platform_id=found["platform_id"]

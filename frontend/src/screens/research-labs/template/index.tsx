@@ -39,6 +39,7 @@ import {
   Page,
   PageHeader,
   Panel,
+  Segmented,
   Skeleton,
 } from '@/ui/kit'
 import { Confirm, Dialog, Menu } from '@/ui/overlay'
@@ -52,6 +53,7 @@ import {
   templateLab,
   type VariableDef,
 } from './api'
+import { TemplateBlocks } from './blocks'
 import { TemplateEditor } from './editor'
 import { Facts, GALLERY, galleryKey, savedKey, TemplatesPanel } from './gallery'
 import { useTemplateLab } from './state'
@@ -480,16 +482,38 @@ export function TemplateLabScreen() {
         }
       >
         <div className="flex flex-col gap-3">
-          <TemplateEditor
-            value={draft.text}
-            onChange={draft.write}
-            reference={reference}
-            presets={presets}
-            variables={defs}
-            infos={infos}
-            problems={placed}
-            scope={scope}
+          <Segmented
+            label="Edit the template as"
+            items={[
+              { value: 'code', label: 'Code' },
+              { value: 'blocks', label: 'Blocks' },
+            ]}
+            value={draft.view}
+            onChange={(view) => set({ view })}
           />
+          {draft.view === 'blocks' ? (
+            <TemplateBlocks
+              text={draft.text}
+              onChange={draft.write}
+              reference={reference}
+              variables={[
+                ...new Set([...names, ...Object.keys(presets), ...Object.keys(draft.variables)]),
+              ]}
+              scope={scope}
+              onCode={() => set({ view: 'code' })}
+            />
+          ) : (
+            <TemplateEditor
+              value={draft.text}
+              onChange={draft.write}
+              reference={reference}
+              presets={presets}
+              variables={defs}
+              infos={infos}
+              problems={placed}
+              scope={scope}
+            />
+          )}
           {draft.text.trim() && <Facts stats={plan?.stats} />}
           {plan?.text === draft.text &&
             plan.templateProblems.map((problem) => (

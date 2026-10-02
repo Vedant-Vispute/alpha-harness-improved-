@@ -1169,6 +1169,22 @@ const ANY = 'any'
  * months this market actually has, each counted under the other filters, as the table would
  * show it; neither end can pass the other.
  */
+/** Starts the Date Added filter offers in one click, counted back from this month. */
+const SINCE = [
+  { label: 'Last month', back: 1 },
+  { label: 'Last 3 months', back: 3 },
+  { label: 'Last 6 months', back: 6 },
+  { label: 'Last year', back: 12 },
+] as const
+
+/** The first day of the month `back` months before this one, as BRAIN dates a month. */
+function monthsAgo(back: number): string {
+  const now = new Date()
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, 1))
+    .toISOString()
+    .slice(0, 10)
+}
+
 function MonthRange({
   label,
   months,
@@ -1215,6 +1231,27 @@ function MonthRange({
           onChange={(v) => onChange(from ?? null, pick(v))}
           disabled={months.length === 0}
         />
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1">
+        {SINCE.map(({ label: since, back }) => {
+          // The first month on offer that recent: a start outside the list would leave the
+          // From menu showing nothing, and none at all means nothing here is that new.
+          const start = monthsAgo(back)
+          const first = months.find((m) => m.month >= start)?.month
+          const on = first !== undefined && from === first && !to
+          return (
+            <Button
+              key={since}
+              size="sm"
+              variant={on ? 'secondary' : 'ghost'}
+              aria-pressed={on}
+              disabled={first === undefined}
+              onClick={() => first && onChange(first, null)}
+            >
+              {since}
+            </Button>
+          )
+        })}
       </div>
     </Fieldset>
   )

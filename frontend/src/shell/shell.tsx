@@ -22,7 +22,14 @@ import { SignIn } from './sign-in'
 import { InstallingOverlay } from './update'
 
 export function Shell() {
-  const query = useQuery({ queryKey: ['today'], queryFn: () => today.get() })
+  const query = useQuery({
+    queryKey: ['today'],
+    queryFn: () => today.get(),
+    // While it has never answered, keep asking: a backend restarting after an update, or put
+    // back after a failed one, is down for seconds, and this window should come back by itself.
+    refetchInterval: (q) =>
+      q.state.data === undefined && q.state.status === 'error' ? 3000 : false,
+  })
   useRefetchOn('session', ['today'])
 
   if (query.isPending) {
@@ -39,12 +46,26 @@ export function Shell() {
     return (
       <div className="flex h-svh items-center justify-center p-6">
         <div className="w-full max-w-md rounded-lg border border-hairline bg-surface-1">
-          <Empty icon={<ServerCrashIcon />} title="The backend is not answering">
-            <p>{errorMessage(query.error)}</p>
-            <code className="mt-3 block rounded-md bg-canvas px-2 py-1.5 text-caption break-all text-ink-muted">
-              cd backend && uv run uvicorn alpha_harness.main:app --reload --port 8000
-            </code>
-          </Empty>
+          {import.meta.env.DEV ? (
+            <Empty icon={<ServerCrashIcon />} title="The backend is not answering">
+              <p>{errorMessage(query.error)}</p>
+              <code className="mt-3 block rounded-md bg-canvas px-2 py-1.5 text-caption break-all text-ink-muted">
+                cd backend && uv run uvicorn alpha_harness.main:app --reload --port 8000
+              </code>
+            </Empty>
+          ) : (
+            <Empty icon={<ServerCrashIcon />} title="Alpha Harness is not running">
+              <p>
+                This window reconnects by itself as soon as it is back. If it does not come back,
+                open Alpha Harness again.
+              </p>
+              <p className="mt-2">
+                If it keeps stopping, the reason is in <span className="num">launcher.log</span> in
+                its folder: on Windows,{' '}
+                <span className="num break-all">%LOCALAPPDATA%\AlphaHarness</span>.
+              </p>
+            </Empty>
+          )}
           <div className="flex justify-center border-t border-hairline p-3">
             <Button onClick={() => query.refetch()} loading={query.isFetching}>
               <RefreshCwIcon /> Try again

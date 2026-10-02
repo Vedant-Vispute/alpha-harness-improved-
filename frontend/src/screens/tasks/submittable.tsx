@@ -7,12 +7,20 @@ import { useMemo, useState } from 'react'
 import { useRefetchOn } from '@/lib/ws'
 import { AlphaPane } from '@/screens/tasks/alpha-pane'
 import { labTasks, type RankedAlpha, type TaskAlpha } from '@/screens/tasks/api'
-import { compareAlphas, METRIC_COLUMNS, SETTING_COLUMNS } from '@/screens/tasks/columns'
+import {
+  ALPHA_ID,
+  compareAlphas,
+  METRIC_COLUMNS,
+  PROD_CORRELATION,
+  SETTING_COLUMNS,
+} from '@/screens/tasks/columns'
 import type { Column, Sort } from '@/ui/table'
 
 /** The task's own columns, minus Checks Failed — every row here has none — plus the task. */
 const columns = (): Column<RankedAlpha>[] => [
+  ALPHA_ID,
   ...SETTING_COLUMNS,
+  PROD_CORRELATION,
   ...METRIC_COLUMNS,
   {
     key: 'taskName',
@@ -23,10 +31,10 @@ const columns = (): Column<RankedAlpha>[] => [
   },
 ]
 
-export function SubmittableAlphas() {
+export function SubmittableAlphas({ onOpenAlpha }: { onOpenAlpha: (alphaId: string) => void }) {
   const query = useQuery({ queryKey: ['submittable-alphas'], queryFn: labTasks.submittable })
-  // Its own key, refreshed at most every 30s: reading every task's Alphas takes about a second,
-  // too long to redo on each of the Tasks screen's two-second updates.
+  // Its own key, refreshed at most every 30s: reading every task's Alphas takes seconds on a
+  // large account, too long to redo on each of the Tasks screen's two-second updates.
   useRefetchOn('studies', ['submittable-alphas'], 30_000)
   const [sort, setSort] = useState<Sort>({ key: 'sharpe', desc: true })
   const rows = useMemo<RankedAlpha[]>(() => query.data ?? [], [query.data])
@@ -43,6 +51,7 @@ export function SubmittableAlphas() {
       loading={query.isPending}
       error={query.error}
       onRefresh={() => query.refetch()}
+      onOpenAlpha={onOpenAlpha}
     />
   )
 }

@@ -98,7 +98,8 @@ function metricColumns<T>(
 }
 
 /** The running Portfolio sync, from the live feed or, without one, a poll. */
-function useSyncTask() {
+/** The latest Portfolio sync, running or just finished. */
+function useLastSync() {
   const live = useLive((s) => s.tasks)
   const polled = useQuery({
     queryKey: ['background-tasks'],
@@ -106,14 +107,28 @@ function useSyncTask() {
     enabled: live == null,
     refetchInterval: 3000,
   })
-  return ((live ?? polled.data)?.tasks ?? []).find(
-    (t) => t.kind === 'portfolio-sync' && t.state === 'running',
-  )
+  return ((live ?? polled.data)?.tasks ?? []).filter((t) => t.kind === 'portfolio-sync').at(-1)
 }
 
+function useSyncTask() {
+  const last = useLastSync()
+  return last?.state === 'running' ? last : undefined
+}
+
+/** IDs shown before the rest are counted: a large account has hundreds. */
+const SHOWN_IDS = 12
+
 function SyncProgress() {
-  const task = useSyncTask()
+  const task = useLastSync()
   if (!task) return null
+  if (task.state === 'failed')
+    return (
+      <Notice tone="error" title="The sync stopped">
+        {task.error}
+      </Notice>
+    )
+  if (task.state !== 'running')
+    return <p className="text-body-compact text-ink-muted">{task.detail}</p>
   return (
     <div className="flex flex-col gap-1.5">
       <span className="text-body-compact text-ink-muted">{task.detail ?? task.label}</span>
@@ -172,6 +187,7 @@ export function PortfolioScreen() {
   // A disabled query keeps its last answer, which would outlive deselecting every Alpha.
   const result = ids.length ? computed.data : undefined
   const unlabelled = all.filter((m) => !m.labelled).length
+  const syncing = useSyncTask() !== undefined
 
   return (
     <Page>
@@ -186,9 +202,22 @@ export function PortfolioScreen() {
         </Notice>
       )}
       {result && result.missing.length > 0 && (
-        <Notice tone="warn" title="Some Alphas have no PnL stored">
-          {result.missing.join(', ')} {result.missing.length === 1 ? 'is' : 'are'} left out. Sync
-          from BRAIN to download their PnL and Turnover.
+        <Notice
+          tone={syncing ? 'info' : 'warn'}
+          title={
+            syncing
+              ? `Downloading PnL: ${fmt.int(result.missing.length)} Alphas to go`
+              : `${fmt.int(result.missing.length)} Alpha${result.missing.length === 1 ? ' has' : 's have'} no PnL stored`
+          }
+        >
+          {syncing
+            ? 'They join the charts below as they arrive.'
+            : 'They are left out until it is downloaded. Sync from BRAIN to download it; one that stays after a sync is one BRAIN gave no PnL for.'}{' '}
+          <span className="num text-ink-subtle">
+            {result.missing.slice(0, SHOWN_IDS).join(', ')}
+            {result.missing.length > SHOWN_IDS &&
+              ` and ${fmt.int(result.missing.length - SHOWN_IDS)} more`}
+          </span>
         </Notice>
       )}
 

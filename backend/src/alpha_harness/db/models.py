@@ -405,6 +405,8 @@ class Study(Base):
     name: Mapped[str] = mapped_column(String(128), unique=True)
     template_id: Mapped[int | None] = mapped_column(ForeignKey("template.id", ondelete="SET NULL"))
     template_name: Mapped[str | None] = mapped_column(String(128))
+    #: What the user calls the task, shown in place of its lab and template.
+    label: Mapped[str | None] = mapped_column(String(128))
     template_source: Mapped[str] = mapped_column(Text)
 
     sampler: Mapped[str] = mapped_column(String(32), default="nsga3")
@@ -445,7 +447,11 @@ class Trial(Base):
     number: Mapped[int] = mapped_column(Integer)
 
     params: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    distributions: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: What Optuna drew each value from: every choice of every categorical, so a field searched
+    #: over a few thousand fields stores them all, on every trial — 127 KB a trial was measured.
+    #: Deferred, so only the two readers that rebuild the search load it; decoding it on every
+    #: row a screen or a harvest reads held the event loop for seconds.
+    distributions: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, deferred=True)
     expression: Mapped[str | None] = mapped_column(Text)
     settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 

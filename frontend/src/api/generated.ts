@@ -846,6 +846,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/lab-tasks/prod-correlation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check Prod Correlation
+         * @description Ask BRAIN for the Production Correlation of each unsubmitted Alpha here it has not given
+         *     one for, in the order sent. BRAIN limits these checks per hour, so a long list waits that
+         *     out and takes hours. No simulation quota.
+         */
+        post: operations["check_prod_correlation_api_lab_tasks_prod_correlation_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lab-tasks/prod-correlation/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stop Prod Correlation
+         * @description Stop asking BRAIN. Every answer already back is kept.
+         */
+        post: operations["stop_prod_correlation_api_lab_tasks_prod_correlation_stop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/lab-tasks/run-all": {
         parameters: {
             query?: never;
@@ -1024,6 +1066,26 @@ export interface paths {
          */
         get: operations["info_api_lab_tasks__task_id__info_get"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lab-tasks/{task_id}/name": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Rename
+         * @description Name a task, whatever its state. Nothing it runs changes.
+         */
+        put: operations["rename_api_lab_tasks__task_id__name_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1952,6 +2014,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/template-lab/tree": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Tree
+         * @description The template as blocks, read with the same grammar every task runs on.
+         */
+        post: operations["tree_api_template_lab_tree_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/today": {
         parameters: {
             query?: never;
@@ -2453,6 +2535,8 @@ export interface components {
             studyName: string | null;
             /** Task */
             task: string;
+            /** Taskname */
+            taskName?: string | null;
             /** Templatename */
             templateName: string | null;
         };
@@ -3492,6 +3576,13 @@ export interface components {
             /** Universe */
             universe: string;
         };
+        /** Failure */
+        Failure: {
+            /** Count */
+            count: number;
+            /** Reason */
+            reason: string;
+        };
         /** Feature */
         Feature: {
             /** Code */
@@ -3892,6 +3983,8 @@ export interface components {
             expression?: string | null;
             /** Failed */
             failed: number;
+            /** Failures */
+            failures: components["schemas"]["Failure"][];
             /** Fields */
             fields: number;
             /** Finishedat */
@@ -3915,6 +4008,8 @@ export interface components {
             model?: string | null;
             /** Mutationrate */
             mutationRate: number | null;
+            /** Name */
+            name: string | null;
             /** Nanhandling */
             nanHandling?: string | null;
             /** Objectivelabel */
@@ -4459,6 +4554,8 @@ export interface components {
             simulations: number;
             /** Universe */
             universe: string;
+            /** Universes */
+            universes?: string[];
         };
         /**
          * PowerPoolRow
@@ -4679,6 +4776,11 @@ export interface components {
             alphaId: string | null;
             /** Drawdown */
             drawdown: number | null;
+            /**
+             * Errored
+             * @default false
+             */
+            errored: boolean;
             /** Expression */
             expression: string | null;
             /** Failedchecks */
@@ -4698,6 +4800,8 @@ export interface components {
              * @default false
              */
             pending: boolean;
+            /** Prodcorrelation */
+            prodCorrelation?: number | null;
             /**
              * Quick
              * @default false
@@ -4727,6 +4831,10 @@ export interface components {
              * @default false
              */
             submitted: boolean;
+            /** Testfitness */
+            testFitness?: number | null;
+            /** Testsharpe */
+            testSharpe?: number | null;
             /** Trialid */
             trialId: number;
             /** Turnover */
@@ -5501,6 +5609,11 @@ export interface components {
             alphaId: string | null;
             /** Drawdown */
             drawdown: number | null;
+            /**
+             * Errored
+             * @default false
+             */
+            errored: boolean;
             /** Expression */
             expression: string | null;
             /** Failedchecks */
@@ -5520,6 +5633,8 @@ export interface components {
              * @default false
              */
             pending: boolean;
+            /** Prodcorrelation */
+            prodCorrelation?: number | null;
             /**
              * Quick
              * @default false
@@ -5553,6 +5668,10 @@ export interface components {
             taskId: number;
             /** Taskname */
             taskName: string;
+            /** Testfitness */
+            testFitness?: number | null;
+            /** Testsharpe */
+            testSharpe?: number | null;
             /** Trialid */
             trialId: number;
             /** Turnover */
@@ -5639,6 +5758,11 @@ export interface components {
             status: components["schemas"]["StudyStatus"];
             /** Updatedat */
             updatedAt: string | null;
+        };
+        /** TaskName */
+        TaskName: {
+            /** Name */
+            name?: string | null;
         };
         /** TaskRemoved */
         TaskRemoved: {
@@ -5768,7 +5892,7 @@ export interface components {
             updatedAt: string | null;
             /** Variables */
             variables: {
-                [key: string]: unknown;
+                [key: string]: components["schemas"]["FieldsVariable"] | components["schemas"]["ValuesVariable"];
             };
         };
         /** TemplateTask */
@@ -5835,6 +5959,12 @@ export interface components {
                 [key: string]: components["schemas"]["FieldsVariable"] | components["schemas"]["ValuesVariable"];
             };
         };
+        /** TemplateTree */
+        TemplateTree: {
+            /** Problem */
+            problem?: string | null;
+            tree?: components["schemas"]["TreeNode"] | null;
+        };
         /** ThreadScope */
         ThreadScope: {
             /** Delay */
@@ -5879,6 +6009,34 @@ export interface components {
             unspoken: number;
             /** Used */
             used: number;
+        };
+        /**
+         * TreeNode
+         * @description One step of a template, as the Blocks view draws it. ``...`` is a name: an empty input.
+         */
+        TreeNode: {
+            /** Args */
+            args: components["schemas"]["TreeNode"][];
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "num" | "str" | "name" | "call" | "unary" | "binary" | "ternary" | "assign" | "seq";
+            /** Kwargs */
+            kwargs: components["schemas"]["TreeOption"][];
+            /** Value */
+            value: string;
+        };
+        /** TreeOption */
+        TreeOption: {
+            /** Name */
+            name: string;
+            value: components["schemas"]["TreeNode"];
+        };
+        /** TreeRequest */
+        TreeRequest: {
+            /** Text */
+            text: string;
         };
         /**
          * Tuple4
@@ -7313,6 +7471,57 @@ export interface operations {
             };
         };
     };
+    check_prod_correlation_api_lab_tasks_prod_correlation_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlphaIds"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowStarted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stop_prod_correlation_api_lab_tasks_prod_correlation_stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     run_all_api_lab_tasks_run_all_post: {
         parameters: {
             query?: never;
@@ -7571,6 +7780,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TaskInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_api_lab_tasks__task_id__name_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskName"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LabTask"];
                 };
             };
             /** @description Validation Error */
@@ -9173,6 +9417,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TemplateRemoved"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    tree_api_template_lab_tree_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TreeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TemplateTree"];
                 };
             };
             /** @description Validation Error */

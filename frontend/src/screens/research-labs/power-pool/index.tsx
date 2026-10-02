@@ -28,6 +28,7 @@ import {
 } from '@/screens/research-labs/task-settings'
 import {
   Button,
+  Chips,
   Disclosure,
   ErrorNotice,
   Fieldset,
@@ -56,6 +57,8 @@ interface PowerPoolDraft {
   promptId: number | null
   /** Empty keeps every neutralization BRAIN offers for the market. */
   neutralizations: string[]
+  /** Empty draws from every downloaded universe of the market. */
+  universes: string[]
 }
 
 const useDraft = create<PowerPoolDraft>()(
@@ -73,12 +76,18 @@ const useDraft = create<PowerPoolDraft>()(
       model: null,
       promptId: null,
       neutralizations: [],
+      universes: [],
     }),
     {
       name: 'alpha-harness-power-pool-lab',
       // Version 1 leaves cores unchosen, so Settings' default for new tasks applies.
-      version: 1,
-      migrate: (stored) => ({ ...(stored as PowerPoolDraft), cores: null }),
+      // Version 2 adds universes, none chosen: every downloaded one, as before.
+      version: 2,
+      migrate: (stored, version) => ({
+        ...(stored as PowerPoolDraft),
+        ...(version < 1 ? { cores: null } : {}),
+        universes: [],
+      }),
     },
   ),
 )
@@ -126,6 +135,7 @@ export function PowerPoolLabScreen() {
     model,
     prompt_id: promptId,
     neutralizations: draft.neutralizations,
+    universes: draft.universes,
     cores,
     simulations: draft.simulations ?? 0,
   }
@@ -194,6 +204,18 @@ export function PowerPoolLabScreen() {
               onChange={(next) => set({ simulations: next })}
             />
           </div>
+          {scopeOptions.universes.length > 0 && (
+            <Fieldset
+              legend={draft.universes.length === 0 ? 'Universes · all downloaded' : 'Universes'}
+            >
+              <Chips
+                label="Universes"
+                items={scopeOptions.universes}
+                value={draft.universes}
+                onChange={(next) => set({ universes: next })}
+              />
+            </Fieldset>
+          )}
           {scopeOptions.neutralizations.length > 0 && (
             <NeutralizationPicker
               available={scopeOptions.neutralizations}

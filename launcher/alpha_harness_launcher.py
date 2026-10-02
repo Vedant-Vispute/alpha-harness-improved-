@@ -18,6 +18,7 @@ working when the venv it manages does not.
 import ctypes
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -45,6 +46,8 @@ LAUNCHER_VARIABLE = "ALPHA_HARNESS_LAUNCHER"
 PID_VARIABLE = "ALPHA_HARNESS_LAUNCHER_PID"
 REQUEST_FILE = "update-request.json"
 ERROR_FILE = "update-error.json"
+#: The exe version that last installed itself over an older install, so it tries once only.
+OUTGROWN_FILE = "launcher-upgrade.txt"
 ACTIVE_FILE = "active-slot.txt"
 LOCK_FILE = "running.lock"
 LOG_FILE = "launcher.log"
@@ -304,6 +307,29 @@ def requested_wheel(root: Path) -> str | None:
     """The wheel URL the app read off the release, rather than one built from the version."""
     url = read_json(root / REQUEST_FILE).get("wheelUrl")
     return url if isinstance(url, str) and url.startswith(DOWNLOAD) else None
+
+
+def release_of(version: str | None) -> tuple[int, ...]:
+    """A version's leading numbers, enough to order dated releases: ``2026.10.1`` is
+    ``(2026, 10, 1)``. A pre-release reads as its release, so it is never newer than one."""
+    match = re.match(r"\d+(?:\.\d+)*", version or "")
+    return tuple(int(part) for part in match.group().split(".")) if match else ()
+
+
+def outgrown(root: Path, running: str | None) -> bool:
+    """Whether this exe is newer than the version installed and has not installed itself yet.
+
+    An install too broken to start never reaches the in-app update, and downloading the new
+    exe is what a person does next; it used to keep starting the broken version all the same.
+    Once per exe version: one that fails to start is reverted below and not tried again.
+    """
+    if running is None or release_of(BUILD_VERSION) <= release_of(running):
+        return False
+    try:
+        tried = (root / OUTGROWN_FILE).read_text(encoding="utf-8").strip()
+    except OSError:
+        tried = ""
+    return tried != BUILD_VERSION
 
 
 def note_failure(root: Path, version: str, reason: str) -> None:
@@ -1008,6 +1034,10 @@ def supervise(root: Path, uv: Path) -> int:
         slot = active(root)
         running = slot_version(root, slot)
         wanted = requested(root) or running or BUILD_VERSION
+        if requested(root) is None and outgrown(root, running):
+            (root / OUTGROWN_FILE).write_text(BUILD_VERSION, encoding="utf-8")
+            say(root, f"launcher {BUILD_VERSION} is newer than {running}; installing it")
+            wanted = BUILD_VERSION
         swapped = False
 
         if running != wanted:

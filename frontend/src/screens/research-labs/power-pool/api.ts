@@ -25,6 +25,8 @@ export interface PowerPoolRequest {
   prompt_id: number | null
   /** Empty keeps every neutralization BRAIN offers for the market. */
   neutralizations: string[]
+  /** Empty draws from every downloaded universe of the market. */
+  universes: string[]
   cores: number
   simulations: number
 }

@@ -118,8 +118,8 @@ export function locals(blank: string): Set<string> {
 /** Every bare name, not a `$variable` and not an operator being called. */
 export const NAMES = /(?<![$\w])[A-Za-z_]\w*(?!\w)(?!\s*\()/g
 
-/** The inputs an operator needs, as a snippet: `ts_rank(${x}, ${d})`. */
-export function snippetOf(op: OperatorDoc): string {
+/** The inputs an operator needs, by the names its definition gives them: `x`, `d`. */
+export function inputsOf(op: OperatorDoc): string[] {
   const first = op.definition.split(/\r?\n/)[0] ?? ''
   const open = first.indexOf('(')
   const params: string[] = []
@@ -142,7 +142,13 @@ export function snippetOf(op: OperatorDoc): string {
     }
     params.push(current.trim())
   }
-  const needed = params.filter((p) => p && !p.includes('=') && !p.includes('..'))
-  const fields = needed.map((p) => `\${${p.replace(/[{}$\\]/g, '')}}`).join(', ')
+  return params.filter((p) => p && !p.includes('=') && !p.includes('..'))
+}
+
+/** The inputs an operator needs, as a snippet: `ts_rank(${x}, ${d})`. */
+export function snippetOf(op: OperatorDoc): string {
+  const fields = inputsOf(op)
+    .map((p) => `\${${p.replace(/[{}$\\]/g, '')}}`)
+    .join(', ')
   return `${op.name}(${fields || `\${}`})`
 }

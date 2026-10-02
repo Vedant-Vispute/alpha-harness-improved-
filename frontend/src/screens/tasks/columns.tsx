@@ -82,6 +82,38 @@ export function QuickBadge({ alpha }: { alpha: RankedAlpha }) {
   )
 }
 
+/** The Alpha's BRAIN id: what a consultant searches BRAIN by and quotes. A click on the row
+ *  opens its details; Ctrl-click opens it on BRAIN. */
+export const ALPHA_ID: Column<RankedAlpha> = {
+  key: 'alphaId',
+  header: 'Alpha',
+  width: '104px',
+  sortable: true,
+  cell: (r) => <span className="num text-ink">{r.alphaId ?? DASH}</span>,
+}
+
+/** BRAIN wants it below 0.7, or a Sharpe 10% above each production Alpha it exceeds. */
+export const PROD_CORRELATION: Column<RankedAlpha> = {
+  key: 'prodCorrelation',
+  header: 'Production Correlation',
+  width: 'minmax(120px,1.1fr)',
+  align: 'right',
+  sortable: true,
+  cell: (r) =>
+    r.prodCorrelation == null ? (
+      <span className="text-ink-subtle">{DASH}</span>
+    ) : (
+      <span
+        className={cn(
+          'num',
+          r.prodCorrelation < 0.7 ? 'text-pnl-positive-text' : 'text-status-warning',
+        )}
+      >
+        {fmt.ratio(r.prodCorrelation, 4)}
+      </span>
+    ),
+}
+
 export const FAILED_CHECKS: Column<RankedAlpha> = {
   key: 'failed',
   header: 'Checks Failed',
@@ -143,6 +175,15 @@ export const METRICS: Metric[] = [
   {
     key: 'afterCostSharpe',
     label: 'After-Cost Sharpe',
+    show: (v) => fmt.ratio(v),
+    signed: true,
+    best: 'max',
+  },
+  // The held-out years: an Alpha that decays shows it here, beside its full-period figures.
+  { key: 'testSharpe', label: 'Test Sharpe', show: (v) => fmt.ratio(v), signed: true, best: 'max' },
+  {
+    key: 'testFitness',
+    label: 'Test Fitness',
     show: (v) => fmt.ratio(v),
     signed: true,
     best: 'max',

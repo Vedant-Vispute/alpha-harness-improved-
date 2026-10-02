@@ -144,8 +144,10 @@ jobs:
           # The binary needs glibc 2.35 or newer, so it runs on Ubuntu 22.04 and later. Measured
           # on a glibc 2.43 build: the floor is libgcc_s, which PyInstaller bundles from the
           # runner; uv and the bundled Python need only 2.17.
+          # Archived: a browser downloads a bare binary without its executable bit, and Debian's
+          # file manager then hands it to the software centre instead of running it.
           - os: ubuntu-latest
-            asset: AlphaHarness-linux-x86_64
+            asset: AlphaHarness-linux-x86_64.tar.gz
     runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.wheel.outputs.version }}
@@ -295,7 +297,8 @@ jobs:
             --distpath dist \
             --paths backend/src \
             launcher/alpha_harness_launcher.py
-          mv dist/AlphaHarness "dist/$ASSET"
+          chmod 755 dist/AlphaHarness
+          tar -czf "dist/$ASSET" -C dist AlphaHarness
 
       - uses: actions/upload-artifact@v7
         with:
@@ -323,7 +326,7 @@ jobs:
 
             - **Windows:** `AlphaHarness.exe`. Windows warns that it does not recognise the app — it is unsigned. Choose **More info**, then **Run anyway**.
             - **Mac:** `AlphaHarness-macOS-arm64.zip` for Apple Silicon (M1 or later), or `AlphaHarness-macOS-x86_64.zip` for Intel. Open the zip and drag **AlphaHarness** into Applications. The first time, macOS will not open it because it is unsigned: open **System Settings › Privacy & Security**, scroll down, and choose **Open Anyway**.
-            - **Linux:** `AlphaHarness-linux-x86_64`. Right-click it › **Properties** › **Allow executing file as program** (or `chmod +x` it), then open it. It adds Alpha Harness to your applications menu.
+            - **Linux:** `AlphaHarness-linux-x86_64.tar.gz`. Extract it, then open **AlphaHarness**. It adds Alpha Harness to your applications menu.
 
             To close it: the tray icon on Windows, or **Quit Alpha Harness** in the account menu at the bottom of the sidebar.
 

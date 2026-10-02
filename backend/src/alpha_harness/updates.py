@@ -66,7 +66,7 @@ def _launcher_asset() -> str:
     arm = platform.machine().lower() in ("arm64", "aarch64")
     if sys.platform == "darwin":
         return f"AlphaHarness-macOS-{'arm64' if arm else 'x86_64'}.zip"
-    return "AlphaHarness-linux-x86_64"
+    return "AlphaHarness-linux-x86_64.tar.gz"
 
 
 #: The launcher download to fetch for this machine, for the notice that asks for a newer one.

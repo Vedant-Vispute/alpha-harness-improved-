@@ -13,16 +13,19 @@ import { useMemo, useState } from 'react'
 import { cn } from '@/lib/cn'
 import { DASH, fmt } from '@/lib/format'
 import { useRefetchOn } from '@/lib/ws'
+import { DetailSheet } from '@/screens/pool/detail'
 import { AstInspector } from '@/screens/pool/shared'
 import { AlphaPane } from '@/screens/tasks/alpha-pane'
 import { labTasks, type RankedAlpha } from '@/screens/tasks/api'
 import {
+  ALPHA_ID,
   compareAlphas,
   FAILED_CHECKS,
   Figure,
   METRIC_COLUMNS,
   METRICS,
   metricHeader,
+  PROD_CORRELATION,
   SETTING_COLUMNS,
   setting,
   taskStatus,
@@ -35,7 +38,13 @@ const LIMIT = 2000
 
 const market = (r: RankedAlpha) => setting(r, 'region') || DASH
 
-const columns = (): Column<RankedAlpha>[] => [...SETTING_COLUMNS, FAILED_CHECKS, ...METRIC_COLUMNS]
+const columns = (): Column<RankedAlpha>[] => [
+  ALPHA_ID,
+  ...SETTING_COLUMNS,
+  PROD_CORRELATION,
+  FAILED_CHECKS,
+  ...METRIC_COLUMNS,
+]
 
 /**
  * What a reader can narrow the table by. Three independent questions, each answerable on its
@@ -160,6 +169,7 @@ export function TaskResultsScreen() {
   const { taskId } = useParams({ from: '/tasks/$taskId' })
   const id = Number(taskId)
   const [sort, setSort] = useState<Sort>({ key: 'sharpe', desc: true })
+  const [alphaId, setAlphaId] = useState<string | null>(null)
 
   const tasks = useQuery({ queryKey: ['lab-tasks'], queryFn: labTasks.list })
   const task = tasks.data?.tasks.find((t) => t.id === id)
@@ -229,7 +239,7 @@ export function TaskResultsScreen() {
   return (
     <Page>
       <PageHeader
-        title={task?.templateName || task?.labName || `Task ${taskId}`}
+        title={task?.name || task?.templateName || task?.labName || `Task ${taskId}`}
         // The lab is the title already; repeating it here spent the one line that says
         // where this task got to.
         description={
@@ -357,9 +367,11 @@ export function TaskResultsScreen() {
         loading={top.isPending}
         error={top.error}
         onRefresh={() => top.refetch()}
+        onOpenAlpha={setAlphaId}
       />
 
       <CheckSets rows={rows} />
+      <DetailSheet alphaId={alphaId} onClose={() => setAlphaId(null)} />
     </Page>
   )
 }

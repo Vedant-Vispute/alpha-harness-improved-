@@ -14,6 +14,7 @@ import {
   PlayIcon,
   StarIcon,
   Trash2Icon,
+  TriangleAlertIcon,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
@@ -86,6 +87,16 @@ const TOP_COLUMNS: Column<RankedAlpha>[] = [
     width: '90px',
     align: 'right',
     cell: (r) => <SharpeCell value={r.sharpe} />,
+  },
+  {
+    // The held-out years, where an Alpha that only fits its train years shows its decay.
+    key: 'testSharpe',
+    header: 'Test Sharpe',
+    width: '100px',
+    align: 'right',
+    cell: (r) => (
+      <span className={TEXT_TONE[signTone(r.testSharpe)]}>{fmt.ratio(r.testSharpe)}</span>
+    ),
   },
   {
     key: 'fitness',
@@ -254,6 +265,7 @@ export function TasksScreen() {
   useRefetchOn('simulations', ['lab-tasks'], 5_000)
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [editing, setEditing] = useState<LabTask | null>(null)
+  const [renaming, setRenaming] = useState<LabTask | null>(null)
   const [confirming, setConfirming] = useState<Act | null>(null)
   const [alphaId, setAlphaId] = useState<string | null>(null)
   const [view, setView] = useState<'tasks' | 'submittable'>('tasks')
@@ -369,6 +381,7 @@ export function TasksScreen() {
           }
           onEdit={() => setEditing(t)}
           onDeleted={() => setSelectedId((id) => (id === t.id ? null : id))}
+          onRename={() => setRenaming(t)}
         />
       ),
     },
@@ -432,7 +445,7 @@ export function TasksScreen() {
         }
       >
         {view === 'submittable' ? (
-          <SubmittableAlphas />
+          <SubmittableAlphas onOpenAlpha={setAlphaId} />
         ) : list.data && all.length === 0 ? (
           <Empty title="No tasks yet">
             <Link to="/labs" className={LINK}>
@@ -505,6 +518,9 @@ export function TasksScreen() {
 
       {editing && (
         <EditTask key={editing.id} task={editing} slots={slots} onClose={() => setEditing(null)} />
+      )}
+      {renaming && (
+        <RenameTask key={renaming.id} task={renaming} onClose={() => setRenaming(null)} />
       )}
       <DetailSheet alphaId={alphaId} onClose={() => setAlphaId(null)} />
       <Confirm
@@ -609,7 +625,15 @@ function TaskName({ task: t }: { task: LabTask }) {
 
 function TaskBadge({ task }: { task: LabTask }) {
   const { label, tone } = taskStatus(task)
-  return <Badge tone={tone}>{label}</Badge>
+  // A task that paused or failed by itself says why: on the list, too, where a bare "Paused"
+  // read as the app stopping for no reason.
+  const why = (task.status === 'PAUSED' || task.status === 'FAILED') && task.message
+  return (
+    <Badge tone={tone} {...(why ? { title: why } : {})}>
+      {why && <TriangleAlertIcon className="size-3" aria-hidden />}
+      {label}
+    </Badge>
+  )
 }
 
 /** A task that failed before tasks only paused resumes like a paused one. */
@@ -620,11 +644,13 @@ function Actions({
   onAct,
   onEdit,
   onDeleted,
+  onRename,
 }: {
   task: LabTask
   onAct: (action: 'run' | 'pause') => void
   onEdit: () => void
   onDeleted: () => void
+  onRename: () => void
 }) {
   const { status, stopping } = task
   const queryClient = useQueryClient()
@@ -683,13 +709,13 @@ function Actions({
       >
         <Trash2Icon className="size-3.5" />
       </HoldButton>
-      <TaskActionsMenu task={task} />
+      <TaskActionsMenu task={task} onRename={onRename} />
     </span>
   )
 }
 
 /** Task actions that are not one-click enough to earn a button of their own. */
-function TaskActionsMenu({ task }: { task: LabTask }) {
+function TaskActionsMenu({ task, onRename }: { task: LabTask; onRename: () => void }) {
   const navigate = useNavigate()
   return (
     <Menu
@@ -699,6 +725,7 @@ function TaskActionsMenu({ task }: { task: LabTask }) {
         </Button>
       }
       items={[
+        { label: 'Rename', onClick: onRename },
         {
           label: 'Submission Planner',
           disabled: !task.simulated,
@@ -722,12 +749,15 @@ function TaskDetail({
   onDeleted: () => void
 }) {
   const top = useQuery({
-    queryKey: ['lab-tasks', 'top', task.id],
+    // Its own key, refreshed at most every 10s: the whole sweep is a megabyte or more on a
+    // big task, too much to redo on each of the task list's two-second updates.
+    queryKey: ['lab-task-top', task.id],
     // The whole sweep is worth scrolling; the table virtualises, so the rows are cheap.
     queryFn: () => labTasks.top(task.id, Math.min(Math.max(task.target, 50), 5000)),
     // Region Agnostic Lab's results are its Alpha groups instead.
     enabled: task.lab !== REGION_AGNOSTIC,
   })
+  useRefetchOn('studies', ['lab-task-top', task.id], 10_000)
   // The Alpha the sweep came from leads and is never ranked: it is the reference, not a
   // result. Everything else arrives sorted on the objective already.
   const found = top.data ?? []
@@ -749,15 +779,18 @@ function TaskDetail({
     // as its own block.
     r.source ? `${verdict(r)} border-b-2 border-b-hairline-strong` : verdict(r)
 
-  const sampler = task.lab === SETTINGS_SAMPLER
   const done = task.status === 'COMPLETE' || task.status === 'FAILED'
-  // The green rows: nothing has refused them. Pending ones are in here, which is what makes
-  // the figure an estimate — a check BRAIN has not run yet can still come back FAIL.
+  // Three outcomes and nothing else. Submittable: nothing has refused it, pending checks
+  // included, which is what makes the figure an estimate. Error: a check BRAIN could not run,
+  // or a simulation that returned no Alpha at all. Unsubmittable: every other refusal.
   const pending = found.filter((r) => r.pending).length
   const green = found.filter((r) => r.submittable || r.pending).length
-  const red = found.length - green - found.filter(awaitingFull).length
+  const erroredRows = found.filter((r) => r.errored && !(r.submittable || r.pending)).length
+  const errors = erroredRows + task.failed
+  const red = found.length - green - erroredRows - found.filter(awaitingFull).length
 
   const title = [
+    task.name,
     task.labName,
     task.templateName,
     task.lab === SETTINGS_SAMPLER ? task.alphaId : `${task.region} D${task.delay}`,
@@ -796,7 +829,9 @@ function TaskDetail({
       <div className="flex flex-col gap-4">
         <TaskControls task={task} onCloned={onSelect} onDeleted={onDeleted} />
         <TaskDatasets task={task} />
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {/* As many boxes as there are figures, sharing the row: some only show when they
+            have something to say, and a fixed grid left a hole where they were. */}
+        <div className="flex flex-wrap gap-3 *:min-w-44 *:flex-1">
           <Metric
             boxed
             label="Simulated"
@@ -811,31 +846,33 @@ function TaskDetail({
           />
           {/* Nothing is in flight once a task is over, so the box would only ever read 0. */}
           {!done && <Metric boxed label="In Flight" value={fmt.int(task.queued + task.running)} />}
-          {sampler ? (
-            <>
-              {/* `~` because the pending rows counted here have checks BRAIN has not run
-                  yet, any one of which can still come back FAIL. */}
-              <Metric
-                boxed
-                tone="profit"
-                label="Submittable"
-                value={
-                  <>
-                    {pending > 0 && '~'}
-                    {fmt.int(green)}
-                  </>
-                }
-              />
-              <Metric
-                boxed
-                tone={red > 0 ? 'loss' : 'neutral'}
-                label="Failed"
-                value={fmt.int(red)}
-                hint={task.failed > 0 ? `${fmt.int(task.failed)} could not simulate` : ''}
-              />
-            </>
-          ) : (
-            <Metric boxed label="Failed" value={fmt.int(task.failed)} />
+          {/* `~` because the pending rows counted here have checks BRAIN has not run
+              yet, any one of which can still come back FAIL. */}
+          <Metric
+            boxed
+            tone="profit"
+            label="Submittable"
+            value={
+              <>
+                {pending > 0 && '~'}
+                {fmt.int(green)}
+              </>
+            }
+          />
+          <Metric
+            boxed
+            tone={red > 0 ? 'loss' : 'neutral'}
+            label="Unsubmittable"
+            value={fmt.int(red)}
+          />
+          {errors > 0 && (
+            <Metric
+              boxed
+              tone="loss"
+              label="Error"
+              value={fmt.int(errors)}
+              hint={task.failed > 0 ? `${fmt.int(task.failed)} returned no Alpha` : ''}
+            />
           )}
           <Elapsed task={task} done={done} />
         </div>
@@ -843,6 +880,20 @@ function TaskDetail({
           <Notice tone={task.status === 'PAUSED' ? 'warn' : 'info'} title={task.message} />
         )}
         <TaskAbout task={task} />
+        {task.failures.length > 0 && (
+          <Notice
+            tone="error"
+            title={`${fmt.int(task.failed)} simulation${task.failed === 1 ? '' : 's'} returned no Alpha. BRAIN said:`}
+          >
+            <ul className="flex flex-col gap-1">
+              {task.failures.map((f) => (
+                <li key={f.reason}>
+                  <span className="num">{fmt.int(f.count)}×</span> {f.reason}
+                </li>
+              ))}
+            </ul>
+          </Notice>
+        )}
         {task.template && (
           <Disclosure summary="Template">
             <code className="num text-body-compact break-all text-ink">{task.template}</code>
@@ -925,6 +976,58 @@ function Elapsed({ task, done }: { task: LabTask; done: boolean }) {
       value={elapsed == null ? DASH : fmt.duration(elapsed)}
       hint={done ? '' : waiting ? 'for cores to free up' : 'still running'}
     />
+  )
+}
+
+function RenameTask({ task, onClose }: { task: LabTask; onClose: () => void }) {
+  const queryClient = useQueryClient()
+  const [name, setName] = useState(task.name ?? '')
+  const rename = useMutation({
+    meta: { inline: true },
+    mutationFn: () => labTasks.rename(task.id, name),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['lab-tasks'] })
+      void queryClient.invalidateQueries({ queryKey: ['submittable-alphas'] })
+      onClose()
+    },
+  })
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(isOpen) => !isOpen && onClose()}
+      title="Rename Task"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit" form="rename-task" loading={rename.isPending}>
+            Save
+          </Button>
+        </>
+      }
+    >
+      <form
+        id="rename-task"
+        className="flex flex-col gap-4"
+        onSubmit={(e) => {
+          e.preventDefault()
+          rename.mutate()
+        }}
+      >
+        <Field label="Name" hint="Leave it blank to go back to the lab's own name.">
+          <Input
+            autoFocus
+            maxLength={128}
+            placeholder={[task.labName, task.templateName].filter(Boolean).join(' · ')}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </Field>
+        {rename.isError && <ErrorNotice error={rename.error} title="Could not rename the task" />}
+      </form>
+    </Dialog>
   )
 }
 

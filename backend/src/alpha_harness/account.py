@@ -143,10 +143,13 @@ class AuthService:
                 raise NoCredentialError("Enter both your BRAIN email and password.")
 
             self._user_profile = None
-            # A pending verification is finished on its own inquiry, never by a new sign-in.
+            # A pending verification that was completed finishes the sign-in on its own. One
+            # that was not is replaced: pressing Sign in again is how a person asks for a new
+            # check, and Persona expires an inquiry ("Session expired") while BRAIN still calls
+            # it unfinished, so resuming it handed back the same dead link on every press.
             pending = self._session.inquiry
             info = await self.auth.verify(pending) if pending else None
-            if info is None:
+            if info is None or not info.authenticated:
                 info = await self.auth.login(email, password)
             self._session = info
             if info.authenticated:
@@ -167,10 +170,9 @@ class AuthService:
     async def verify(self, inquiry: str) -> SessionInfo:
         """Finish a sign-in BRAIN paused for an identity check, without asking again.
 
-        :meth:`login` already resumes a pending inquiry, which is why the old advice was to
-        sign in a second time. That works and asks the person to type a password they have
-        just typed. This closes the same inquiry on its own, so the check finishing is all
-        it takes.
+        :meth:`login` closes a pending inquiry too, but asks the person to type a password they
+        have just typed, and starts a new check when this one is not done. This closes the same
+        inquiry on its own, so the check finishing is all it takes.
 
         Answering before the check is done is the normal case, not a failure: the session
         comes back unauthenticated and still carrying the inquiry, and the caller asks

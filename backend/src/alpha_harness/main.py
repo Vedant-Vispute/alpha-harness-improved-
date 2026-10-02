@@ -250,12 +250,20 @@ class SinglePageApp(StaticFiles):
     @override
     async def get_response(self, path: str, scope: Scope) -> Response:
         try:
-            return await super().get_response(path, scope)
+            response = await super().get_response(path, scope)
         except StarletteHTTPException as exc:
             # A missing file (``.js``) or API path stays a 404; only UI routes fall back.
             if exc.status_code != 404 or "." in path.rsplit("/", 1)[-1] or path.startswith("api"):
                 raise
-            return await super().get_response("index.html", scope)
+            response = await super().get_response("index.html", scope)
+        # The page is asked for again every time; the scripts it names carry a hash of their
+        # contents, so they never need to be. Without a rule a browser kept the page for a
+        # tenth of its file's age, and after an update showed the old app for hours.
+        if path.startswith("assets/"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 app = create_app()

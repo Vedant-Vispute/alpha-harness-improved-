@@ -10,7 +10,7 @@
 
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { PlayIcon, RefreshCwIcon } from 'lucide-react'
+import { PlayIcon, RefreshCwIcon, SquareIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { tasks } from '@/api/core'
@@ -25,6 +25,7 @@ import { Button, ErrorNotice, LINK, Notice, Panel, Progress } from '@/ui/kit'
 import { type Column, DataTable, type Sort } from '@/ui/table'
 
 const WORKFLOW = 'power-pool-workflow'
+const PROD_JOB = 'prod-correlation'
 
 type Stored = RankedAlpha & { alphaId: string }
 
@@ -87,8 +88,8 @@ function poolColumn(by: ReadonlyMap<string, PowerPoolRow>): Column<RankedAlpha> 
   }
 }
 
-/** The workflow's job, running or just finished, from the shared background task list. */
-function useWorkflowJob() {
+/** The latest job of `kind`, running or just finished, from the shared background task list. */
+function useJob(kind: string) {
   const live = useLive((s) => s.tasks)
   const polled = useQuery({
     queryKey: ['background-tasks'],
@@ -96,21 +97,25 @@ function useWorkflowJob() {
     enabled: live == null,
     refetchInterval: 3000,
   })
-  const jobs = ((live ?? polled.data)?.tasks ?? []).filter((t) => t.kind === WORKFLOW)
+  const jobs = ((live ?? polled.data)?.tasks ?? []).filter((t) => t.kind === kind)
   return jobs.find((t) => t.state === 'running') ?? jobs.at(-1)
 }
 
 /**
- * Ctrl-click (Cmd on a Mac) opens the row's Alpha on BRAIN, which is where the id is
- * actually useful — so the table spends no column printing one. A plain click does nothing:
- * leaving BRAIN is the kind of thing that should take a deliberate press, and the modifier
- * is the same one a browser already uses for "open this somewhere else".
+ * A click opens the row's Alpha in the detail sheet. Ctrl-click (Cmd on a Mac) opens it on
+ * BRAIN instead, which is where the id is actually useful — so the table spends no column
+ * printing one. Leaving for BRAIN takes the modifier a browser already uses for "open this
+ * somewhere else".
  */
-const openOnBrain = (r: RankedAlpha, event: React.MouseEvent | React.KeyboardEvent) => {
-  if (!r.alphaId || !(event.ctrlKey || event.metaKey)) return
-  event.preventDefault()
-  window.open(BRAIN_ALPHA_URL(r.alphaId), '_blank', 'noopener,noreferrer')
-}
+const openRow =
+  (onOpen: ((alphaId: string) => void) | undefined) =>
+  (r: RankedAlpha, event: React.MouseEvent | React.KeyboardEvent) => {
+    if (!r.alphaId) return
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault()
+      window.open(BRAIN_ALPHA_URL(r.alphaId), '_blank', 'noopener,noreferrer')
+    } else onOpen?.(r.alphaId)
+  }
 
 export function AlphaPane({
   title,
@@ -123,6 +128,7 @@ export function AlphaPane({
   error,
   poolColumnAfter,
   onRefresh,
+  onOpenAlpha,
 }: {
   title: string
   rows: RankedAlpha[]
@@ -137,6 +143,8 @@ export function AlphaPane({
   error?: unknown
   /** Re-read the rows themselves: submitting an Alpha changes a flag that lives on the row. */
   onRefresh?: () => Promise<unknown>
+  /** Show a row's Alpha in the detail sheet, as the task detail's own table does. */
+  onOpenAlpha?: (alphaId: string) => void
 }) {
   const [showAll, setShowAll] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -156,7 +164,7 @@ export function AlphaPane({
 
   const refresh = () => Promise.all([onRefresh?.(), cleanIds.length ? pool.refresh() : null])
 
-  const job = useWorkflowJob()
+  const job = useJob(WORKFLOW)
   const running = job?.state === 'running'
   // Read again once the job lands, so the table shows what it downloaded. Once per job: a
   // finished one lingers in the task list for a minute.
@@ -172,6 +180,36 @@ export function AlphaPane({
     if (job.state === 'done' && watched.current === job.id) {
       onSort({ key: 'afterCostSharpe', desc: true })
     }
+  })
+  const prodJob = useJob(PROD_JOB)
+  const prodRunning = prodJob?.state === 'running'
+  // Fill the column in as BRAIN answers, at most twice a minute: reading the rows takes
+  // seconds on a large account. Once more when the job lands.
+  const prodRead = useRef({ at: Date.now(), watching: false })
+  useEffect(() => {
+    const read = prodRead.current
+    if (prodRunning) {
+      read.watching = true
+      if (Date.now() - read.at < 30_000) return
+      read.at = Date.now()
+    } else if (read.watching) read.watching = false
+    else return
+    void onRefresh?.()
+  })
+  // The rows on show, top first: BRAIN's hourly limit means the ones read first come back first.
+  const unchecked = sorted.flatMap((r) =>
+    isUnsubmitted(r) && r.prodCorrelation == null ? [r.alphaId] : [],
+  )
+  const checkProd = useMutation({
+    mutationFn: () => labTasks.prodCorrelation(unchecked),
+    onError: (e) =>
+      toast.error('Could not start the Production Correlation check', {
+        description: errorMessage(e),
+      }),
+  })
+  const stopProd = useMutation({
+    mutationFn: labTasks.stopProdCorrelation,
+    onError: (e) => toast.error('Could not stop the check', { description: errorMessage(e) }),
   })
   const start = useMutation({
     // Every Alpha here: the server runs the three steps itself rather than trusting ours.
@@ -220,6 +258,37 @@ export function AlphaPane({
           >
             Show All
           </Button>
+          {prodRunning ? (
+            <div className="flex w-52 flex-col gap-1">
+              <span className="num text-caption text-ink-muted">
+                Production Correlation · {prodJob.detail || prodJob.label}
+              </span>
+              <Progress value={prodJob.progress ?? null} label="Production Correlation progress" />
+            </div>
+          ) : null}
+          {prodRunning ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              loading={stopProd.isPending}
+              onClick={() => stopProd.mutate()}
+              title="Stop asking BRAIN. Every Production Correlation already back is kept."
+            >
+              <SquareIcon />
+              Stop
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={unchecked.length === 0 || running}
+              loading={checkProd.isPending}
+              onClick={() => checkProd.mutate()}
+              title={`Asks BRAIN for the ${fmt.int(unchecked.length)} shown without one, top of the table first. BRAIN allows only so many of these checks an hour, so a long list takes hours. No simulation quota.`}
+            >
+              Check Production Correlation
+            </Button>
+          )}
           {running ? (
             <div className="flex w-52 flex-col gap-1">
               <span className="num text-caption text-ink-muted">{job.detail || job.label}</span>
@@ -229,7 +298,7 @@ export function AlphaPane({
             <Button
               size="sm"
               variant="primary"
-              disabled={cleanIds.length === 0}
+              disabled={cleanIds.length === 0 || prodRunning}
               loading={start.isPending}
               onClick={() => start.mutate()}
               title="Downloads PnL where Power Pool Correlation is unmeasured, then turnover for the Alphas that satisfy it. No simulation quota."
@@ -272,7 +341,7 @@ export function AlphaPane({
         rows={sorted}
         columns={columnsShown()}
         rowKey={(r) => String(r.trialId)}
-        onRowClick={openOnBrain}
+        onRowClick={openRow(onOpenAlpha)}
         sort={sort}
         onSort={onSort}
         loading={(loading ?? false) || (!showAll && cleanIds.length > 0 && pool.pending)}

@@ -54,6 +54,9 @@ export const labTasks = {
   groups: (id: number) => http.get<AlphaGroups>(`${B}/${id}/groups`),
   /** Runs BRAIN's submission checks on the task's Alphas, in the background. No quota. */
   calibrate: (id: number) => http.post<Schemas['WorkflowStarted']>(`${B}/${id}/calibrate`),
+  stop: (id: number) => http.post<LabTask>(`${B}/${id}/stop`),
+  /** A blank name clears it. */
+  rename: (id: number, name: string) => http.put<LabTask>(`${B}/${id}/name`, { name }),
   change: (id: number, body: { cores?: number; simulations?: number }) =>
     http.patch<LabTask>(`${B}/${id}`, body),
   /** `force` takes a running task down too: paused, what is out cancelled, then removed. */
@@ -68,4 +71,9 @@ export const labTasks = {
   /** Downloads PnL, then turnover for the Alphas that satisfy Power Pool Correlation. */
   powerPoolWorkflow: (alphaIds: string[]) =>
     http.post<Schemas['WorkflowStarted']>(`${B}/power-pool-workflow`, { alphaIds }),
+  /** Asks BRAIN, in this order, for each Production Correlation it has not given yet. */
+  prodCorrelation: (alphaIds: string[]) =>
+    http.post<Schemas['WorkflowStarted']>(`${B}/prod-correlation`, { alphaIds }),
+  /** Stops that check; the answers already back stay. */
+  stopProdCorrelation: () => http.post<void>(`${B}/prod-correlation/stop`),
 }

@@ -114,6 +114,8 @@ class AlphaLineage(Out):
     study_id: int | None
     study_name: str | None
     template_name: str | None
+    #: What the user named the task, if anything.
+    task_name: str | None = None
     #: What the lab chose for this Alpha: its dataset, template variables, generation.
     params: dict[str, Any]
     generation: int | None
@@ -360,6 +362,7 @@ async def _lineage(state: State, alpha_id: str) -> AlphaLineage | None:
         study_id=study.id if study is not None else None,
         study_name=study.name if study is not None else None,
         template_name=study.template_name if study is not None else None,
+        task_name=study.label if study is not None else None,
         params=dict(trial.params or {}) if trial is not None else {},
         generation=trial.generation if trial is not None else None,
         simulated_at=sent.isoformat() if sent is not None else None,
