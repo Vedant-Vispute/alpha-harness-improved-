@@ -28,8 +28,8 @@ This is the download for Macs with M1, M2, M3, M4, or later Apple Silicon chips.
 2. Create an installation folder first:
 
    ```bash
-   mkdir -p "$HOME/Applications/AlphaHarness"
-   cd "$HOME/Applications/AlphaHarness"
+   mkdir -p "$HOME/Applications/alpha_harness_improved"
+   cd "$HOME/Applications/alpha_harness_improved"
    ```
 
 3. Download the latest Apple Silicon release:
@@ -53,8 +53,8 @@ If macOS says that the app cannot be opened, open Finder, right-click `AlphaHarn
 Use this method for an Intel Mac. You can check your chip with `Apple menu > About This Mac`.
 
 ```bash
-mkdir -p "$HOME/Applications/AlphaHarness"
-cd "$HOME/Applications/AlphaHarness"
+mkdir -p "$HOME/Applications/alpha_harness_improved"
+cd "$HOME/Applications/alpha_harness_improved"
 curl -L "https://github.com/Vedant-Vispute/alpha-harness-improved-/releases/latest/download/AlphaHarness-macOS-x86_64.zip" -o AlphaHarness.zip
 unzip -q AlphaHarness.zip
 rm AlphaHarness.zip
@@ -67,8 +67,8 @@ open AlphaHarness.app
 2. Create an installation folder first:
 
    ```powershell
-   New-Item -ItemType Directory -Force "$HOME\AlphaHarness" | Out-Null
-   Set-Location "$HOME\AlphaHarness"
+   New-Item -ItemType Directory -Force "$HOME\alpha_harness_improved" | Out-Null
+   Set-Location "$HOME\alpha_harness_improved"
    ```
 
 3. Download the latest Windows launcher:
@@ -76,13 +76,13 @@ open AlphaHarness.app
    ```powershell
    Invoke-WebRequest `
    -Uri "https://github.com/Vedant-Vispute/alpha-harness-improved-/releases/latest/download/AlphaHarness.exe" `
-     -OutFile "$HOME\AlphaHarness\AlphaHarness.exe"
+   -OutFile "$HOME\alpha_harness_improved\AlphaHarness.exe"
    ```
 
 4. Start it:
 
    ```powershell
-   Start-Process "$HOME\AlphaHarness\AlphaHarness.exe"
+   Start-Process "$HOME\alpha_harness_improved\AlphaHarness.exe"
    ```
 
 Windows may show a security confirmation the first time. Choose **More info**, then **Run anyway** if you trust the download.
@@ -92,8 +92,8 @@ Windows may show a security confirmation the first time. Choose **More info**, t
 These commands are for standard 64-bit Intel or AMD Linux systems.
 
 ```bash
-mkdir -p "$HOME/Applications/AlphaHarness"
-cd "$HOME/Applications/AlphaHarness"
+mkdir -p "$HOME/Applications/alpha_harness_improved"
+cd "$HOME/Applications/alpha_harness_improved"
 curl -L "https://github.com/Vedant-Vispute/alpha-harness-improved-/releases/latest/download/AlphaHarness-linux-x86_64.tar.gz" -o AlphaHarness.tar.gz
 tar -xzf AlphaHarness.tar.gz
 rm AlphaHarness.tar.gz
@@ -109,9 +109,9 @@ Alpha Harness opens at [http://127.0.0.1:8000](http://127.0.0.1:8000). Leave the
 
 The launcher stores its files here:
 
-- macOS: `~/Library/Application Support/AlphaHarness`
-- Windows: `%LOCALAPPDATA%\AlphaHarness`
-- Linux: `~/.local/share/AlphaHarness`
+- macOS: `~/Library/Application Support/alpha_harness_improved`
+- Windows: `%LOCALAPPDATA%\alpha_harness_improved`
+- Linux: `~/.local/share/alpha_harness_improved`
 
 ## Method 2: Install from source
 

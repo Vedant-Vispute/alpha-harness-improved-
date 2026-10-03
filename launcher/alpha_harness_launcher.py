@@ -87,7 +87,7 @@ def home() -> Path:
         base = Path.home() / "Library" / "Application Support"
     else:
         base = os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share"
-    return Path(base) / "AlphaHarness"
+    return Path(base) / "alpha_harness_improved"
 
 
 def say(root: Path, message: str) -> None:
