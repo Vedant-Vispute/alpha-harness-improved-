@@ -1,6 +1,8 @@
-# Alpha Harness
+# Alpha Harness Improved
 
-Alpha Harness is a local research studio for the WorldQuant BRAIN platform. It runs on your computer. BRAIN credentials are encrypted at rest and do not get sent to the browser.
+Alpha Harness Improved is an open-source fork by Vedant V of a local research studio for the WorldQuant BRAIN platform. It runs on your computer. BRAIN credentials are encrypted at rest and do not get sent to the browser.
+
+Project: [github.com/Vedant-Vispute/alpha-harness-improved-](https://github.com/Vedant-Vispute/alpha-harness-improved-)
 
 This guide is written for first-time users. Choose the prebuilt release method unless you are developing Alpha Harness itself.
 
@@ -16,7 +18,7 @@ The prebuilt release is the easiest option. It includes the application and open
 
 ## Method 1: Prebuilt release
 
-Open the [latest Alpha Harness release](https://github.com/residual-lab/alpha-harness/releases/latest) in your browser. Download the file for your system.
+Open the [latest Alpha Harness Improved release](https://github.com/Vedant-Vispute/alpha-harness-improved-/releases/latest) in your browser. Download the file for your system.
 
 ### macOS Apple Silicon
 
@@ -33,7 +35,7 @@ This is the download for Macs with M1, M2, M3, M4, or later Apple Silicon chips.
 3. Download the latest Apple Silicon release:
 
    ```bash
-   curl -L "https://github.com/residual-lab/alpha-harness/releases/latest/download/AlphaHarness-macOS-arm64.zip" -o AlphaHarness.zip
+   curl -L "https://github.com/Vedant-Vispute/alpha-harness-improved-/releases/latest/download/AlphaHarness-macOS-arm64.zip" -o AlphaHarness.zip
    unzip -q AlphaHarness.zip
    rm AlphaHarness.zip
    ```
@@ -53,7 +55,7 @@ Use this method for an Intel Mac. You can check your chip with `Apple menu > Abo
 ```bash
 mkdir -p "$HOME/Applications/AlphaHarness"
 cd "$HOME/Applications/AlphaHarness"
-curl -L "https://github.com/residual-lab/alpha-harness/releases/latest/download/AlphaHarness-macOS-x86_64.zip" -o AlphaHarness.zip
+curl -L "https://github.com/Vedant-Vispute/alpha-harness-improved-/releases/latest/download/AlphaHarness-macOS-x86_64.zip" -o AlphaHarness.zip
 unzip -q AlphaHarness.zip
 rm AlphaHarness.zip
 open AlphaHarness.app
@@ -73,7 +75,7 @@ open AlphaHarness.app
 
    ```powershell
    Invoke-WebRequest `
-     -Uri "https://github.com/residual-lab/alpha-harness/releases/latest/download/AlphaHarness.exe" `
+   -Uri "https://github.com/Vedant-Vispute/alpha-harness-improved-/releases/latest/download/AlphaHarness.exe" `
      -OutFile "$HOME\AlphaHarness\AlphaHarness.exe"
    ```
 
@@ -92,7 +94,7 @@ These commands are for standard 64-bit Intel or AMD Linux systems.
 ```bash
 mkdir -p "$HOME/Applications/AlphaHarness"
 cd "$HOME/Applications/AlphaHarness"
-curl -L "https://github.com/residual-lab/alpha-harness/releases/latest/download/AlphaHarness-linux-x86_64.tar.gz" -o AlphaHarness.tar.gz
+curl -L "https://github.com/Vedant-Vispute/alpha-harness-improved-/releases/latest/download/AlphaHarness-linux-x86_64.tar.gz" -o AlphaHarness.tar.gz
 tar -xzf AlphaHarness.tar.gz
 rm AlphaHarness.tar.gz
 chmod +x AlphaHarness
@@ -122,8 +124,8 @@ Create a folder first, then clone the repository into it:
 ```bash
 mkdir -p "$HOME/Projects"
 cd "$HOME/Projects"
-git clone https://github.com/residual-lab/alpha-harness.git
-cd alpha-harness
+git clone https://github.com/Vedant-Vispute/alpha-harness-improved-.git
+cd alpha-harness-improved-
 ```
 
 Install the required tools if they are not already installed:
@@ -163,8 +165,8 @@ Create a folder first, then clone the repository:
 ```powershell
 New-Item -ItemType Directory -Force "$HOME\Projects" | Out-Null
 Set-Location "$HOME\Projects"
-git clone https://github.com/residual-lab/alpha-harness.git
-Set-Location "$HOME\Projects\alpha-harness"
+git clone https://github.com/Vedant-Vispute/alpha-harness-improved-.git
+Set-Location "$HOME\Projects\alpha-harness-improved-"
 ```
 
 Install `uv` if needed:

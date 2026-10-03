@@ -34,7 +34,7 @@ from alpha_harness.window import open_window
 
 #: Written in by the release workflow; the version a fresh machine installs.
 BUILD_VERSION = "0.0.0"
-REPOSITORY = "residual-lab/alpha-harness"
+REPOSITORY = "Vedant-Vispute/alpha-harness-improved-"
 DOWNLOAD = f"https://github.com/{REPOSITORY}/releases/download"
 
 HOME_VARIABLE = "ALPHA_HARNESS_HOME"
@@ -293,7 +293,7 @@ def slot_version(root: Path, slot: str) -> str | None:
 def read_json(path: Path) -> dict[str, object]:
     try:
         body = json.loads(path.read_text(encoding="utf-8"))
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return {}
     return body if isinstance(body, dict) else {}
 
