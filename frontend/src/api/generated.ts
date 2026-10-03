@@ -2271,6 +2271,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/vault/alphas/{alpha_id}/bookmark": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set Bookmark */
+        put: operations["set_bookmark_api_vault_alphas__alpha_id__bookmark_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/vault/alphas/{alpha_id}/detail": {
         parameters: {
             query?: never;
@@ -2304,6 +2321,23 @@ export interface paths {
          * @description One alpha's cumulative PnL. Downloads the daily PnL from BRAIN the first time.
          */
         get: operations["alpha_pnl_api_vault_alphas__alpha_id__pnl_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vault/bookmarks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Bookmarks */
+        get: operations["bookmarks_api_vault_bookmarks_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2406,6 +2440,8 @@ export interface components {
         AlphaDetail: {
             /** Alphaid */
             alphaId: string;
+            /** Bookmarked */
+            bookmarked: boolean;
             /** Brainurl */
             brainUrl: string;
             /** Checks */
@@ -2549,6 +2585,11 @@ export interface components {
         };
         /** AlphaPageRequest */
         AlphaPageRequest: {
+            /**
+             * Bookmarked
+             * @default false
+             */
+            bookmarked: boolean;
             /** Delays */
             delays?: number[] | null;
             /**
@@ -2592,7 +2633,7 @@ export interface components {
              * Submitted
              * @default false
              */
-            submitted: boolean;
+            submitted: boolean | null;
             /** Universes */
             universes?: string[] | null;
         };
@@ -3014,6 +3055,16 @@ export interface components {
             universe?: string | null;
             /** Vector Operators */
             vector_operators?: string[];
+        };
+        /** BookmarkRequest */
+        BookmarkRequest: {
+            /** Bookmarked */
+            bookmarked: boolean;
+        };
+        /** Bookmarks */
+        Bookmarks: {
+            /** Alphaids */
+            alphaIds: string[];
         };
         /**
          * BrainPayload
@@ -9836,6 +9887,41 @@ export interface operations {
             };
         };
     };
+    set_bookmark_api_vault_alphas__alpha_id__bookmark_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                alpha_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BookmarkRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlphaDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     alpha_detail_api_vault_alphas__alpha_id__detail_get: {
         parameters: {
             query?: never;
@@ -9894,6 +9980,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    bookmarks_api_vault_bookmarks_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Bookmarks"];
                 };
             };
         };
