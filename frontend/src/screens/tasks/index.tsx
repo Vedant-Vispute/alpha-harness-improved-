@@ -33,6 +33,7 @@ import {
   INVESTABILITY,
   QuickBadge,
   SharpeCell,
+  TRUNCATION,
   taskStatus,
 } from '@/screens/tasks/columns'
 import { resultsMarkdown } from '@/screens/tasks/copy'
@@ -194,7 +195,9 @@ const SAMPLER_COLUMNS: Column<RankedAlpha>[] = [
 /** What a task searches for leads the table when it is not Sharpe, which the table shows anyway. */
 const topColumns = (task: LabTask): Column<RankedAlpha>[] =>
   task.lab === SETTINGS_SAMPLER
-    ? SAMPLER_COLUMNS
+    ? task.truncationAgent
+      ? [...SAMPLER_COLUMNS.slice(0, 5), TRUNCATION, ...SAMPLER_COLUMNS.slice(5)]
+      : SAMPLER_COLUMNS
     : task.objectiveLabel === 'Sharpe'
       ? TOP_COLUMNS
       : [
@@ -800,7 +803,7 @@ function TaskDetail({
   const description =
     task.lab === SETTINGS_SAMPLER
       ? // Held at the source Alpha's values for every simulation in the sweep.
-        `${fmt.int(task.markets)} Markets · Decay ${task.decay ?? DASH} · Truncation ${task.truncation ?? DASH} · NaN Handling ${task.nanHandling ?? DASH}`
+        `${fmt.int(task.markets)} Markets · Decay ${task.decay ?? DASH} · ${task.truncationAgent ? 'Truncation Agent' : `Truncation ${task.truncation ?? DASH}`} · NaN Handling ${task.nanHandling ?? DASH}`
       : task.lab === 'super-alpha'
         ? `${task.universe ?? DASH} · SuperAlphas from your submitted Alphas`
         : task.seeds > 0

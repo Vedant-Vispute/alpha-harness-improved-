@@ -7,7 +7,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { CopyIcon, RefreshCwIcon } from 'lucide-react'
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { toast } from 'sonner'
 import { tasks } from '@/api/core'
 import { errorMessage } from '@/api/http'
@@ -31,7 +31,7 @@ import {
   signTone,
   TEXT_TONE,
 } from '@/ui/kit'
-import { type Column, DataTable } from '@/ui/table'
+import { type Column, DataTable, type Sort } from '@/ui/table'
 import {
   type Investability,
   type PortfolioMember,
@@ -42,6 +42,7 @@ import {
 } from './api'
 import { ChartLegend, PortfolioChart } from './chart'
 import { CorrelationMatrix } from './correlation'
+import { PyramidPicker } from './pyramid-grid'
 
 const INVESTABILITY: Record<Investability, string> = {
   max_trade: 'Max Trade',
@@ -56,9 +57,6 @@ interface Facet {
   values: (m: PortfolioMember) => string[]
 }
 
-/** `USA/D1/PV` → `USA / D1 / PV`. */
-const spaced = (pyramid: string) => pyramid.split('/').join(' / ')
-
 const FACETS: Facet[] = [
   { key: 'classification', title: 'Classifications', values: (m) => m.classifications },
   {
@@ -68,9 +66,11 @@ const FACETS: Facet[] = [
   },
   { key: 'region', title: 'Region', values: (m) => (m.region ? [m.region] : []) },
   { key: 'delay', title: 'Delay', values: (m) => (m.delay === null ? [] : [`D${m.delay}`]) },
-  { key: 'pyramid', title: 'Pyramids', values: (m) => m.pyramids.map(spaced) },
-  { key: 'category', title: 'Category', values: (m) => m.categories },
+  // Category is a row of the Pyramid grid, so it needs no filter of its own.
+  { key: 'pyramid', title: 'Pyramids', values: (m) => m.pyramids },
 ]
+
+const facetOf = (key: string) => FACETS.find((f) => f.key === key) as Facet
 
 type MetricKey = (typeof CORE_ORDER)[number]
 
@@ -172,6 +172,19 @@ export function PortfolioScreen() {
       const want = picked[f.key] ?? []
       return !want.length || f.values(m).some((v) => want.includes(v))
     })
+  const choose = (key: string, value: string[]) => {
+    setPicked((prev) => ({ ...prev, [key]: value }))
+    setOverrides(new Map())
+  }
+  const block = (key: string, size?: 'lg') => (
+    <FacetBlock
+      facet={facetOf(key)}
+      members={all}
+      value={picked[key] ?? []}
+      onChange={(v) => choose(key, v)}
+      {...(size ? { size } : {})}
+    />
+  )
   const isIncluded = (m: PortfolioMember) => overrides.get(m.alphaId) ?? matches(m)
   // Ticked Alphas first, each group in its original order.
   const rows = [...all.filter(isIncluded), ...all.filter((m) => !isIncluded(m))]
@@ -264,19 +277,18 @@ export function PortfolioScreen() {
         }
         bodyClassName="flex flex-col gap-4"
       >
-        <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
-          {FACETS.map((f) => (
-            <FacetBlock
-              key={f.key}
-              facet={f}
+        <div className="flex flex-col gap-5">
+          {block('classification', 'lg')}
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 *:rounded-md *:border *:border-hairline *:bg-surface-2 *:p-3">
+            {block('region')}
+            {block('delay')}
+            {block('investability')}
+            <PyramidPicker
               members={all}
-              value={picked[f.key] ?? []}
-              onChange={(v) => {
-                setPicked((prev) => ({ ...prev, [f.key]: v }))
-                setOverrides(new Map())
-              }}
+              value={picked['pyramid'] ?? []}
+              onChange={(v) => choose('pyramid', v)}
             />
-          ))}
+          </div>
         </div>
         <MembersTable
           rows={rows}
@@ -299,7 +311,7 @@ export function PortfolioScreen() {
       ) : (
         <>
           <Panel
-            title="Combined Alpha Performance"
+            title="Combined In-Sample Performance"
             actions={<ChartLegend testStart={result.testStart} />}
             bodyClassName="flex flex-col gap-4"
           >
@@ -353,18 +365,36 @@ export function PortfolioScreen() {
           {result.alphas > 1 && (
             <Panel
               title="Correlation"
-              description="Pearson Correlation of Daily PnL over the last 4 years."
+              description={
+                <>
+                  Pearson Correlation of Daily PnL over the last 4 years.
+                  <br />
+                  Each square is a pair of Alphas, in submission order: newest at the top left,
+                  oldest at the bottom right. Hover a square for the pair.
+                </>
+              }
               actions={
-                result.highest && (
-                  <span className="text-body text-ink-muted">
-                    Highest{' '}
-                    <span className="num text-ink">{fmt.ratio(result.highest.correlation)}</span>
-                    <span className="mono-metric text-ink-subtle">
-                      {' '}
-                      {result.highest.a} · {result.highest.b}
-                    </span>
-                  </span>
-                )
+                <div className="grid grid-cols-[auto_auto_auto] items-baseline gap-x-2 gap-y-0.5 text-body text-ink-muted">
+                  {(
+                    [
+                      ['Highest', result.highest],
+                      ['Lowest', result.lowest],
+                    ] as const
+                  ).map(
+                    ([label, pair]) =>
+                      pair && (
+                        <Fragment key={label}>
+                          <span>{label}</span>
+                          <span className="num text-right text-ink">
+                            {fmt.ratio(pair.correlation)}
+                          </span>
+                          <span className="mono-metric text-ink-subtle">
+                            {pair.a} · {pair.b}
+                          </span>
+                        </Fragment>
+                      ),
+                  )}
+                </div>
               }
             >
               <CorrelationMatrix result={result} />
@@ -381,22 +411,41 @@ function FacetBlock({
   members,
   value,
   onChange,
+  size,
 }: {
   facet: Facet
   members: PortfolioMember[]
   value: string[]
   onChange: (value: string[]) => void
+  size?: 'lg'
 }) {
   const counts = new Map<string, number>()
   for (const m of members) for (const v of facet.values(m)) counts.set(v, (counts.get(v) ?? 0) + 1)
   const items = [...counts.entries()]
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([v, n]) => ({ value: v, label: `${v} · ${n}` }))
+    .map(([v, n]) => ({
+      value: v,
+      label:
+        size === 'lg' ? (
+          <span className="flex w-full items-center justify-between gap-3">
+            {v}
+            <span className="num text-ink-muted">{n}</span>
+          </span>
+        ) : (
+          `${v} · ${n}`
+        ),
+    }))
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      <h3 className="text-body-compact text-ink-subtle">{facet.title}</h3>
+      <h3 className="text-body-compact font-medium text-ink-muted">{facet.title}</h3>
       {items.length ? (
-        <Chips label={facet.title} items={items} value={value} onChange={onChange} />
+        <Chips
+          label={facet.title}
+          items={items}
+          value={value}
+          onChange={onChange}
+          {...(size ? { size } : {})}
+        />
       ) : (
         <span className="text-body-compact text-ink-subtle">{DASH}</span>
       )}
@@ -473,6 +522,19 @@ const YEARLY_COLUMNS: Column<YearRow>[] = [
   },
 ]
 
+/** (Long − Short) ÷ (Long + Short) in stocks held, or null without both counts. */
+function imbalanceOf(m: PortfolioMember): number | null {
+  const { longCount: long, shortCount: short } = m
+  if (long == null || short == null || long + short === 0) return null
+  return (long - short) / (long + short)
+}
+
+function sortValue(m: PortfolioMember, key: string): number | null {
+  if (key === 'imbalance') return imbalanceOf(m)
+  const value = (m as unknown as Record<string, unknown>)[key]
+  return typeof value === 'number' ? value : null
+}
+
 function MembersTable({
   rows,
   selected,
@@ -484,6 +546,17 @@ function MembersTable({
   onSelect: (id: string, on: boolean) => void
   loading: boolean
 }) {
+  const [sort, setSort] = useState<Sort | null>(null)
+  const sorted = sort
+    ? [...rows].sort((a, b) => {
+        const x = sortValue(a, sort.key)
+        const y = sortValue(b, sort.key)
+        // Blank last whichever way: an Alpha with no figure is not the lowest.
+        if (x === null) return y === null ? 0 : 1
+        if (y === null) return -1
+        return sort.desc ? y - x : x - y
+      })
+    : rows
   const columns: Column<PortfolioMember>[] = [
     {
       key: 'id',
@@ -494,27 +567,6 @@ function MembersTable({
           {m.alphaId}
         </Link>
       ),
-    },
-    {
-      key: 'pyramid',
-      header: 'Pyramid',
-      width: '128px',
-      // One line like Classifications: an Alpha in three pyramids wrapped out of its row.
-      cell: (m) => {
-        const pyramids = m.pyramids.join(', ')
-        return (
-          <span className="mono-metric truncate" title={pyramids}>
-            {pyramids || DASH}
-          </span>
-        )
-      },
-    },
-    { key: 'universe', header: 'Universe', width: '96px', cell: (m) => m.universe ?? DASH },
-    {
-      key: 'investability',
-      header: 'Investability',
-      width: '112px',
-      cell: (m) => INVESTABILITY[m.investability],
     },
     {
       key: 'classifications',
@@ -529,14 +581,82 @@ function MembersTable({
         )
       },
     },
-    ...metricColumns<PortfolioMember>((m) => m),
+    { key: 'region', header: 'Region', width: '72px', cell: (m) => m.region ?? DASH },
+    {
+      key: 'delay',
+      header: 'Delay',
+      width: '64px',
+      cell: (m) => <span className="num">{m.delay == null ? DASH : `D${m.delay}`}</span>,
+    },
+    {
+      key: 'investability',
+      header: 'Investability',
+      width: '112px',
+      cell: (m) => INVESTABILITY[m.investability],
+    },
+    ...metricColumns<PortfolioMember>((m) => m).map((c) => ({ ...c, sortable: true })),
+    {
+      key: 'imbalance',
+      sortable: true,
+      header: (
+        <span title="(Long − Short) ÷ (Long + Short), in stocks held. 0% is balanced; +20% holds more stocks long, −20% more short.">
+          Long/Short Imbalance
+        </span>
+      ),
+      width: 'minmax(112px,1fr)',
+      align: 'right',
+      cell: (m) => {
+        const share = imbalanceOf(m)
+        if (share === null) return DASH
+        const imbalance = Math.round(share * 100)
+        return (
+          <span
+            className="num"
+            title={`${fmt.int(m.longCount ?? 0)} long · ${fmt.int(m.shortCount ?? 0)} short`}
+          >
+            {imbalance > 0 ? '+' : ''}
+            {imbalance}%
+          </span>
+        )
+      },
+    },
+    {
+      key: 'correlation',
+      sortable: true,
+      header: (
+        <span title="Highest daily PnL correlation with any other submitted Alpha, over the last 4 years">
+          Correlation
+        </span>
+      ),
+      width: 'minmax(96px,1fr)',
+      align: 'right',
+      cell: (m) =>
+        m.correlation == null ? (
+          DASH
+        ) : (
+          <span
+            className={cn(
+              'num',
+              m.correlation >= 0.7
+                ? 'text-pnl-negative-text'
+                : m.correlation >= 0.5
+                  ? 'text-status-warning'
+                  : 'text-pnl-positive-text',
+            )}
+          >
+            {fmt.ratio(m.correlation)}
+          </span>
+        ),
+    },
   ]
   return (
     <DataTable
       label="SUBMITTED Alphas"
-      rows={rows}
+      rows={sorted}
       rowKey={(m) => m.alphaId}
       columns={columns}
+      {...(sort ? { sort } : {})}
+      onSort={setSort}
       selected={selected}
       onSelect={onSelect}
       loading={loading}

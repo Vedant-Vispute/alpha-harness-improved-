@@ -45,6 +45,8 @@ class MarketRow(Out):
     coverage: float
     #: Simulations this market is worth: its neutralizations times its legal pairs.
     total: int
+    #: What the Truncation Agent sets here.
+    agent_truncation: float
 
 
 class RegionPlan(Out):
@@ -165,6 +167,8 @@ class SampleRequest(PreviewRequest):
     #: neither Max Trade nor Max Position. On by default: those simulations cost the same as
     #: any other and produce an Alpha carrying the market's own direction.
     market_neutral_only: bool = Field(default=True, alias="marketNeutralOnly")
+    #: Truncation set per market by the Truncation Agent rather than held at one value.
+    truncation_agent: bool = Field(default=False, alias="truncationAgent")
 
 
 @router.post("/settings-sampler/preview")
@@ -209,6 +213,7 @@ async def add_task(body: SampleRequest, state: State) -> AddedTask:
         {(p.max_trade, p.max_position) for p in body.pairs},
         source,
         market_neutral_only=body.market_neutral_only,
+        truncation_agent=body.truncation_agent,
     )
     if not requests:
         raise refuse(
@@ -230,6 +235,7 @@ async def add_task(body: SampleRequest, state: State) -> AddedTask:
             markets=markets,
             decay=int(found["settings"]["decay"] or 0),
             truncation=float(found["settings"]["truncation"] or 0.08),
+            truncation_agent=body.truncation_agent,
             nan_handling=str(found["settings"]["nanHandling"] or "ON"),
             test_period=str(found["settings"]["testPeriod"] or ""),
             cores=body.cores,

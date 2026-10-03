@@ -145,6 +145,8 @@ class SettingsParams(TaskParams):
     #: Held at the source Alpha's values for every simulation in the sweep.
     decay: int = 0
     truncation: float = 0.08
+    #: Truncation set per market by the Truncation Agent instead of held at ``truncation``.
+    truncation_agent: bool = False
     nan_handling: str = "ON"
     #: ``P{years}Y{months}M0D``. Empty on a task added before it was recorded.
     test_period: str = ""

@@ -4045,6 +4045,11 @@ export interface components {
             testPeriod?: string | null;
             /** Truncation */
             truncation?: number | null;
+            /**
+             * Truncationagent
+             * @default false
+             */
+            truncationAgent: boolean;
             /** Universe */
             universe: string | null;
         };
@@ -4141,6 +4146,8 @@ export interface components {
         };
         /** MarketRow */
         MarketRow: {
+            /** Agenttruncation */
+            agentTruncation: number;
             /** Coverage */
             coverage: number;
             /** Delay */
@@ -4350,6 +4357,8 @@ export interface components {
             categories: string[];
             /** Classifications */
             classifications: string[];
+            /** Correlation */
+            correlation: number | null;
             /** Delay */
             delay: number | null;
             /** Drawdown */
@@ -4365,6 +4374,8 @@ export interface components {
             investability: "max_trade" | "max_position" | "none";
             /** Labelled */
             labelled: boolean;
+            /** Longcount */
+            longCount: number | null;
             /** Margin */
             margin: number | null;
             /** Name */
@@ -4377,6 +4388,8 @@ export interface components {
             returns: number | null;
             /** Sharpe */
             sharpe: number | null;
+            /** Shortcount */
+            shortCount: number | null;
             /** Tags */
             tags: string[];
             /** Turnover */
@@ -4415,6 +4428,7 @@ export interface components {
             highest: components["schemas"]["CorrelatedPair"] | null;
             /** Ids */
             ids: string[];
+            lowest?: components["schemas"]["CorrelatedPair"] | null;
             /** Measuredpairs */
             measuredPairs: number;
             /** Missing */
@@ -5031,6 +5045,11 @@ export interface components {
             testPeriod?: string | null;
             /** Truncation */
             truncation?: number | null;
+            /**
+             * Truncationagent
+             * @default false
+             */
+            truncationAgent: boolean;
         };
         /**
          * Say

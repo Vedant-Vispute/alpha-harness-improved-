@@ -720,6 +720,7 @@ class AlphaVault:
             SELECT a.alpha_id, a.name, a.region, a.delay, a.universe, a.max_trade,
                    a.max_position, a.tags, a.classifications, a.pyramids, a.date_submitted,
                    a.sharpe, a.turnover, a.fitness, a.returns, a.drawdown, a.margin,
+                   a.long_count, a.short_count,
                    EXISTS (
                        SELECT 1 FROM alpha_pnl p
                        WHERE p.alpha_id = a.alpha_id AND p.turnover IS NOT NULL

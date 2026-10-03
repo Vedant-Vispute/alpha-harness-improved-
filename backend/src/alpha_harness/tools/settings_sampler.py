@@ -1,6 +1,7 @@
 """Settings Sampler: run one proven expression everywhere BRAIN will accept it.
 
-The expression, decay and truncation are held exactly as the source Alpha has them. What
+The expression, decay and truncation are held exactly as the source Alpha has them, unless
+the Truncation Agent sets truncation market by market. What
 varies is the market — region, delay, universe — plus neutralization and the
 maxTrade/maxPosition pair. A market only counts when every data field the expression reads
 is downloaded there, so a two-field Alpha is judged on the intersection.
@@ -31,6 +32,7 @@ from ..engine.lifecycle import RA_CHILDREN, extract_simulation_id
 from ..engine.packer import MAX_BATCH
 from ..labs import scheduler
 from ..labs.fastexpr import GROUPING, ParseError, data_fields, parse
+from ..labs.truncation import truncation_for
 
 if TYPE_CHECKING:
     from ..db.models import Study
@@ -295,6 +297,7 @@ def _regions(
                 "universe": universe,
                 "coverage": coverage,
                 "total": len(neutralizations) * len(pairs),
+                "agentTruncation": truncation_for(region, delay, universe),
             }
             for delay in sorted(delays)
             for universe, coverage in sorted(delays[delay].items())
@@ -429,6 +432,7 @@ def expand(
     source: dict[str, Any],
     *,
     market_neutral_only: bool = True,
+    truncation_agent: bool = False,
 ) -> list[SimulationRequest]:
     """Every simulation the selection asks for, ordered for both packing and watching.
 
@@ -444,6 +448,9 @@ def expand(
     the sweep is read against. It leads its *own* batch rather than travelling alone — pulled
     out of its market, it would go first as a batch of one and strand its nine fellows in a
     tail at the very back.
+
+    With ``truncation_agent`` each market takes the agent's truncation, except the Alpha's own
+    settings: kept as they are, so that simulation is still the Alpha it is compared with.
     """
     expression = str(source.get("expression") or "")
     decay = int(source.get("decay") or 0)
@@ -481,6 +488,7 @@ def expand(
             if market_neutral_only and not market_neutral(neutralization, trade, position):
                 continue
             key = (str(market["region"]), int(market["delay"]))
+            own = (*key, str(market["universe"]), neutralization, trade, position) == origin
             request = SimulationRequest(
                 settings=SimulationSettings(
                     region=key[0],
@@ -488,7 +496,11 @@ def expand(
                     delay=key[1],
                     neutralization=neutralization,
                     decay=decay,
-                    truncation=truncation,
+                    truncation=(
+                        truncation_for(*key, str(market["universe"]))
+                        if truncation_agent and not own
+                        else truncation
+                    ),
                     nan_handling=nan_handling,
                     test_period=test_period,
                     max_trade=trade,
@@ -497,7 +509,7 @@ def expand(
                 regular=expression,
             )
             groups.setdefault(key, []).append(request)
-            if (*key, str(market["universe"]), neutralization, trade, position) == origin:
+            if own:
                 first = request
 
     # Whole batches, so every ten still share a market, then those batches interleaved.

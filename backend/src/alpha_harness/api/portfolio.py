@@ -41,6 +41,11 @@ class PortfolioMember(Out):
     returns: float | None
     drawdown: float | None
     margin: float | None
+    long_count: int | None
+    short_count: int | None
+    #: Highest daily PnL correlation with any other submitted Alpha over BRAIN's four-year
+    #: window, the measure BRAIN's self-correlation check uses. ``None`` without a series.
+    correlation: float | None
     has_series: bool
 
 
@@ -107,6 +112,8 @@ class PortfolioResult(Out):
     #: Pairs sharing enough days to be measured.
     measured_pairs: int
     highest: CorrelatedPair | None
+    #: The least correlated pair, which can be negative.
+    lowest: CorrelatedPair | None = None
     #: Why a series is missing, when the single-Alpha route tried to download one and could
     #: not. Null everywhere else: on this page a missing series is listed in ``missing``.
     problem: str | None = None
@@ -133,6 +140,10 @@ class PortfolioSyncStarted(Out):
 async def members(state: State) -> PortfolioMembers:
     """Every submitted Alpha stored locally."""
     rows = await state.alphas.submitted_members()
+    ids = [str(r["alpha_id"]) for r in rows]
+    series = await state.alphas.series(ids)
+    meta = await state.alphas.by_ids(ids)
+    highest = await asyncio.to_thread(portfolio.highest_correlations, series, meta, ids)
     out: list[PortfolioMember] = []
     for r in rows:
         pyramids = json_list(r["pyramids"])
@@ -155,6 +166,9 @@ async def members(state: State) -> PortfolioMembers:
                 returns=r["returns"],
                 drawdown=r["drawdown"],
                 margin=r["margin"],
+                long_count=r["long_count"],
+                short_count=r["short_count"],
+                correlation=highest.get(str(r["alpha_id"])),
                 has_series=bool(r["has_series"]),
             )
         )

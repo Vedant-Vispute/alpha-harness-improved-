@@ -28,6 +28,7 @@ import {
   PROD_CORRELATION,
   SETTING_COLUMNS,
   setting,
+  TRUNCATION,
   taskStatus,
 } from '@/screens/tasks/columns'
 import { Button, Empty, ErrorNotice, KV, Metric, Page, PageHeader, Panel, Skeleton } from '@/ui/kit'
@@ -38,9 +39,10 @@ const LIMIT = 2000
 
 const market = (r: RankedAlpha) => setting(r, 'region') || DASH
 
-const columns = (): Column<RankedAlpha>[] => [
+const columns = (agent: boolean): Column<RankedAlpha>[] => [
   ALPHA_ID,
   ...SETTING_COLUMNS,
+  ...(agent ? [TRUNCATION] : []),
   PROD_CORRELATION,
   FAILED_CHECKS,
   ...METRIC_COLUMNS,
@@ -222,7 +224,7 @@ export function TaskResultsScreen() {
     ? (
         [
           ['Decay', task.decay],
-          ['Truncation', task.truncation],
+          ['Truncation', task.truncationAgent ? 'Truncation Agent' : task.truncation],
           ['NaN Handling', task.nanHandling],
           ['Test Period', task.testPeriod],
         ].filter(([, v]) => v != null && v !== '') as [string, string | number][]
@@ -359,7 +361,7 @@ export function TaskResultsScreen() {
       <AlphaPane
         title="Every Alpha"
         rows={rows}
-        columns={columns}
+        columns={() => columns(Boolean(task?.truncationAgent))}
         compare={compareAlphas}
         poolColumnAfter="investability"
         sort={sort}

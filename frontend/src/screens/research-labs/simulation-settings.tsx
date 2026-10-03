@@ -1,7 +1,9 @@
 /** The settings a task holds at one value for every simulation, laid out as BRAIN lays them out. */
 
-import { Field, Fieldset, Input } from '@/ui/kit'
+import type { ReactNode } from 'react'
+import { Field, Fieldset, Input, Segmented } from '@/ui/kit'
 import { Select } from '@/ui/overlay'
+import { TruncationAgentInfo } from './truncation-agent-info'
 
 type OnOff = 'ON' | 'OFF'
 
@@ -28,6 +30,9 @@ export function SimulationSettingsFields({
   setDecay,
   truncation,
   setTruncation,
+  truncationAgent = false,
+  setTruncationAgent,
+  agentSummary,
   pasteurization,
   setPasteurization,
   nanHandling,
@@ -41,6 +46,11 @@ export function SimulationSettingsFields({
   setDecay: (v: string) => void
   truncation: string
   setTruncation: (v: string) => void
+  /** Offers the Truncation Agent beside a single value; shown only where it is passed. */
+  truncationAgent?: boolean | undefined
+  setTruncationAgent?: ((v: boolean) => void) | undefined
+  /** What the agent will set, said in place of the value box while it is on. */
+  agentSummary?: ReactNode
   pasteurization?: OnOff | undefined
   setPasteurization?: ((v: OnOff) => void) | undefined
   nanHandling: OnOff
@@ -63,14 +73,34 @@ export function SimulationSettingsFields({
         />
       </Field>
       <Field label="Truncation">
-        <Input
-          type="number"
-          min={0}
-          max={1}
-          step={0.01}
-          value={truncation}
-          onChange={(e) => setTruncation(e.target.value)}
-        />
+        <div className="flex flex-col gap-2">
+          {setTruncationAgent && (
+            <div className="flex items-center gap-1">
+              <Segmented
+                label="Truncation"
+                items={[
+                  { value: 'single', label: 'Single Value' },
+                  { value: 'agent', label: 'Truncation Agent' },
+                ]}
+                value={truncationAgent ? 'agent' : 'single'}
+                onChange={(v) => setTruncationAgent(v === 'agent')}
+              />
+              <TruncationAgentInfo />
+            </div>
+          )}
+          {truncationAgent ? (
+            <p className="text-body-compact text-ink-muted">{agentSummary}</p>
+          ) : (
+            <Input
+              type="number"
+              min={0}
+              max={1}
+              step={0.01}
+              value={truncation}
+              onChange={(e) => setTruncation(e.target.value)}
+            />
+          )}
+        </div>
       </Field>
       {pasteurization && setPasteurization && (
         <Field label="Pasteurization">

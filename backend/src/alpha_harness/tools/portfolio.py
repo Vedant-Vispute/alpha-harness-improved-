@@ -46,6 +46,8 @@ def compute(
     """Everything the Portfolio page shows for these Alphas. Ids without a series are left
     to the caller to report."""
     ids = [a for a in dict.fromkeys(alpha_ids) if series.get(a)]
+    # Most recently submitted first, so the correlation grid reads newest to oldest.
+    ids.sort(key=lambda a: str(meta.get(a, {}).get("date_submitted") or ""), reverse=True)
     if not ids:
         return {
             "alphas": 0,
@@ -89,6 +91,28 @@ def compute(
         "periods": _periods(dates, book, traded, split),
         # Without the final days: BRAIN's correlations match to four decimals without them.
         **_correlation(ids, dates, np.where(closing, np.nan, pnl)),
+    }
+
+
+def highest_correlations(
+    series: dict[str, dict[date, tuple[float, float]]],
+    meta: dict[str, dict[str, Any]],
+    alpha_ids: list[str],
+) -> dict[str, float | None]:
+    """Each Alpha's highest correlation with any other of ``alpha_ids``, measured as the grid
+    below measures it. Absent for an Alpha without a series."""
+    ids = [a for a in dict.fromkeys(alpha_ids) if series.get(a)]
+    if len(ids) < 2:
+        return dict.fromkeys(ids)
+    dates, pnl, _, closing = frame(series, meta, ids)
+    since = submission_planner.window_start(dates[-1])
+    rho = submission_planner.correlations(
+        np.where(closing, np.nan, pnl)[bisect_left(dates, since) :]
+    )
+    np.fill_diagonal(rho, np.nan)
+    return {
+        a: None if np.isnan(row).all() else float(np.nanmax(row))
+        for a, row in zip(ids, rho, strict=True)
     }
 
 
@@ -151,9 +175,9 @@ def _periods(
     }
 
 
-#: Past this many Alphas a full grid is too dense to read, and too large to send: only the
+#: Past this many Alphas a full grid is too large to send and draw: only the
 #: most correlated pairs are returned.
-GRID_LIMIT = 30
+GRID_LIMIT = 150
 TOP_PAIRS = 20
 
 
@@ -171,6 +195,11 @@ def _correlation(ids: list[str], dates: list[date], pnl: Floats) -> dict[str, An
     )
     left, right = np.triu_indices(len(ids), k=1)
     measured = ~np.isnan(rho[left, right])
+    lowest = None
+    if measured.any():
+        k = int(np.nanargmin(rho[left, right]))
+        a, b = int(left[k]), int(right[k])
+        lowest = {"a": ids[a], "b": ids[b], "correlation": float(rho[a, b])}
     if len(ids) <= GRID_LIMIT:
         matrix = [[None if np.isnan(v) else round(float(v), 4) for v in row] for row in rho]
         return {
@@ -178,6 +207,7 @@ def _correlation(ids: list[str], dates: list[date], pnl: Floats) -> dict[str, An
             "top_pairs": [],
             "measured_pairs": int(measured.sum()),
             "highest": highest,
+            "lowest": lowest,
         }
     left, right = left[measured], right[measured]
     values = rho[left, right]
@@ -190,4 +220,5 @@ def _correlation(ids: list[str], dates: list[date], pnl: Floats) -> dict[str, An
         ],
         "measured_pairs": int(values.size),
         "highest": highest,
+        "lowest": lowest,
     }

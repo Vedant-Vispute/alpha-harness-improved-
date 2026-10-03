@@ -36,6 +36,8 @@ export type SampleRequest = Source & {
   cores: number
   /** Drop NONE neutralization with no investability constraint: it is not market neutral. */
   marketNeutralOnly?: boolean
+  /** Truncation set per market by the Truncation Agent instead of held at one value. */
+  truncationAgent?: boolean
 }
 
 const B = '/api/tools/settings-sampler'

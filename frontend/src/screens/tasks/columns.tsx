@@ -143,6 +143,19 @@ export const FAILED_CHECKS: Column<RankedAlpha> = {
     ),
 }
 
+/** Per row, for a sweep whose Truncation Agent set it market by market. */
+export const TRUNCATION: Column<RankedAlpha> = {
+  key: 'truncation',
+  header: 'Truncation',
+  width: 'minmax(84px,0.8fr)',
+  align: 'right',
+  cell: (r) => (
+    <span className="num">
+      {r.settings?.['truncation'] == null ? DASH : fmt.ratio(Number(r.settings['truncation']), 2)}
+    </span>
+  ),
+}
+
 export const DELAY: Column<RankedAlpha> = {
   key: 'delay',
   header: 'Delay',

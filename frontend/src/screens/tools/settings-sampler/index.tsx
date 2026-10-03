@@ -385,6 +385,7 @@ export function SettingsSamplerScreen() {
   const [chosenCores, setCores] = useState<number | null>(null)
   const wantedCores = useCores(chosenCores)
   const [marketNeutralOnly, setMarketNeutralOnly] = useState(true)
+  const [truncationAgent, setTruncationAgent] = useState(false)
 
   useEffect(() => {
     setDraft(search.alpha ?? '')
@@ -462,6 +463,30 @@ export function SettingsSamplerScreen() {
         : 0,
     [plan, all, marketNeutralOnly],
   )
+  // What the agent sets across the markets chosen, from the plan's own figure for each.
+  const agentValues = all.filter((m) => chosen.has(marketKey(m))).map((m) => m.agentTruncation)
+  const lowest = Math.min(...agentValues)
+  const highest = Math.max(...agentValues)
+  const agentSummary =
+    agentValues.length === 0 ? (
+      'Choose a market to see what it sets.'
+    ) : (
+      <span title="0.08 in broad universes, 0.06 in mid-sized ones, 0.05 in narrow ones, multi-country regions and Delay 0. Never above 0.08, under the 8% Weight test.">
+        Set per Market:{' '}
+        <span className="num text-ink">
+          {lowest === highest
+            ? fmt.ratio(lowest, 2)
+            : `${fmt.ratio(lowest, 2)} to ${fmt.ratio(highest, 2)}`}
+        </span>{' '}
+        across the chosen markets.
+        {plan?.alphaId && (
+          <>
+            {' '}
+            The Alpha's own simulation keeps <span className="num text-ink">{truncation}</span>.
+          </>
+        )}
+      </span>
+    )
   const { branches, picks, simulations, batches, markets } = useMemo(
     () => resolve(plan, chosen, neutralizations, pairs, marketNeutralOnly),
     [plan, chosen, neutralizations, pairs, marketNeutralOnly],
@@ -540,6 +565,7 @@ export function SettingsSamplerScreen() {
       ...holding,
       markets: picks,
       marketNeutralOnly,
+      truncationAgent,
       neutralizations,
       pairs: allPairs.filter((p) => pairs.includes(pairKey(p))),
       cores,
@@ -648,17 +674,16 @@ export function SettingsSamplerScreen() {
       {plan?.expression && (
         <Panel
           title="Simulation Settings"
-          description={
-            plan.alphaId
-              ? 'Read from the Alpha, and yours to change. Every market in the sweep runs at these.'
-              : 'Every market in the sweep runs at these.'
-          }
+          description={`${plan.alphaId ? 'Read from the Alpha, and yours to change. ' : ''}Every market in the sweep runs at these${truncationAgent ? ', with Truncation set per market' : ''}.`}
         >
           <SimulationSettingsFields
             decay={decay}
             setDecay={setDecay}
             truncation={truncation}
             setTruncation={setTruncation}
+            truncationAgent={truncationAgent}
+            setTruncationAgent={setTruncationAgent}
+            agentSummary={agentSummary}
             nanHandling={nanHandling}
             setNanHandling={setNanHandling}
             testYears={testYears}
