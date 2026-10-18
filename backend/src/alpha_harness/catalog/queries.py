@@ -8,10 +8,12 @@ names, because a user-supplied sort key must never reach SQL directly.
 """
 
 import asyncio
+import time
 from collections import Counter
 from datetime import date
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
+import structlog
 from pydantic import BaseModel, Field
 
 from ..brain.schemas import REGION_AGNOSTIC_REGION
@@ -20,7 +22,11 @@ from .search import MATCH, TABLE, query_terms
 from .search import ready as search_ready
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from ..db.duck import Catalog
+
+log = structlog.get_logger(__name__)
 
 #: Sortable columns. Anything not in here is rejected rather than interpolated.
 SORTABLE = {
@@ -282,7 +288,7 @@ class CatalogQueries:
     def __init__(self, catalog: Catalog) -> None:
         self.catalog = catalog
         self._submitted_field_counts: Counter[str] = Counter()
-        self._submitted_field_signature: tuple[int, Any] | None = None
+        self._submitted_field_signature: tuple[int, datetime | None] | None = None
         self._submitted_field_counts_lock = asyncio.Lock()
 
     # -- overview --------------------------------------------------------
@@ -388,10 +394,38 @@ class CatalogQueries:
             """
         )
         first = summary[0] if summary else {"total": 0, "newest": None}
-        signature = (int(first["total"] or 0), first["newest"])
+        signature: tuple[int, datetime | None] = (
+            int(first["total"] or 0),
+            cast("datetime | None", first["newest"]),
+        )
         if signature != self._submitted_field_signature:
             async with self._submitted_field_counts_lock:
                 if signature != self._submitted_field_signature:
+                    # The usage rows survive restarts. Reuse them when their saved source
+                    # signature still matches instead of reparsing every submitted Alpha.
+                    cached = await self.catalog.query(
+                        """
+                        SELECT alpha_count, newest_fetched_at
+                        FROM alpha_field_usage_meta WHERE cache_name = 'submitted'
+                        """
+                    )
+                    if cached:
+                        saved = cached[0]
+                        saved_signature: tuple[int, datetime | None] = (
+                            int(saved["alpha_count"]),
+                            cast("datetime | None", saved["newest_fetched_at"]),
+                        )
+                        if saved_signature == signature:
+                            usage = await self.catalog.query(
+                                "SELECT field_id, your_alphas FROM alpha_field_usage"
+                            )
+                            self._submitted_field_counts = Counter(
+                                {str(row["field_id"]): int(row["your_alphas"]) for row in usage}
+                            )
+                            self._submitted_field_signature = signature
+                            return
+
+                    started = time.perf_counter()
                     expressions = await self.catalog.query(
                         """
                         SELECT expression FROM alpha
@@ -404,9 +438,21 @@ class CatalogQueries:
                         [str(row["expression"]) for row in expressions],
                     )
                     await self.catalog.replace_alpha_field_usage(
-                        list(self._submitted_field_counts.items())
+                        list(self._submitted_field_counts.items()),
+                        alpha_count=signature[0],
+                        newest_fetched_at=signature[1],
                     )
                     self._submitted_field_signature = signature
+                    log.info(
+                        "catalog.alpha_field_usage_rebuilt",
+                        alphas=signature[0],
+                        fields=len(self._submitted_field_counts),
+                        elapsed_s=round(time.perf_counter() - started, 3),
+                    )
+
+    async def warm_submitted_field_counts(self) -> None:
+        """Warm the persisted field-usage index before the user opens Data Explorer."""
+        await self._refresh_submitted_field_counts()
 
     async def your_alpha_counts(self, field_ids: list[str]) -> dict[str, int]:
         """Count this account's submitted Alphas that reference each requested data field."""
@@ -431,7 +477,10 @@ class CatalogQueries:
             page = await self._page(scope, filters, terms, conjunctive=True)
             if page["total"] == 0 and " " in terms:
                 page = await self._page(scope, filters, terms, conjunctive=False)
-        counts = await self.your_alpha_counts([str(row["field_id"]) for row in page["results"]])
+        counts = {
+            field_id: self._submitted_field_counts.get(field_id, 0)
+            for field_id in (str(row["field_id"]) for row in page["results"])
+        }
         for row in page["results"]:
             row["your_alphas"] = counts.get(str(row["field_id"]), 0)
         return page

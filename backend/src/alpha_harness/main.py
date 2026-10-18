@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import logging
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, override
@@ -166,7 +167,21 @@ def create_app() -> FastAPI:
                 status_code=403,
             )
         page_seen.set()
-        return await call_next(request)
+        started = time.perf_counter()
+        response = await call_next(request)
+        if request.url.path.startswith("/api/"):
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            response.headers["Server-Timing"] = f"app;dur={elapsed_ms:.1f}"
+            if elapsed_ms >= 500:
+                route = request.scope.get("route")
+                log.info(
+                    "http.slow_request",
+                    method=request.method,
+                    route=getattr(route, "path", "unmatched"),
+                    status=response.status_code,
+                    elapsed_ms=round(elapsed_ms, 1),
+                )
+        return response
 
     install_exception_handlers(app)
 

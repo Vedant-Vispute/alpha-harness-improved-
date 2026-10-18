@@ -124,9 +124,13 @@ class AppState:
     # -- lifecycle -------------------------------------------------------
 
     async def startup(self) -> None:
+        startup_started = time.perf_counter()
         # The catalog's single-writer lock is this process's claim on the data directory, so it
         # comes first: a second backend must fail here, before it backs up or migrates.
         await self.catalog.open()
+        # Building field usage from a large Alpha vault must not start on the first Data
+        # Explorer request; warm its persistent index in the background during startup.
+        spawn(self.queries.warm_submitted_field_counts(), name="catalog-alpha-field-usage")
         await asyncio.to_thread(snapshot, self.settings.sqlite_path, updates.current())
         await self.db.create_all()
         preferences.apply(self, await preferences.load(self.db))
@@ -171,7 +175,11 @@ class AppState:
         await self.engine.start()
         await self.optimizer.start()
         self._session_watch = asyncio.create_task(self._watch_session(), name="session-watch")
-        log.info("startup.complete", data_dir=str(self.settings.data_dir))
+        log.info(
+            "startup.complete",
+            data_dir=str(self.settings.data_dir),
+            elapsed_s=round(time.perf_counter() - startup_started, 3),
+        )
 
     async def _replay_last_sync(self) -> None:
         """Seed the sync topic with the last finished run, so its figures survive a restart.

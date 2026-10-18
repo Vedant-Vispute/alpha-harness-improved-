@@ -22,6 +22,7 @@ import structlog
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
+    from datetime import datetime
     from pathlib import Path
 
 log = structlog.get_logger(__name__)
@@ -94,6 +95,13 @@ CREATE TABLE IF NOT EXISTS data_category (
 CREATE TABLE IF NOT EXISTS alpha_field_usage (
     field_id          VARCHAR PRIMARY KEY,
     your_alphas       INTEGER NOT NULL
+);
+
+-- Ties the persistent field-usage index to the submitted-Alpha snapshot it was built from.
+CREATE TABLE IF NOT EXISTS alpha_field_usage_meta (
+    cache_name        VARCHAR PRIMARY KEY,
+    alpha_count       INTEGER NOT NULL,
+    newest_fetched_at TIMESTAMP
 );
 
 -- Only region ALL sends it: how many regions hold the field, which is what says whether it
@@ -740,8 +748,14 @@ class Catalog:
         )
         return len(rows)
 
-    async def replace_alpha_field_usage(self, rows: list[tuple[str, int]]) -> int:
-        """Replace the cached count of submitted Alphas using each data field."""
+    async def replace_alpha_field_usage(
+        self,
+        rows: list[tuple[str, int]],
+        *,
+        alpha_count: int,
+        newest_fetched_at: datetime | None,
+    ) -> int:
+        """Replace field-use counts and the submitted-Alpha snapshot they describe."""
         table = pa.table(
             {
                 "field_id": pa.array([field for field, _ in rows], type=pa.string()),
@@ -756,6 +770,12 @@ class Catalog:
                 "INSERT INTO alpha_field_usage (field_id, your_alphas) "
                 "SELECT field_id, your_alphas FROM _incoming",
                 [],
+            ),
+            ("DELETE FROM alpha_field_usage_meta WHERE cache_name = 'submitted'", []),
+            (
+                "INSERT INTO alpha_field_usage_meta "
+                "(cache_name, alpha_count, newest_fetched_at) VALUES ('submitted', ?, ?)",
+                [alpha_count, newest_fetched_at],
             ),
         )
         return len(rows)

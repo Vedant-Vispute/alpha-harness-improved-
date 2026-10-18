@@ -3570,7 +3570,10 @@ export interface components {
             universe: string;
             /** User Count */
             user_count: number | null;
-            /** Your Alphas */
+            /**
+             * Your Alphas
+             * @default 0
+             */
             your_alphas: number;
         };
         /** DataFieldRow */
@@ -3605,7 +3608,10 @@ export interface components {
             themes: string | null;
             /** User Count */
             user_count: number | null;
-            /** Your Alphas */
+            /**
+             * Your Alphas
+             * @default 0
+             */
             your_alphas: number;
         };
         /** DatasetFacet */
