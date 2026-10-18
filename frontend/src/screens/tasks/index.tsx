@@ -75,11 +75,14 @@ const SETTINGS_SAMPLER = 'settings-sampler'
 const REGION_AGNOSTIC = 'region-agnostic'
 
 const expressionCellStyle = (r: RankedAlpha) => {
-  const counts = r.checkCounts ?? { pass: 0, warning: 0, fail: 0 }
-  const total = counts.pass + counts.warning + counts.fail
+  const counts = r.checkCounts
+  const passed = counts?.pass ?? 0
+  const warnings = counts?.warning ?? 0
+  const failed = counts?.fail ?? 0
+  const total = passed + warnings + failed
   if (total === 0) return undefined
-  const pass = (counts.pass / total) * 100
-  const warning = pass + (counts.warning / total) * 100
+  const pass = (passed / total) * 100
+  const warning = pass + (warnings / total) * 100
   return {
     backgroundImage: `linear-gradient(to right, var(--color-pnl-positive-row) 0% ${pass}%, var(--color-status-warning-row) ${pass}% ${warning}%, var(--color-pnl-negative-row) ${warning}% 100%)`,
   }

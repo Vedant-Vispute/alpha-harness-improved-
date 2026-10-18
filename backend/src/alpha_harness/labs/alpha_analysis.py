@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -13,6 +13,15 @@ MAX_SINGLE_DAY_PROFIT_SHARE = 0.40
 # A daily move this large relative to a typical move and the whole path is a spike.
 SPIKE_MEDIAN_MULTIPLE = 12.0
 SPIKE_TOTAL_SHARE = 0.20
+
+
+class YearMetrics(TypedDict):
+    year: int
+    stage: str
+    active: bool | None
+    sharpe: float | None
+    fitness: float | None
+    returns: float | None
 
 
 def _key(value: Any) -> str:
@@ -42,7 +51,7 @@ def diagnose(yearly: Sequence[dict[str, Any]], daily_pnl: Sequence[float]) -> di
     empty while the asset universe gains coverage, and a trailing partial year is not a gap.
     """
     reasons: list[str] = []
-    years = []
+    years: list[YearMetrics] = []
     for row in yearly:
         stage = _text(row, "stage").upper()
         if stage == "TEST":
@@ -70,6 +79,7 @@ def diagnose(yearly: Sequence[dict[str, Any]], daily_pnl: Sequence[float]) -> di
     years.sort(key=lambda item: item["year"])
     if years:
         by_year = {row["year"]: row for row in years}
+        first_year, last_year = years[0]["year"], years[-1]["year"]
         years = [
             by_year.get(
                 year,
@@ -82,7 +92,7 @@ def diagnose(yearly: Sequence[dict[str, Any]], daily_pnl: Sequence[float]) -> di
                     "returns": None,
                 },
             )
-            for year in range(years[0]["year"], years[-1]["year"] + 1)
+            for year in range(first_year, last_year + 1)
         ]
 
     active_indices = [i for i, row in enumerate(years) if row["active"] is True]

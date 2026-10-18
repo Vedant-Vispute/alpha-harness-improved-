@@ -6,7 +6,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { useRefetchOn } from '@/lib/ws'
 import { AlphaPane } from '@/screens/tasks/alpha-pane'
-import { labTasks, type RankedAlpha, type TaskAlpha } from '@/screens/tasks/api'
+import { labTasks, type RankedAlpha } from '@/screens/tasks/api'
 import {
   ALPHA_ID,
   compareAlphas,
@@ -27,7 +27,7 @@ const columns = (): Column<RankedAlpha>[] => [
     header: 'Task',
     width: 'minmax(180px,1.4fr)',
     sortable: true,
-    cell: (r) => <span className="truncate text-ink-muted">{(r as TaskAlpha).taskName ?? ''}</span>,
+    cell: (r) => <span className="truncate text-ink-muted">{r.taskName ?? ''}</span>,
   },
 ]
 

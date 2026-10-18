@@ -1052,6 +1052,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/lab-tasks/{task_id}/groups/{group_id}/arc-simulation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Arc Simulation
+         * @description Queue the expression once in BRAIN's ALL region, then expose its parent Alpha result.
+         */
+        post: operations["run_arc_simulation_api_lab_tasks__task_id__groups__group_id__arc_simulation_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/lab-tasks/{task_id}/info": {
         parameters: {
             query?: never;
@@ -1583,6 +1603,60 @@ export interface paths {
         put?: never;
         /** Add Task */
         post: operations["add_task_api_region_agnostic_lab_tasks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/regular-alpha-lab/options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Regular Options */
+        get: operations["regular_options_api_regular_alpha_lab_options_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/regular-alpha-lab/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Regular Preview
+         * @description Preview a Regular Alpha task with only Regular Alpha prompts.
+         */
+        post: operations["regular_preview_api_regular_alpha_lab_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/regular-alpha-lab/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Add Regular Task */
+        post: operations["add_regular_task_api_regular_alpha_lab_tasks_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2271,23 +2345,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/vault/alphas/{alpha_id}/bookmark": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /** Set Bookmark */
-        put: operations["set_bookmark_api_vault_alphas__alpha_id__bookmark_put"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/vault/alphas/{alpha_id}/detail": {
         parameters: {
             query?: never;
@@ -2329,17 +2386,20 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/vault/bookmarks": {
+    "/api/vault/analyze-quality": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Bookmarks */
-        get: operations["bookmarks_api_vault_bookmarks_get"];
+        get?: never;
         put?: never;
-        post?: never;
+        /**
+         * Analyze Quality
+         * @description Analyze every stored Alpha that does not yet have a quality verdict.
+         */
+        post: operations["analyze_quality_api_vault_analyze_quality_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2440,8 +2500,6 @@ export interface components {
         AlphaDetail: {
             /** Alphaid */
             alphaId: string;
-            /** Bookmarked */
-            bookmarked: boolean;
             /** Brainurl */
             brainUrl: string;
             /** Checks */
@@ -2450,8 +2508,11 @@ export interface components {
             }[];
             /** Expression */
             expression: string | null;
-            /** Rejected */
-            rejected?: boolean;
+            /**
+             * Rejected
+             * @default false
+             */
+            rejected: boolean;
             /** Rejectionreason */
             rejectionReason?: string | null;
             settings: components["schemas"]["AlphaSettings"];
@@ -2460,8 +2521,7 @@ export interface components {
         AlphaGroup: {
             /** Alphas */
             alphas: components["schemas"]["GroupAlpha"][];
-            /** Arc simulation state for this expression in the ALL region. */
-            arcSimulation: components["schemas"]["ArcSimulationView"] | null;
+            arcSimulation?: components["schemas"]["ArcSimulationView"] | null;
             /** Bestsharpe */
             bestSharpe: number | null;
             /** Decay */
@@ -2480,17 +2540,6 @@ export interface components {
             pending: number;
             /** Truncation */
             truncation: number | null;
-        };
-        /** ArcSimulationView */
-        ArcSimulationView: {
-            /** Alphaid */
-            alphaId: string | null;
-            /** Message */
-            message: string | null;
-            /** Progress */
-            progress: number | null;
-            /** State */
-            state: "queued" | "running" | "complete" | "failed";
         };
         /** AlphaGroups */
         AlphaGroups: {
@@ -2580,8 +2629,11 @@ export interface components {
             params: {
                 [key: string]: unknown;
             };
-            /** Rejected */
-            rejected?: boolean;
+            /**
+             * Rejected
+             * @default false
+             */
+            rejected: boolean;
             /** Rejectionreason */
             rejectionReason?: string | null;
             /** Siblings */
@@ -2608,11 +2660,6 @@ export interface components {
         };
         /** AlphaPageRequest */
         AlphaPageRequest: {
-            /**
-             * Bookmarked
-             * @default false
-             */
-            bookmarked: boolean;
             /** Delays */
             delays?: number[] | null;
             /**
@@ -2640,6 +2687,11 @@ export interface components {
             offset: number;
             /** Regions */
             regions?: string[] | null;
+            /**
+             * Rejected Only
+             * @default false
+             */
+            rejected_only: boolean;
             /** Search */
             search?: string | null;
             /**
@@ -2726,12 +2778,15 @@ export interface components {
             pyramids?: string[];
             /** Region */
             region: string | null;
-            /** Returns */
-            returns: number | null;
-            /** Rejected */
-            rejected?: boolean;
+            /**
+             * Rejected
+             * @default false
+             */
+            rejected: boolean;
             /** Rejectionreason */
             rejectionReason?: string | null;
+            /** Returns */
+            returns: number | null;
             /** Sharpe */
             sharpe: number | null;
             /** Shortcount */
@@ -2805,8 +2860,11 @@ export interface components {
             pnl: (number | null)[];
             /** Problems */
             problems: string[];
-            /** Rejected */
-            rejected?: boolean;
+            /**
+             * Rejected
+             * @default false
+             */
+            rejected: boolean;
             /** Rejectionreason */
             rejectionReason?: string | null;
             /** Teststart */
@@ -2840,6 +2898,20 @@ export interface components {
             turnover?: number | null;
             /** Year */
             year: string;
+        };
+        /** ArcSimulationView */
+        ArcSimulationView: {
+            /** Alphaid */
+            alphaId?: string | null;
+            /** Message */
+            message?: string | null;
+            /** Progress */
+            progress?: number | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "queued" | "running" | "complete" | "failed";
         };
         /** Assistant */
         Assistant: {
@@ -3086,16 +3158,6 @@ export interface components {
             universe?: string | null;
             /** Vector Operators */
             vector_operators?: string[];
-        };
-        /** BookmarkRequest */
-        BookmarkRequest: {
-            /** Bookmarked */
-            bookmarked: boolean;
-        };
-        /** Bookmarks */
-        Bookmarks: {
-            /** Alphaids */
-            alphaIds: string[];
         };
         /**
          * BrainPayload
@@ -3545,6 +3607,8 @@ export interface components {
             body?: string | null;
             /** Name */
             name?: string | null;
+            /** Read Metrics */
+            read_metrics?: ("sharpe" | "fitness" | "turnover" | "returns" | "drawdown")[] | null;
         };
         /**
          * EngineStatus
@@ -3648,10 +3712,13 @@ export interface components {
             neutralizations?: string[];
             /** Population */
             population?: (50 | 100 | 200) | null;
-            /** Regular */
-            regular?: boolean;
             /** Region */
             region: string;
+            /**
+             * Regular
+             * @default false
+             */
+            regular: boolean;
             /**
              * Simulations
              * @default 0
@@ -4169,8 +4236,6 @@ export interface components {
             basedOn: string | null;
             /** Body */
             body: string;
-            /** Read metrics */
-            readMetrics: string[];
             /** Builtin */
             builtIn: boolean;
             /** Characters */
@@ -4183,6 +4248,8 @@ export interface components {
             kind: string;
             /** Name */
             name: string;
+            /** Readmetrics */
+            readMetrics: ("sharpe" | "fitness" | "turnover" | "returns" | "drawdown")[];
             /** Updatedat */
             updatedAt: string | null;
             /** Words */
@@ -4288,6 +4355,8 @@ export interface components {
             kind: string;
             /** Name */
             name: string;
+            /** Read Metrics */
+            read_metrics?: ("sharpe" | "fitness" | "turnover" | "returns" | "drawdown")[];
         };
         /** OfferedModels */
         OfferedModels: {
@@ -4707,20 +4776,6 @@ export interface components {
              * @default true
              */
             autoUpdate: boolean;
-            /** Thresholddrawdown */
-            thresholdDrawdown: number;
-            /** Thresholdtestsharpe */
-            thresholdTestSharpe: number;
-            /** Thresholdfitness */
-            thresholdFitness: number;
-            /** Thresholdmargin */
-            thresholdMargin: number;
-            /** Thresholdreturns */
-            thresholdReturns: number;
-            /** Thresholdsharpe */
-            thresholdSharpe: number;
-            /** Thresholdturnover */
-            thresholdTurnover: number;
             /**
              * Defaultcores
              * @default 4
@@ -4745,6 +4800,41 @@ export interface components {
             pnlDownload: boolean;
             /** Quickregions */
             quickRegions?: string[];
+            /**
+             * Thresholddrawdown
+             * @default 0.02
+             */
+            thresholdDrawdown: number;
+            /**
+             * Thresholdfitness
+             * @default 1
+             */
+            thresholdFitness: number;
+            /**
+             * Thresholdmargin
+             * @default 0.03
+             */
+            thresholdMargin: number;
+            /**
+             * Thresholdreturns
+             * @default 0.05
+             */
+            thresholdReturns: number;
+            /**
+             * Thresholdsharpe
+             * @default 1.58
+             */
+            thresholdSharpe: number;
+            /**
+             * Thresholdtestsharpe
+             * @default 1.58
+             */
+            thresholdTestSharpe: number;
+            /**
+             * Thresholdturnover
+             * @default 0.25
+             */
+            thresholdTurnover: number;
             /**
              * Updatecheckhours
              * @default 1
@@ -4848,6 +4938,11 @@ export interface components {
             columns: components["schemas"]["PyramidColumn"][];
             quarter: components["schemas"]["Quarter"];
         };
+        /** QualityAnalysisStarted */
+        QualityAnalysisStarted: {
+            /** Taskid */
+            taskId: string;
+        };
         /**
          * Quarter
          * @description Calendar quarter in platform time; ``end`` is the next quarter's first day.
@@ -4888,6 +4983,10 @@ export interface components {
             afterCostSharpe?: number | null;
             /** Alphaid */
             alphaId: string | null;
+            /** Checkcounts */
+            checkCounts?: {
+                [key: string]: number;
+            };
             /** Drawdown */
             drawdown: number | null;
             /**
@@ -4921,12 +5020,15 @@ export interface components {
              * @default false
              */
             quick: boolean;
-            /** Rejected */
-            rejected?: boolean;
-            /** Rejectionreason */
-            rejectionReason?: string | null;
             /** Refusedby */
             refusedBy: string[];
+            /**
+             * Rejected
+             * @default false
+             */
+            rejected: boolean;
+            /** Rejectionreason */
+            rejectionReason?: string | null;
             /** Returns */
             returns: number | null;
             /** Settings */
@@ -5507,12 +5609,15 @@ export interface components {
             margin: number | null;
             /** Pnl */
             pnl: number[];
-            /** Returns */
-            returns: number | null;
-            /** Rejected */
-            rejected?: boolean;
+            /**
+             * Rejected
+             * @default false
+             */
+            rejected: boolean;
             /** Rejectionreason */
             rejectionReason?: string | null;
+            /** Returns */
+            returns: number | null;
             settings: components["schemas"]["AlphaSettings"];
             /** Sharpe */
             sharpe: number | null;
@@ -5734,6 +5839,10 @@ export interface components {
             afterCostSharpe?: number | null;
             /** Alphaid */
             alphaId: string | null;
+            /** Checkcounts */
+            checkCounts?: {
+                [key: string]: number;
+            };
             /** Drawdown */
             drawdown: number | null;
             /**
@@ -5769,6 +5878,13 @@ export interface components {
             quick: boolean;
             /** Refusedby */
             refusedBy: string[];
+            /**
+             * Rejected
+             * @default false
+             */
+            rejected: boolean;
+            /** Rejectionreason */
+            rejectionReason?: string | null;
             /** Returns */
             returns: number | null;
             /** Settings */
@@ -5786,8 +5902,6 @@ export interface components {
             source: boolean;
             /** Submittable */
             submittable: boolean;
-            /** Status */
-            status: string;
             /**
              * Submitted
              * @default false
@@ -7891,6 +8005,38 @@ export interface operations {
             };
         };
     };
+    run_arc_simulation_api_lab_tasks__task_id__groups__group_id__arc_simulation_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: number;
+                group_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArcSimulationView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     info_api_lab_tasks__task_id__info_get: {
         parameters: {
             query?: never;
@@ -8797,6 +8943,92 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["RegionAgnosticRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AddedTask"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    regular_options_api_regular_alpha_lab_options_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PowerPoolOptions"];
+                };
+            };
+        };
+    };
+    regular_preview_api_regular_alpha_lab_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PowerPoolRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PowerPoolPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_regular_task_api_regular_alpha_lab_tasks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PowerPoolRequest"];
             };
         };
         responses: {
@@ -9946,41 +10178,6 @@ export interface operations {
             };
         };
     };
-    set_bookmark_api_vault_alphas__alpha_id__bookmark_put: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                alpha_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["BookmarkRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AlphaDetail"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     alpha_detail_api_vault_alphas__alpha_id__detail_get: {
         parameters: {
             query?: never;
@@ -10043,7 +10240,7 @@ export interface operations {
             };
         };
     };
-    bookmarks_api_vault_bookmarks_get: {
+    analyze_quality_api_vault_analyze_quality_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -10058,7 +10255,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Bookmarks"];
+                    "application/json": components["schemas"]["QualityAnalysisStarted"];
                 };
             };
         };

@@ -10,9 +10,18 @@ type Schemas = components['schemas']
 export type TaskStatus = Schemas['StudyStatus']
 export type LabTask = Schemas['LabTask']
 export type LabTasks = Schemas['LabTasks']
-export type RankedAlpha = Omit<Schemas['RankedAlpha'], 'settings'> & {
+type AlphaCheckCounts = {
+  pass?: number
+  warning?: number
+  fail?: number
+  [key: string]: number | undefined
+}
+
+export type RankedAlpha = Omit<Schemas['RankedAlpha'], 'settings' | 'checkCounts'> & {
   settings: { universe?: string; neutralization?: string; [key: string]: unknown } | null
-  checkCounts?: { pass: number; warning: number; fail: number }
+  checkCounts?: AlphaCheckCounts
+  taskId?: number
+  taskName?: string | null
 }
 
 export type MetricThresholds = Pick<
@@ -27,8 +36,9 @@ export type MetricThresholds = Pick<
 >
 
 /** A submittable Alpha from any task, with the task that found it. */
-export type TaskAlpha = Omit<Schemas['TaskAlpha'], 'settings'> & {
+export type TaskAlpha = Omit<Schemas['TaskAlpha'], 'settings' | 'checkCounts'> & {
   settings: RankedAlpha['settings']
+  checkCounts?: AlphaCheckCounts
 }
 
 export type TaskInfo = Schemas['TaskInfo']

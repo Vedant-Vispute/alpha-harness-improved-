@@ -1413,9 +1413,10 @@ async def run_arc_simulation(task_id: int, group_id: int, state: State) -> ArcSi
         }
     )
     serialized = settings.model_dump(by_alias=True, exclude_none=True)
-    problems = validate_settings(
-        await state.metadata.cached_settings_schema(), serialized, require_all=True
+    schema = (
+        await state.metadata.cached_settings_schema() or await state.metadata.refresh_metadata()
     )
+    problems = validate_settings(schema, serialized, require_all=True)
     if problems:
         raise refuse(422, "arc_settings_unavailable", problems[0])
     request = SimulationRequest(settings=settings, regular=expression)
