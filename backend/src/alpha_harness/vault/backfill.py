@@ -12,9 +12,12 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import structlog
+from sqlalchemy import select
 
 from ..brain.filters import AlphaQuery, Filter
 from ..brain.schemas import QUICK_MODE, Alpha, RecordSet
+from ..db.models import Trial, TrialState
+from ..labs import alpha_analysis
 from .store import checks_json
 from .yields import checks_of, gating_results
 
@@ -100,15 +103,21 @@ class Backfill:
         endpoints: BrainEndpoints,
         tasks: TaskRegistry,
         *,
+        db: Any | None = None,
         on_stored: Callable[[dict[str, Any]], Awaitable[None]],
     ) -> None:
         self.vault = vault
         self.endpoints = endpoints
         self.tasks = tasks
+        self.db = db
         self.on_stored = on_stored
         self._running: asyncio.Task[Any] | None = None
+        self._quality_job: asyncio.Task[Any] | None = None
+        self._quality_task_id: str | None = None
         self._starting = asyncio.Lock()
         self._background: set[asyncio.Task[Any]] = set()
+        #: Yearly rows just read alongside returns, reused by Power Pool's analysis pass.
+        self._yearly_cache: dict[str, list[dict[str, Any]]] = {}
         #: Alphas whose daily PnL was asked for in the background, each once per run.
         self._returns_asked: set[str] = set()
         #: Check results that let an alpha's PnL download as it lands (Settings). Empty: never.
@@ -152,6 +161,26 @@ class Backfill:
         """
         return await self._launch(kind, label, lambda task: self._job(task, work))
 
+    async def start_quality_analysis(self) -> str:
+        """Analyze every stored Alpha without colliding with an Alpha sync.
+
+        A sync already in flight is allowed to finish first. While this job is queued or
+        running, another sync cannot start; repeated requests share the same visible task.
+        """
+        async with self._starting:
+            if self._quality_job is not None and not self._quality_job.done():
+                if self._quality_task_id is None:
+                    raise RuntimeError("Alpha quality task has no task id.")
+                return self._quality_task_id
+            task = await self.tasks.start("alpha-quality", "Analyzing Alpha quality")
+            self._quality_task_id = task.id
+            self._quality_job = asyncio.create_task(
+                self._run_quality_analysis(task), name="alpha-quality"
+            )
+            self._background.add(self._quality_job)
+            self._quality_job.add_done_callback(self._background.discard)
+            return task.id
+
     def cancel_job(self, kind: str) -> bool:
         """Stop the running job if it is a ``kind``. Whatever it already saved stays."""
         job = self._running
@@ -168,6 +197,8 @@ class Backfill:
         async with self._starting:
             if self.busy:
                 raise RuntimeError("A sync is already running.")
+            if self._quality_job is not None and not self._quality_job.done():
+                raise RuntimeError("Alpha quality analysis is already running.")
             task = await self.tasks.start(kind, label)
             self._running = asyncio.create_task(run(task), name=kind)
             return task.id
@@ -297,6 +328,136 @@ class Backfill:
         await asyncio.gather(*tasks, return_exceptions=True)
         self._running = None
 
+    async def _run_quality_analysis(self, task: Any) -> None:
+        """Analyze cached Alphas sequentially and publish useful progress as they finish."""
+        try:
+            if self.busy:
+                await self.tasks.update(task, detail="Waiting for the current Alpha sync to finish")
+            while self.busy:
+                running = self._running
+                if running is not None:
+                    await asyncio.wait({running})
+
+            await self.tasks.update(task, progress=0.0, detail="Checking existing Alpha analyses")
+            await self._seed_existing_task_diagnostics()
+            alpha_ids = await self.vault.quality_pending_ids()
+            total = len(alpha_ids)
+            if not total:
+                await self.tasks.update(task, progress=1.0, detail="All stored Alphas are analyzed")
+                await self.tasks.finish(task)
+                return
+
+            await self.tasks.update(
+                task,
+                progress=0.0,
+                detail=f"Analyzing 0 of {total} unanalyzed Alphas",
+            )
+            failed = 0
+            saved: list[tuple[str, str, str | None]] = []
+            last_progress = asyncio.get_running_loop().time()
+            for done, alpha_id in enumerate(alpha_ids, start=1):
+                try:
+                    await self.fetch_returns(alpha_id)
+                    yearly = await self.yearly_rows(alpha_id)
+                    daily = await self.vault.pnl_series(alpha_id)
+                    diagnostic = alpha_analysis.diagnose(yearly, alpha_analysis.daily_values(daily))
+                    saved.append((alpha_id, str(diagnostic["status"]), diagnostic.get("reason")))
+                except Exception as exc:  # noqa: BLE001
+                    failed += 1
+                    log.warning(
+                        "vault.quality_analysis_failed", alpha_id=alpha_id, error=str(exc)[:160]
+                    )
+
+                if saved and (len(saved) >= 100 or done == total):
+                    await self._save_quality_batch(saved)
+                    saved.clear()
+                now = asyncio.get_running_loop().time()
+                if done == total or done % 10 == 0 or now - last_progress >= 1:
+                    suffix = f"; {failed} could not be analyzed" if failed else ""
+                    await self.tasks.update(
+                        task,
+                        progress=done / total,
+                        detail=f"Analyzed {done} of {total} Alphas{suffix}",
+                    )
+                    last_progress = now
+
+            final = f"Analyzed {total - failed} of {total} Alphas"
+            if failed:
+                final += f"; {failed} failed and can be retried"
+            await self.tasks.update(task, progress=1.0, detail=final)
+            await self.tasks.finish(task)
+        except asyncio.CancelledError:
+            await self.tasks.finish(task, state="cancelled")
+            raise
+        except Exception as exc:
+            log.exception("vault.quality_analysis_failed")
+            await self.tasks.finish(task, state="failed", error=str(exc)[:300])
+
+    async def _save_quality_batch(self, rows: list[tuple[str, str, str | None]]) -> None:
+        await self.vault.save_quality(rows)
+        if self.db is None:
+            return
+        diagnostics = {
+            alpha_id: {
+                "status": status,
+                "rejected": status == "rejected",
+                "reason": reason,
+                "reasons": [reason] if reason else [],
+            }
+            for alpha_id, status, reason in rows
+        }
+        async with self.db.session() as session:
+            trials = list(
+                (
+                    await session.scalars(
+                        select(Trial).where(
+                            Trial.alpha_id.in_(diagnostics), Trial.state == TrialState.COMPLETE
+                        )
+                    )
+                ).all()
+            )
+            for trial in trials:
+                result = dict(trial.result or {})
+                result["analysis"] = diagnostics[str(trial.alpha_id)]
+                trial.result = result
+
+    async def _seed_existing_task_diagnostics(self) -> None:
+        """Carry diagnostics from existing task results into the Alpha vault."""
+        if self.db is None:
+            return
+        pending = set(await self.vault.quality_pending_ids())
+        if not pending:
+            return
+        async with self.db.session() as session:
+            rows = await session.execute(
+                select(Trial.alpha_id, Trial.result)
+                .where(Trial.state == TrialState.COMPLETE, Trial.alpha_id.is_not(None))
+                .order_by(Trial.id.desc())
+            )
+            found: dict[str, tuple[str, str | None]] = {}
+            for alpha_id, result in rows:
+                key = str(alpha_id) if alpha_id else ""
+                if key not in pending or key in found or not isinstance(result, dict):
+                    continue
+                diagnostic = result.get("analysis")
+                if not isinstance(diagnostic, dict):
+                    continue
+                status = diagnostic.get("status") or (
+                    "rejected" if diagnostic.get("rejected") else "accepted"
+                )
+                if status in {"accepted", "rejected", "insufficient_data"}:
+                    found[key] = (str(status), diagnostic.get("reason"))
+                if len(found) == len(pending):
+                    break
+        batch: list[tuple[str, str, str | None]] = []
+        for alpha_id, (status, reason) in found.items():
+            batch.append((alpha_id, status, reason))
+            if len(batch) == 100:
+                await self.vault.save_quality(batch)
+                batch.clear()
+        if batch:
+            await self.vault.save_quality(batch)
+
     async def _run(self, task: Any, *, since: datetime | None) -> None:
         imported = 0
         try:
@@ -385,12 +546,23 @@ class Backfill:
             pnl = await self.endpoints.get_recordset(alpha_id, "pnl")
             turnover = await self.endpoints.get_recordset(alpha_id, "turnover")
             yearly = await self.endpoints.get_recordset(alpha_id, "yearly-stats")
+            self._yearly_cache[alpha_id] = yearly.rows()
             stored = await self.vault.save_pnl(alpha_id, pnl.rows(), turnover.rows(), yearly.rows())
             _warn_unreadable(alpha_id, pnl, stored)
             return stored
         turnover = await self.endpoints.get_recordset(alpha_id, "turnover")
         yearly = await self.endpoints.get_recordset(alpha_id, "yearly-stats")
+        self._yearly_cache[alpha_id] = yearly.rows()
         return await self.vault.save_turnover(alpha_id, turnover.rows(), yearly.rows())
+
+    async def yearly_rows(self, alpha_id: str) -> list[dict[str, Any]]:
+        """Year-by-year statistics from the read already done by ``fetch_returns`` if present."""
+        cached = self._yearly_cache.get(alpha_id)
+        if cached is not None:
+            return cached
+        yearly = (await self.endpoints.get_recordset(alpha_id, "yearly-stats")).rows()
+        self._yearly_cache[alpha_id] = yearly
+        return yearly
 
     async def fetch_pnl(self, alpha_id: str) -> int:
         """Fetch and store one alpha's daily PnL alone: one request, all a correlation needs."""

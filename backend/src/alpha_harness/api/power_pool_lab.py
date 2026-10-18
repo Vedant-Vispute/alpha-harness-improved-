@@ -1,4 +1,4 @@
-"""LLM Power Pool Lab: datasets, a model, cores and simulations, then add the task to Tasks.
+"""LLM Alpha labs: datasets, a model, cores and simulations, then add a task to Tasks.
 
 Nothing here calls the LLM or simulates; the preview shows the exact first prompt.
 """
@@ -23,13 +23,19 @@ from ..labs.launch import (
     legal_choices,
     synced_universes,
 )
-from ..labs.params import POWER_POOL_SAMPLER, PowerPoolParams
+from ..labs.params import (
+    POWER_POOL_SAMPLER,
+    REGULAR_ALPHA_SAMPLER,
+    PowerPoolParams,
+    RegularAlphaParams,
+)
 from ..llm.text import estimate_tokens
 from ..schemas import Out
 from .deps import State, refuse
 from .prompts import chosen
 
 router = APIRouter(prefix="/api/power-pool-lab", tags=["power-pool-lab"])
+regular_router = APIRouter(prefix="/api/regular-alpha-lab", tags=["regular-alpha-lab"])
 
 
 class PowerPoolRequest(BaseModel):
@@ -116,7 +122,9 @@ async def options(state: State) -> PowerPoolOptions:
     )
 
 
-async def _plan(body: PowerPoolRequest, state: Any) -> dict[str, Any]:
+async def _plan(
+    body: PowerPoolRequest, state: Any, *, prompt_kind: str = power_pool.KIND
+) -> dict[str, Any]:
     problems: list[str] = []
     warnings: list[str] = []
     operators = await account_operators(state, refresh=False)
@@ -161,10 +169,11 @@ async def _plan(body: PowerPoolRequest, state: Any) -> dict[str, Any]:
     elif not neutralizations:
         problems.append(f"BRAIN offers none of the chosen neutralizations in {body.region}.")
 
-    prompt_name, system = await chosen(state, power_pool.KIND, body.prompt_id)
+    prompt_name, system = await chosen(state, prompt_kind, body.prompt_id)
     fields = 0
     prompt = None
-    run = PowerPoolParams(
+    params_type = RegularAlphaParams if prompt_kind == power_pool.REGULAR_KIND else PowerPoolParams
+    run = params_type(
         region=body.region,
         delay=body.delay,
         universes=universes,
@@ -263,6 +272,19 @@ async def preview(body: PowerPoolRequest, state: State) -> PowerPoolPreview:
     return PowerPoolPreview.model_validate(await _plan(body, state))
 
 
+@regular_router.get("/options")
+async def regular_options(state: State) -> PowerPoolOptions:
+    return await options(state)
+
+
+@regular_router.post("/preview")
+async def regular_preview(body: PowerPoolRequest, state: State) -> PowerPoolPreview:
+    """Preview a Regular Alpha task with only Regular Alpha prompts."""
+    return PowerPoolPreview.model_validate(
+        await _plan(body, state, prompt_kind=power_pool.REGULAR_KIND)
+    )
+
+
 @router.post("/tasks", status_code=201)
 async def add_task(body: PowerPoolRequest, state: State) -> AddedTask:
     if body.simulations < 1:
@@ -270,11 +292,31 @@ async def add_task(body: PowerPoolRequest, state: State) -> AddedTask:
     plan = await _plan(body, state)
     if plan["problems"]:
         raise refuse(422, "power_pool_blocked", plan["problems"][0])
+    return await _add_task(body, state, plan, POWER_POOL_SAMPLER, PowerPoolParams)
+
+
+@regular_router.post("/tasks", status_code=201)
+async def add_regular_task(body: PowerPoolRequest, state: State) -> AddedTask:
+    if body.simulations < 1:
+        raise refuse(422, "no_simulations", NO_SIMULATIONS)
+    plan = await _plan(body, state, prompt_kind=power_pool.REGULAR_KIND)
+    if plan["problems"]:
+        raise refuse(422, "regular_alpha_blocked", plan["problems"][0])
+    return await _add_task(body, state, plan, REGULAR_ALPHA_SAMPLER, RegularAlphaParams)
+
+
+async def _add_task(
+    body: PowerPoolRequest,
+    state: State,
+    plan: dict[str, Any],
+    sampler: str,
+    params_type: type[PowerPoolParams],
+) -> AddedTask:
     return await add_study(
         state,
         now=utcnow(),
-        sampler=POWER_POOL_SAMPLER,
-        params=PowerPoolParams(
+        sampler=sampler,
+        params=params_type(
             region=body.region,
             delay=body.delay,
             universe=body.universe,
@@ -298,6 +340,8 @@ async def add_task(body: PowerPoolRequest, state: State) -> AddedTask:
         simulations=body.simulations,
         batch_size=body.cores * 10,
         template_source=(
-            "# LLM Power Pool Lab writes its expressions with an LLM; there is no template."
+            "# Regular LLM Alpha Lab writes its expressions with an LLM; there is no template."
+            if sampler == REGULAR_ALPHA_SAMPLER
+            else "# LLM Alpha Lab writes its expressions with an LLM; there is no template."
         ),
     )

@@ -1,16 +1,28 @@
 /**
- * Region Agnostic Lab's results: each Alpha once, with a row for its run in every region.
+ * ARC Alpha results: each expression once, with a row for its run in every region.
  * Runs come back at different times and land in their group as they do. Calibrate runs BRAIN's
  * submission checks on them, and the groups rank themselves most submittable first.
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GaugeIcon } from 'lucide-react'
+import { useState } from 'react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/cn'
 import { DASH, fmt } from '@/lib/format'
 import { type AlphaGroup, type GroupAlpha, type LabTask, labTasks } from '@/screens/tasks/api'
-import { Badge, Button, ErrorNotice, signTone, TEXT_TONE } from '@/ui/kit'
+import {
+  Badge,
+  Button,
+  Disclosure,
+  ErrorNotice,
+  Metric,
+  Notice,
+  Progress,
+  signTone,
+  TEXT_TONE,
+} from '@/ui/kit'
+import { Dialog } from '@/ui/overlay'
 import { type Column, DataTable } from '@/ui/table'
 
 /** A table row: one region's run, with its group's facts on the group's first row. */
@@ -35,7 +47,7 @@ const checks = (passed: number, failed: number, pending: number) => (
   </span>
 )
 
-const COLUMNS: Column<Row>[] = [
+const columnsFor = (onOpenGroup: (group: AlphaGroup, rank: number) => void): Column<Row>[] => [
   {
     key: 'rank',
     header: '#',
@@ -49,25 +61,27 @@ const COLUMNS: Column<Row>[] = [
     width: 'minmax(260px,3fr)',
     cell: (r) =>
       r.first ? (
-        <span className="num truncate text-ink" title={r.group.expression ?? undefined}>
-          {r.group.expression}
-        </span>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-auto max-w-full min-w-0 justify-start whitespace-normal px-0 py-1 text-left text-ink hover:text-primary"
+          title="Open this ARC Alpha and follow its regional simulations"
+          onClick={(event) => {
+            event.stopPropagation()
+            onOpenGroup(r.group, r.rank)
+          }}
+        >
+          <span className="num line-clamp-2 break-all">{r.group.expression}</span>
+        </Button>
       ) : (
         <span className="text-ink-tertiary">″</span>
       ),
   },
   {
-    key: 'settings',
-    header: 'Settings',
-    width: 'minmax(130px,1fr)',
-    cell: (r) =>
-      r.first ? (
-        <span className="num truncate text-ink-subtle">
-          {r.group.neutralization ?? DASH} · D{r.group.decay ?? DASH}
-        </span>
-      ) : (
-        ''
-      ),
+    key: 'arc-simulation',
+    header: 'ARC simulation',
+    width: '132px',
+    cell: (r) => (r.first ? <ArcStatus group={r.group} /> : ''),
   },
   {
     key: 'group-checks',
@@ -148,8 +162,24 @@ export function AlphaGroups({
   const groups = useQuery({
     queryKey: ['lab-tasks', 'groups', task.id],
     queryFn: () => labTasks.groups(task.id),
-    // Fresh runs and calibrated checks land continuously while either is going on.
-    refetchInterval: (q) => (q.state.data?.calibrating || task.status === 'RUNNING' ? 4000 : false),
+    // Regional runs, ARC runs and calibrated checks land independently.
+    refetchInterval: (q) => {
+      const arcRunning = q.state.data?.groups.some((group) =>
+        ['queued', 'running'].includes(group.arcSimulation?.state ?? ''),
+      )
+      return q.state.data?.calibrating || task.status === 'RUNNING' || arcRunning ? 4000 : false
+    },
+  })
+  const arcSimulation = useMutation({
+    mutationFn: (groupId: number) => labTasks.arcSimulate(task.id, groupId),
+    onSuccess: () => {
+      toast.success('ARC simulation queued', {
+        description: 'BRAIN will simulate this expression in the ALL region.',
+      })
+      void queryClient.invalidateQueries({ queryKey: ['lab-tasks', 'groups', task.id] })
+    },
+    onError: (error) =>
+      toast.error(error instanceof Error ? error.message : 'Could not start ARC simulation'),
   })
   const calibrate = useMutation({
     mutationFn: () => labTasks.calibrate(task.id),
@@ -161,6 +191,11 @@ export function AlphaGroups({
     },
   })
   const data = groups.data
+  const [focusedGroup, setFocusedGroup] = useState<number | null>(null)
+  const focused = data?.groups.find((group) => group.group === focusedGroup) ?? null
+  const focusedRank = focused
+    ? (data?.groups.findIndex((group) => group.group === focused.group) ?? -1) + 1
+    : null
   const rows: Row[] = (data?.groups ?? []).flatMap((group, i) =>
     group.alphas.map((a, j) => ({ ...a, rank: i + 1, group, first: j === 0 })),
   )
@@ -168,7 +203,7 @@ export function AlphaGroups({
   return (
     <section aria-label="Alpha groups" className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-3">
-        <h3 className="text-title font-medium text-ink">Alpha groups</h3>
+        <h3 className="text-title font-medium text-ink">ARC Alphas</h3>
         {data && (
           <span className="num text-body-compact text-ink-subtle">
             {fmt.int(data.groups.length)} Alphas · {fmt.int(data.complete)} regional runs back ·{' '}
@@ -189,16 +224,15 @@ export function AlphaGroups({
         </Button>
       </div>
       <p className="text-body-compact text-pretty text-ink-subtle">
-        Ranked by the share of submission checks passed across the group&apos;s regions, then most
-        passed, then best Sharpe. Theme, cluster and pyramid checks are left out; ? marks checks
-        BRAIN has not run yet, which Calibrate resolves.
+        Click an expression to run it once as an ARC Alpha in BRAIN&apos;s ALL region. Click another
+        part of a regional row to open that individual result.
       </p>
       {groups.isError && <ErrorNotice error={groups.error} title="Could not load the groups" />}
       {calibrate.isError && <ErrorNotice error={calibrate.error} title="Could not calibrate" />}
       <DataTable
         label="Alpha groups"
         rows={rows}
-        columns={COLUMNS}
+        columns={columnsFor((group) => setFocusedGroup(group.group))}
         rowKey={(r) => String(r.trialId)}
         rowClass={(r) => cn(r.first && 'border-t border-t-hairline-strong')}
         onRowClick={(r) => r.alphaId && onOpenAlpha(r.alphaId)}
@@ -206,6 +240,131 @@ export function AlphaGroups({
         empty="No Alphas written yet."
         maxHeight="70vh"
       />
+      <Dialog
+        open={focusedGroup !== null}
+        onOpenChange={(open) => !open && setFocusedGroup(null)}
+        title={`ARC Alpha${focusedRank ? ` · ${fmt.int(focusedRank)}` : ''}`}
+        description="Run this expression once in BRAIN's ALL region, then open its full performance and summary."
+        className="max-w-3xl"
+      >
+        {focused && (
+          <GroupResults
+            group={focused}
+            running={arcSimulation.isPending}
+            error={arcSimulation.isError ? arcSimulation.error : null}
+            onRun={() => arcSimulation.mutate(focused.group)}
+            onOpenAlpha={(alphaId) => {
+              setFocusedGroup(null)
+              onOpenAlpha(alphaId)
+            }}
+          />
+        )}
+      </Dialog>
     </section>
   )
+}
+
+function GroupResults({
+  group,
+  running,
+  error,
+  onRun,
+  onOpenAlpha,
+}: {
+  group: AlphaGroup
+  running: boolean
+  error: Error | null
+  onRun: () => void
+  onOpenAlpha: (alphaId: string) => void
+}) {
+  const simulation = group.arcSimulation
+  const active = simulation?.state === 'queued' || simulation?.state === 'running'
+  const arcAlphaId = simulation?.alphaId
+  const finished = simulation?.state === 'complete' && arcAlphaId != null
+  return (
+    <div className="flex flex-col gap-4">
+      <code className="num rounded-md border border-hairline bg-canvas p-3 text-body-compact break-all text-ink">
+        {group.expression ?? 'Expression unavailable'}
+      </code>
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between gap-3 text-body-compact text-ink-muted">
+          <span>ARC simulation in ALL</span>
+          <ArcStatus group={group} />
+        </div>
+        <Progress
+          label="ARC Alpha simulation progress in ALL"
+          value={finished ? 1 : active ? (simulation?.progress ?? null) : 0}
+        />
+      </div>
+      {simulation?.message && simulation.state === 'failed' && (
+        <Notice tone="error" title="ARC simulation failed">
+          {simulation.message}
+        </Notice>
+      )}
+      {error && <ErrorNotice error={error} title="Could not start ARC simulation" />}
+      <div className="flex flex-wrap justify-end gap-2">
+        {finished && arcAlphaId ? (
+          <Button variant="primary" onClick={() => onOpenAlpha(arcAlphaId)}>
+            Open ARC results
+          </Button>
+        ) : (
+          <Button
+            variant="primary"
+            loading={running}
+            disabled={!group.expression || active}
+            onClick={onRun}
+          >
+            {simulation?.state === 'failed' ? 'Retry ARC simulation' : 'Run ARC simulation'}
+          </Button>
+        )}
+      </div>
+      <Disclosure summary={`Regional runs (${fmt.int(group.alphas.length)})`}>
+        <div className="flex flex-col gap-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <Metric boxed size="sm" label="Checks Passed" value={fmt.int(group.passed)} />
+            <Metric boxed size="sm" label="Checks Failed" value={fmt.int(group.failed)} />
+            <Metric boxed size="sm" label="Checks Pending" value={fmt.int(group.pending)} />
+            <Metric boxed size="sm" label="Best Sharpe" value={fmt.ratio(group.bestSharpe)} />
+          </div>
+          <div className="flex flex-col divide-y divide-hairline rounded-md border border-hairline">
+            {group.alphas.map((alpha) => (
+              <div
+                key={alpha.trialId}
+                className="flex flex-wrap items-center gap-x-4 gap-y-2 px-3 py-2"
+              >
+                <Badge tone="outline">{alpha.region ?? DASH}</Badge>
+                <span className="num min-w-24 text-body-compact text-ink-muted">
+                  {alpha.universe ?? DASH}
+                </span>
+                <Badge tone={STATE[alpha.state].tone}>{STATE[alpha.state].label}</Badge>
+                <span
+                  className={`num ml-auto text-body-compact ${TEXT_TONE[signTone(alpha.sharpe)]}`}
+                >
+                  Sharpe {fmt.ratio(alpha.sharpe)}
+                </span>
+                {alpha.alphaId && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => alpha.alphaId && onOpenAlpha(alpha.alphaId)}
+                  >
+                    Open individual
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      </Disclosure>
+    </div>
+  )
+}
+
+function ArcStatus({ group }: { group: AlphaGroup }) {
+  const status = group.arcSimulation?.state
+  if (status === 'complete') return <Badge tone="profit">ARC simulated</Badge>
+  if (status === 'running') return <Badge tone="warn">Simulating in ALL</Badge>
+  if (status === 'queued') return <Badge tone="muted">Queued for ALL</Badge>
+  if (status === 'failed') return <Badge tone="loss">ARC simulation failed</Badge>
+  return <Badge tone="muted">Not ARC simulated</Badge>
 }

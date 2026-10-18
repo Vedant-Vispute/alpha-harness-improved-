@@ -20,6 +20,14 @@ if TYPE_CHECKING:
 
 
 class Preferences(Out):
+    #: Global metric thresholds used by later Alpha filtering and scoring features.
+    threshold_sharpe: float = 1.58
+    threshold_test_sharpe: float = 1.58
+    threshold_fitness: float = 1.0
+    threshold_turnover: float = 0.25
+    threshold_returns: float = 0.05
+    threshold_drawdown: float = 0.02
+    threshold_margin: float = 0.03
     #: Lend cores no running task holds to the tasks with more work than their own cores.
     #: Off by default: a task's cores are otherwise a ceiling as well as a reservation.
     lend_idle_cores: bool = False

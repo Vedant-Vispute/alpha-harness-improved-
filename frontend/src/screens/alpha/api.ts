@@ -48,6 +48,9 @@ export const notApplicable = (error: unknown) =>
 export const alpha = {
   page: (alphaId: string, refresh = false) =>
     http.get<AlphaView>(`/api/alphas/${id(alphaId)}/page${qs({ refresh: refresh || null })}`),
+  /** Run BRAIN's submission checks for an ARC child without submitting it. */
+  check: (alphaId: string) =>
+    http.get<{ is?: { checks?: AlphaCheck[] } }>(`/api/alphas/${id(alphaId)}/check`),
   save: (alphaId: string, body: AlphaProperties) =>
     http.patch<AlphaInfo>(`/api/alphas/${id(alphaId)}`, body),
   correlation: (alphaId: string, kind: CorrelationKind, mode: Read) =>

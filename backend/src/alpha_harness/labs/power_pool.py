@@ -1,9 +1,9 @@
-"""LLM Power Pool Lab: an LLM writes Power Pool Alphas for one dataset at a time.
+"""LLM labs: an LLM writes Alphas for one dataset at a time.
 
 While a task runs, a background call asks the chosen model for 20 expressions. Each is
-checked offline (operators, fields, at most 8 operators and 3 data fields, counted the way
-BRAIN counts them), given a random universe, neutralization and decay, and kept as a
-waiting trial until cores are free. Calls never happen inside ``advance``.
+checked offline (with Power Pool limits only in Power Pool mode), given a random universe,
+neutralization and decay, and kept as a waiting trial until cores are free. Calls never happen
+inside ``advance``.
 """
 
 import json
@@ -20,10 +20,10 @@ from ..catalog.queries import CatalogQueries, FieldFilter, Tuple4
 from ..db.models import Study, StudyStatus, Trial, TrialState, utcnow
 from ..llm import library
 from ..llm.keys import BudgetExhaustedError, LLMError
-from ..llm.prompts import POWER_POOL_LAB, REGION_AGNOSTIC_LAB
+from ..llm.prompts import POWER_POOL_LAB, REGION_AGNOSTIC_LAB, REGULAR_ALPHA_LAB
 from ..llm.text import FENCE
 from ..tasks import spawn
-from . import scheduler, search
+from . import alpha_analysis, scheduler, search
 from .fastexpr import (
     GROUPING,
     MAX_FIELDS,
@@ -38,7 +38,7 @@ from .fastexpr import (
     walk,
 )
 from .objectives import FAILURE
-from .params import PowerPoolParams, RegionAgnosticParams, params_of
+from .params import PowerPoolParams, RegionAgnosticParams, RegularAlphaParams, params_of
 
 if TYPE_CHECKING:  # pragma: no cover
     import asyncio
@@ -52,6 +52,7 @@ log = structlog.get_logger(__name__)
 KIND = "power_pool_lab"
 #: Region Agnostic Lab's built-in, and the kind of every saved prompt it can send.
 RA_KIND = "region_agnostic_lab"
+REGULAR_KIND = "regular_alpha_lab"
 #: The regions BRAIN translates a region-agnostic Alpha into, and so the ones this lab runs in.
 RA_MARKETS = ("USA", "EUR", "ASI", "GLB")
 #: Fewer than this and an Alpha is not region agnostic at all.
@@ -384,8 +385,8 @@ def check(
 ) -> tuple[str, frozenset[str]]:
     """The canonical expression and the fields it uses, or :class:`Rejected`.
 
-    ``power_pool`` holds it to Power Pool's operator and field limits; Region Agnostic Lab's
-    Alphas are ordinary ones and are not.
+    ``power_pool`` holds it to Power Pool's operator and field limits; Regular and Region
+    Agnostic labs write ordinary Alphas and are not held to them.
     """
     try:
         tree = parse(text)
@@ -483,20 +484,22 @@ def _line(f: Field) -> str:
     return f"{f.id} · {f.type} · {coverage}{regions} · {f.description}"
 
 
-async def memory_of(optimizer: Optimizer, study_id: int, dataset: str) -> str:
+async def memory_of(
+    optimizer: Optimizer, study_id: int, dataset: str, read_metrics: list[str] | None = None
+) -> str:
     """What the task already wrote for ``dataset``, as the few lines the prompt shows.
 
     Three slices read by the database: loading every trial of a task (up to 100,000) for
     forty lines cost each LLM call a full table load.
     """
-    score = func.json_extract(Trial.values, "$[0]")
+    read_metrics = read_metrics or ["sharpe"]
     mine = (Trial.study_id == study_id, func.json_extract(Trial.params, "$.dataset") == dataset)
     async with optimizer.db.session() as session:
         done = (
             await session.scalars(
                 select(Trial)
-                .where(*mine, Trial.state == TrialState.COMPLETE, score > FAILURE)
-                .order_by(score.desc(), Trial.number)
+                .where(*mine, Trial.state == TrialState.COMPLETE)
+                .order_by(Trial.number.desc())
                 .limit(20)
             )
         ).all()
@@ -524,7 +527,7 @@ async def memory_of(optimizer: Optimizer, study_id: int, dataset: str) -> str:
                 .limit(5)
             )
         ).all()[::-1]
-    return memory_text(list(done), list(waiting), list(thrown))
+    return memory_text(list(done), list(waiting), list(thrown), read_metrics)
 
 
 def _once(trials: list[Any]) -> list[Any]:
@@ -539,13 +542,36 @@ def _once(trials: list[Any]) -> list[Any]:
     return out
 
 
-def memory_text(done: list[Any], waiting: list[Any], thrown: list[Any]) -> str:
+def memory_text(
+    done: list[Any],
+    waiting: list[Any],
+    thrown: list[Any],
+    read_metrics: list[str] | None = None,
+) -> str:
     done, waiting, thrown = _once(done), _once(waiting), _once(thrown)
+    read_metrics = read_metrics or ["sharpe"]
+
+    def values(t: Any) -> dict[str, float]:
+        stats = (t.result or {}).get("stats", {})
+        out: dict[str, float] = {}
+        for metric in read_metrics:
+            raw = (t.values or [None])[0] if metric == "sharpe" else stats.get(metric)
+            try:
+                if raw is not None:
+                    out[metric] = float(raw)
+            except TypeError, ValueError:
+                continue
+        return out
+
     parts = []
     if done:
+        primary = read_metrics[0]
+        done = sorted(done, key=lambda t: values(t).get(primary, FAILURE), reverse=True)
         parts.append(
-            "Simulated, best Sharpe first:\n"
-            + "\n".join(f"{float(t.values[0]):.2f} | {(t.expression or '')[:300]}" for t in done)
+            f"Simulated, best {primary.title()} first; metrics: "
+            + ", ".join(metric.title() for metric in read_metrics)
+            + ":\n"
+            + "\n".join(_feedback_line(t, values(t)) for t in done)
         )
     if waiting:
         parts.append(
@@ -557,6 +583,89 @@ def memory_text(done: list[Any], waiting: list[Any], thrown: list[Any]) -> str:
             + "\n".join(f"{(t.expression or '')[:300]} | {(t.message or '')[:120]}" for t in thrown)
         )
     return "\n".join(parts) or "None yet."
+
+
+def _feedback_line(trial: Any, metrics: dict[str, float]) -> str:
+    analysis = (trial.result or {}).get("analysis") or {}
+    expression = (trial.expression or "")[:300]
+    if analysis.get("rejected"):
+        return f"Rejected: {analysis.get('reason') or 'quality checks failed'} | {expression}"
+    packet = json.dumps(metrics, separators=(",", ":"))
+    if analysis.get("status") == "insufficient_data":
+        return f"Analysis incomplete (yearly or daily PnL data unavailable) {packet} | {expression}"
+    return f"Accepted {packet} | {expression}" if metrics else f"Accepted | {expression}"
+
+
+async def analyze_completed(optimizer: Optimizer, study_id: int, dataset: str) -> None:
+    """Fetch and persist diagnostics for completed Power Pool trials before the next prompt.
+
+    If BRAIN has not made the time series available yet, let the caller retry this step;
+    generating another prompt without the diagnostic would violate the feedback contract.
+    """
+    backfill = optimizer.backfill
+    if backfill is None:
+        raise RuntimeError("Alpha Vault backfill is unavailable; cannot analyze LLM results.")
+    async with optimizer.db.session() as session:
+        pending = list(
+            (
+                await session.scalars(
+                    select(Trial)
+                    .where(
+                        Trial.study_id == study_id,
+                        Trial.state == TrialState.COMPLETE,
+                        func.json_extract(Trial.params, "$.dataset") == dataset,
+                        Trial.alpha_id.is_not(None),
+                    )
+                    .order_by(Trial.number)
+                )
+            ).all()
+        )
+        pending = [t for t in pending if not (t.result or {}).get("analysis")]
+        alpha_ids = [str(t.alpha_id) for t in pending if t.alpha_id]
+
+    for alpha_id in dict.fromkeys(alpha_ids):
+        # fetch_returns persists exact daily PnL and caches yearly stats, which are reused here.
+        await backfill.fetch_returns(alpha_id)
+        yearly = await backfill.yearly_rows(alpha_id)
+        days = await optimizer.alphas.pnl_series(alpha_id)
+        diagnostic = alpha_analysis.diagnose(yearly, alpha_analysis.daily_values(days))
+        await backfill.vault.save_quality(
+            [(alpha_id, str(diagnostic["status"]), diagnostic.get("reason"))]
+        )
+        async with optimizer.db.session() as session:
+            rows = list(
+                (
+                    await session.scalars(
+                        select(Trial).where(
+                            Trial.study_id == study_id,
+                            Trial.alpha_id == alpha_id,
+                            Trial.state == TrialState.COMPLETE,
+                        )
+                    )
+                ).all()
+            )
+            for trial in rows:
+                result = dict(trial.result or {})
+                result["analysis"] = diagnostic
+                trial.result = result
+    await optimizer.notify()
+
+
+async def analyze_all_completed(optimizer: Optimizer, study_id: int) -> None:
+    """Finish feedback for the final batch when no later prompt will trigger the analysis."""
+    async with optimizer.db.session() as session:
+        datasets = list(
+            (
+                await session.scalars(
+                    select(func.json_extract(Trial.params, "$.dataset"))
+                    .where(Trial.study_id == study_id, Trial.state == TrialState.COMPLETE)
+                    .distinct()
+                )
+            ).all()
+        )
+    for dataset in datasets:
+        if dataset:
+            await analyze_completed(optimizer, study_id, str(dataset))
 
 
 #: What a model cannot infer from the market line when the region is ALL. The warning about
@@ -586,6 +695,7 @@ def user_prompt(
     order they were ranked, numbered, and stand in for the dataset the rules speak of.
     """
     ra = isinstance(run, RegionAgnosticParams)
+    regular = isinstance(run, RegularAlphaParams)
     if ra:
         market = (
             f"MARKETS · Delay {run.delay}\n"
@@ -607,18 +717,25 @@ def user_prompt(
         about = "DATASETS\n" + "\n".join(f"{d} · {name}" for d, name in ctx.datasets)
         mine, ask = (
             "THESE FIELDS",
-            f"Write {PER_CALL} new Power Pool Alphas, each using at least one of your fields.",
+            f"Write {PER_CALL} new {'Alphas' if regular else 'Power Pool Alphas'}, "
+            "each using at least one of your fields.",
         )
     else:
         about = f"DATASET\n{ctx.id} · {ctx.name} · {ctx.category}\n{ctx.description}"
-        mine, ask = ctx.id, f"Write {PER_CALL} new Power Pool Alphas that use {ctx.id}."
+        kind = "Alphas" if regular else "Power Pool Alphas"
+        mine, ask = ctx.id, f"Write {PER_CALL} new {kind} that use {ctx.id}."
     head = "\n\n".join([market, "OPERATORS\n" + operators_text(operators), about])
     tail = "\n\n".join(
         [
-            "PRICE AND VOLUME FIELDS · count as data fields\n"
+            "PRICE AND VOLUME FIELDS"
+            + ("\n" if regular else " · count as data fields\n")
             + "\n".join(_line(f) for f in ctx.basics),
-            "GROUPING FIELDS · not counted\n" + ", ".join(ctx.groups),
+            "GROUPING FIELDS" + ("\n" if regular else " · not counted\n") + ", ".join(ctx.groups),
             f"YOUR EARLIER ALPHAS ON {mine}\n{memory}",
+            (
+                "Use any Rejected reason to correct the next expressions. "
+                "Rejected Alphas have no metric values shown."
+            ),
             ask,
         ]
     )
@@ -640,7 +757,7 @@ def user_prompt(
             "They were chosen for this task: every Alpha uses at least one of them, and no "
             "other field of these datasets. Each says which regions carry it."
             if ra
-            else "They were chosen for this task and stand in for the dataset in the rules: "
+            else "They were chosen for this task and stand in for the dataset: "
             "every Alpha uses at least one of them, and no other field of these datasets."
         )
     else:
@@ -766,8 +883,10 @@ async def _write(optimizer: Optimizer, study_id: int) -> None:
                 + " in the downloaded catalog. Sync it, then resume.",
             )
 
-        prompt_name, system = await _system(optimizer, run)
-        memory = await memory_of(optimizer, study_id, dataset)
+        prompt_name, system, read_metrics = await _system(optimizer, run)
+        if not ra:
+            await analyze_completed(optimizer, study_id, dataset)
+        memory = await memory_of(optimizer, study_id, dataset, read_metrics)
         offset = int(by.get(dataset, {}).get("offset", 0))
         user, shown = user_prompt(ctx, operators, run, memory, offset, model.prompt_tokens, system)
         entry: dict[str, Any] = {
@@ -821,7 +940,12 @@ async def _write(optimizer: Optimizer, study_id: int) -> None:
                 text = str(item.get("expression") or "").strip()
                 number += 1
                 try:
-                    expression, used = check(text, ctx, table, power_pool=ra is None)
+                    expression, used = check(
+                        text,
+                        ctx,
+                        table,
+                        power_pool=ra is None and not isinstance(run, RegularAlphaParams),
+                    )
                     if expression in seen:
                         raise Rejected("Already written in this task.")
                     if ra is not None:
@@ -903,26 +1027,34 @@ async def _write(optimizer: Optimizer, study_id: int) -> None:
         _retry[study_id] = time.monotonic() + 60.0
 
 
-async def _system(optimizer: Optimizer, run: PowerPoolParams) -> tuple[str, str]:
+async def _system(optimizer: Optimizer, run: PowerPoolParams) -> tuple[str, str, list[str]]:
     """The saved prompt's text as it is now, so an edit reaches the next call; the text it had
     when the task was added once it is deleted; the built-in when none was chosen."""
     kind = kind_of(run)
     if run.prompt_id is not None:
         try:
-            return await library.resolve(optimizer.db, kind, run.prompt_id)
+            return await library.resolve_with_metric(optimizer.db, kind, run.prompt_id)
         except library.PromptNotFoundError:
             if run.system:
-                return f"{run.prompt_name or 'Prompt'} (deleted)", run.system
-    return await library.resolve(optimizer.db, kind, None)
+                return f"{run.prompt_name or 'Prompt'} (deleted)", run.system, ["sharpe"]
+    return await library.resolve_with_metric(optimizer.db, kind, None)
 
 
 def kind_of(run: PowerPoolParams) -> str:
     """The built-in a task stands on, and so the prompts it can send."""
-    return RA_KIND if isinstance(run, RegionAgnosticParams) else KIND
+    if isinstance(run, RegionAgnosticParams):
+        return RA_KIND
+    if isinstance(run, RegularAlphaParams):
+        return REGULAR_KIND
+    return KIND
 
 
 def system_for(run: PowerPoolParams) -> str:
-    return REGION_AGNOSTIC_LAB if isinstance(run, RegionAgnosticParams) else POWER_POOL_LAB
+    if isinstance(run, RegionAgnosticParams):
+        return REGION_AGNOSTIC_LAB
+    if isinstance(run, RegularAlphaParams):
+        return REGULAR_ALPHA_LAB
+    return POWER_POOL_LAB
 
 
 async def _note(optimizer: Optimizer, study_id: int, message: str) -> None:

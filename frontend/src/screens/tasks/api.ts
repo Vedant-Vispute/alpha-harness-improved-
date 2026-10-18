@@ -1,5 +1,6 @@
 /** Tasks: what the labs added. Only the Tasks tab runs them. */
 
+import type { Preferences } from '@/api/core'
 import type { components } from '@/api/generated'
 import { http, qs } from '@/api/http'
 
@@ -11,7 +12,19 @@ export type LabTask = Schemas['LabTask']
 export type LabTasks = Schemas['LabTasks']
 export type RankedAlpha = Omit<Schemas['RankedAlpha'], 'settings'> & {
   settings: { universe?: string; neutralization?: string; [key: string]: unknown } | null
+  checkCounts?: { pass: number; warning: number; fail: number }
 }
+
+export type MetricThresholds = Pick<
+  Preferences,
+  | 'thresholdSharpe'
+  | 'thresholdTestSharpe'
+  | 'thresholdFitness'
+  | 'thresholdTurnover'
+  | 'thresholdReturns'
+  | 'thresholdDrawdown'
+  | 'thresholdMargin'
+>
 
 /** A submittable Alpha from any task, with the task that found it. */
 export type TaskAlpha = Omit<Schemas['TaskAlpha'], 'settings'> & {
@@ -25,7 +38,7 @@ export type GroupAlpha = Schemas['GroupAlpha']
 
 export interface CloneRequest {
   simulations?: number | null
-  /** LLM Power Pool Lab only: send another prompt; `prompt_id` null sends the built-in. */
+  /** LLM Alpha Lab only: send another prompt; `prompt_id` null sends the built-in. */
   change_prompt?: boolean
   prompt_id?: number | null
   run?: boolean
@@ -52,6 +65,9 @@ export const labTasks = {
   info: (id: number) => http.get<TaskInfo>(`${B}/${id}/info`),
   /** Region Agnostic Lab: each Alpha with its run in every region, most submittable first. */
   groups: (id: number) => http.get<AlphaGroups>(`${B}/${id}/groups`),
+  /** Runs one ARC Alpha in BRAIN's ALL region. A completed run reuses its saved result. */
+  arcSimulate: (taskId: number, groupId: number) =>
+    http.post<Schemas['ArcSimulationView']>(`${B}/${taskId}/groups/${groupId}/arc-simulation`),
   /** Runs BRAIN's submission checks on the task's Alphas, in the background. No quota. */
   calibrate: (id: number) => http.post<Schemas['WorkflowStarted']>(`${B}/${id}/calibrate`),
   stop: (id: number) => http.post<LabTask>(`${B}/${id}/stop`),

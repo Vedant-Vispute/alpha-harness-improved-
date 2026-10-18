@@ -432,6 +432,22 @@ class Study(Base):
     finished_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
 
 
+class ArcSimulation(Base):
+    """The optional, single ALL-region simulation requested for an ARC Alpha group."""
+
+    __tablename__ = "arc_simulation"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    study_id: Mapped[int] = mapped_column(ForeignKey("study.id", ondelete="CASCADE"), index=True)
+    group_id: Mapped[int] = mapped_column(Integer)
+    simulation_record_id: Mapped[int | None] = mapped_column(
+        ForeignKey("simulation_record.id", ondelete="SET NULL"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow)
+
+    __table_args__ = (UniqueConstraint("study_id", "group_id", name="uq_arc_simulation_group"),)
+
+
 class Trial(Base):
     """One point in the search space, and what it turned into.
 
@@ -533,6 +549,10 @@ class SavedPrompt(Base):
     name: Mapped[str] = mapped_column(String(120))
     kind: Mapped[str] = mapped_column(String(32), index=True)
     body: Mapped[str] = mapped_column(Text, default="")
+    #: Metric shown to the Power Pool model for earlier alphas.
+    read_metric: Mapped[str] = mapped_column(String(16), default="sharpe", server_default="sharpe")
+    #: JSON-encoded list of metrics shown to the Power Pool model. Nullable for old rows.
+    read_metrics: Mapped[str | None] = mapped_column(Text)
     #: What it was copied from: a built-in's slug, or another saved prompt's name.
     based_on: Mapped[str | None] = mapped_column(String(160))
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow)

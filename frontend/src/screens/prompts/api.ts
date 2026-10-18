@@ -18,6 +18,7 @@ export interface NewPrompt {
   kind: string
   body?: string
   based_on?: string | null
+  read_metrics?: string[]
 }
 
 const B = '/api/prompts'
@@ -28,7 +29,7 @@ export const prompts = {
   library: () => http.get<PromptLibrary>(B),
   create: (body: NewPrompt) => http.post<LibraryPrompt>(B, body),
   /** Only what is sent changes. */
-  edit: (id: number, body: { name?: string; body?: string }) =>
+  edit: (id: number, body: { name?: string; body?: string; read_metrics?: string[] }) =>
     http.put<LibraryPrompt>(`${B}/${id}`, body),
   remove: (id: number) => http.del<void>(`${B}/${id}`),
 }

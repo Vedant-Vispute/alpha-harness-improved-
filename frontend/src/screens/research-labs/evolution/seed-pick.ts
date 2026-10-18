@@ -6,4 +6,7 @@ import { createPick } from '@/lib/pick'
 export const MIN_SEEDS = 2
 export const MAX_SEEDS = 100
 
-export const useSeedPick = createPick('alpha-harness-seed-pick', '/labs/evolution')
+export const useSeedPick = createPick<'/labs/evolution' | '/labs/evolution-general'>(
+  'alpha-harness-seed-pick',
+  '/labs/evolution',
+)

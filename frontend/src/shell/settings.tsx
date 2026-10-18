@@ -8,12 +8,14 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   CheckIcon,
   CpuIcon,
+  DatabaseIcon,
   DownloadIcon,
   LayersIcon,
   ListChecksIcon,
   LoaderCircleIcon,
   type LucideIcon,
   RefreshCwIcon,
+  RotateCcwIcon,
   XIcon,
 } from 'lucide-react'
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
@@ -25,8 +27,8 @@ import { errorMessage } from '@/api/http'
 import { fmt } from '@/lib/format'
 import { usePreferences, useSavePreferences } from '@/lib/preferences'
 import { DEFAULT_SCOPE, REGION_AGNOSTIC, useScopeOptions } from '@/lib/scope'
-import { Button, Chips, ErrorNotice, Segmented, Skeleton, Switch } from '@/ui/kit'
-import { BACKDROP, Select } from '@/ui/overlay'
+import { Button, Chips, ErrorNotice, Field, Input, Segmented, Skeleton, Switch } from '@/ui/kit'
+import { BACKDROP, Confirm, Select } from '@/ui/overlay'
 import { useApplyUpdate, useUpdateStatus } from './update'
 
 export const useSettings = create<{
@@ -40,13 +42,14 @@ export const useSettings = create<{
 /** The shortcut as this keyboard writes it, as for the sidebar's. */
 export const SETTINGS_SHORTCUT = /Mac|iPhone|iPad/.test(navigator.userAgent) ? '⌘,' : 'Ctrl+,'
 
-type SectionId = 'simulations' | 'tasks' | 'alphas' | 'updates'
+type SectionId = 'simulations' | 'tasks' | 'alphas' | 'updates' | 'cache'
 
 const SECTIONS: { id: SectionId; label: string; icon: LucideIcon }[] = [
   { id: 'simulations', label: 'Simulations', icon: CpuIcon },
   { id: 'tasks', label: 'Tasks', icon: ListChecksIcon },
   { id: 'alphas', label: 'Alphas', icon: LayersIcon },
   { id: 'updates', label: 'Updates', icon: RefreshCwIcon },
+  { id: 'cache', label: 'Cache', icon: DatabaseIcon },
 ]
 
 export function SettingsDialog() {
@@ -125,6 +128,7 @@ const ABOUT: Record<SectionId, string> = {
   tasks: 'What a new task in any lab or tool starts with.',
   alphas: 'What is kept on this computer as Alphas come back from BRAIN.',
   updates: 'How Alpha Harness finds and installs new versions.',
+  cache: 'Cached API results held in memory for this login session.',
 }
 
 function Section({ id }: { id: SectionId }) {
@@ -139,7 +143,9 @@ function Section({ id }: { id: SectionId }) {
       <h2 className="pr-10 text-title font-medium text-ink">{title}</h2>
       <p className="text-body-compact text-ink-subtle">{ABOUT[id]}</p>
       <div className="mt-3 flex flex-col">
-        {saved.isError ? (
+        {id === 'cache' ? (
+          <CacheRows />
+        ) : saved.isError ? (
           <ErrorNotice error={saved.error} title="Settings could not load" />
         ) : !current ? (
           <Skeleton className="h-14" label="Loading settings" />
@@ -154,6 +160,51 @@ function Section({ id }: { id: SectionId }) {
         )}
       </div>
     </section>
+  )
+}
+
+function CacheRows() {
+  const queryClient = useQueryClient()
+  const [confirming, setConfirming] = useState(false)
+
+  const clear = () => {
+    const cache = queryClient.getQueryCache().getAll()
+    const eligible = cache.filter(
+      (query) => query.getObserversCount() === 0 && query.state.fetchStatus === 'idle',
+    ).length
+    // Only discard idle results no mounted screen is using. In-flight requests, active screen
+    // data, mutations, and the backend task/simulation engine are deliberately left alone.
+    queryClient.removeQueries({
+      type: 'inactive',
+      predicate: (query) => query.state.fetchStatus === 'idle',
+    })
+    setConfirming(false)
+    toast.success(`Cleared ${eligible} cached ${eligible === 1 ? 'result' : 'results'}.`)
+  }
+
+  return (
+    <>
+      <SettingRow
+        title="Clear cached results"
+        description="Remove idle results kept in memory during this login session. Open screens and requests in progress are left alone; running tasks and simulations continue."
+        control={(labels) => (
+          <Button {...labels} onClick={() => setConfirming(true)}>
+            <RotateCcwIcon />
+            Clear cache
+          </Button>
+        )}
+      />
+      <Confirm
+        open={confirming}
+        onOpenChange={setConfirming}
+        title="Clear cached results?"
+        confirmLabel="Clear cache"
+        onConfirm={clear}
+      >
+        This removes only idle, inactive API results held in this app session. It does not cancel
+        requests, alter saved settings, or stop backend tasks or simulations.
+      </Confirm>
+    </>
   )
 }
 
@@ -173,6 +224,25 @@ const AWAKE: Record<components['schemas']['EngineStatus']['awake'], string> = {
 
 const LIST_FORMAT = new Intl.ListFormat('en', { type: 'conjunction' })
 
+const DEFAULT_THRESHOLDS: Pick<
+  Preferences,
+  | 'thresholdSharpe'
+  | 'thresholdTestSharpe'
+  | 'thresholdFitness'
+  | 'thresholdTurnover'
+  | 'thresholdReturns'
+  | 'thresholdDrawdown'
+  | 'thresholdMargin'
+> = {
+  thresholdSharpe: 1.58,
+  thresholdTestSharpe: 1.58,
+  thresholdFitness: 1,
+  thresholdTurnover: 0.25,
+  thresholdReturns: 0.05,
+  thresholdDrawdown: 0.02,
+  thresholdMargin: 0.03,
+}
+
 function SimulationRows({ current, change }: Rows) {
   const engine = useQuery({ queryKey: ['simulations', 'engine'], queryFn: simulations.engine })
   const awake = engine.data?.awake
@@ -183,6 +253,46 @@ function SimulationRows({ current, change }: Rows) {
   const quickAllowed = engine.data?.quickAllowed ?? true
   return (
     <>
+      <SettingRow
+        title="Thresholds"
+        description="Global metric thresholds saved for Alpha filtering and scoring. These values do not change existing simulations yet."
+        control={() => (
+          <div className="flex flex-col gap-3">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {(
+                [
+                  ['thresholdSharpe', 'Sharpe'],
+                  ['thresholdTestSharpe', 'Test Sharpe'],
+                  ['thresholdFitness', 'Fitness'],
+                  ['thresholdTurnover', 'Turnover'],
+                  ['thresholdReturns', 'Returns'],
+                  ['thresholdDrawdown', 'Drawdown'],
+                  ['thresholdMargin', 'Margin'],
+                ] as const
+              ).map(([key, label]) => (
+                <Field key={key} label={label}>
+                  <Input
+                    type="number"
+                    step="any"
+                    value={current[key]}
+                    onChange={(event) => change({ [key]: Number(event.target.value) })}
+                  />
+                </Field>
+              ))}
+            </div>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="self-start"
+              onClick={() => change(DEFAULT_THRESHOLDS)}
+            >
+              Reset to defaults
+            </Button>
+          </div>
+        )}
+        stacked
+      />
       <SettingRow
         title="Quick mode"
         description="Simulates with only the checks that score an Alpha, leaving out correlation, Theme and Competition. The figures are the same as in full, and a GLB batch finished 30% sooner. A Quick Alpha cannot be submitted, so each one that passes every check is simulated again in full, which costs one more simulation."

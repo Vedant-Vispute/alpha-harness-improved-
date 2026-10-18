@@ -6,10 +6,12 @@ place and every task that uses it reads the new text on its next LLM call.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 
 from ..db.models import SavedPrompt
@@ -22,6 +24,18 @@ from .deps import State, refuse
 router = APIRouter(prefix="/api/prompts", tags=["prompts"])
 
 MAX_BODY = 60_000
+METRICS = ("sharpe", "fitness", "turnover", "returns", "drawdown")
+Metric = Literal["sharpe", "fitness", "turnover", "returns", "drawdown"]
+
+
+def _metrics(value: str | None) -> list[Metric]:
+    if not value:
+        return ["sharpe"]
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        parsed = [value]
+    return [m for m in parsed if m in METRICS] or ["sharpe"]
 
 
 class PromptKind(Out):
@@ -38,6 +52,7 @@ class LibraryPrompt(Out):
     kind: str
     name: str
     body: str
+    read_metrics: list[Metric]
     built_in: bool
     based_on: str | None
     characters: int
@@ -56,6 +71,7 @@ def _out(
     kind: str,
     name: str,
     body: str,
+    read_metrics: list[Metric],
     based_on: str | None,
     at: datetime | None,
 ) -> LibraryPrompt:
@@ -64,6 +80,7 @@ def _out(
         kind=kind,
         name=name,
         body=body,
+        read_metrics=read_metrics,
         built_in=prompt_id is None,
         based_on=based_on,
         characters=len(body),
@@ -74,7 +91,7 @@ def _out(
 
 
 def _row(r: SavedPrompt) -> LibraryPrompt:
-    return _out(r.id, r.kind, r.name, r.body, r.based_on, r.updated_at)
+    return _out(r.id, r.kind, r.name, r.body, _metrics(r.read_metrics), r.based_on, r.updated_at)
 
 
 @router.get("")
@@ -87,7 +104,7 @@ async def library(state: State) -> PromptLibrary:
     return PromptLibrary(
         kinds=[PromptKind(slug=p.slug, label=p.label, purpose=p.purpose) for p in PROMPTS],
         prompts=[
-            *(_out(None, p.slug, p.label, p.body, None, None) for p in PROMPTS),
+            *(_out(None, p.slug, p.label, p.body, ["sharpe"], None, None) for p in PROMPTS),
             *(_row(r) for r in rows if r.kind in BUILT_IN),
         ],
     )
@@ -98,6 +115,16 @@ class NewPrompt(BaseModel):
     kind: str
     body: str = Field(default="", max_length=MAX_BODY)
     based_on: str | None = Field(default=None, max_length=160)
+    read_metrics: list[Metric] = Field(
+        default_factory=lambda: ["sharpe"], min_length=1, max_length=5
+    )
+
+    @field_validator("read_metrics")
+    @classmethod
+    def unique_metrics(cls, value: list[Metric]) -> list[Metric]:
+        if len(set(value)) != len(value):
+            raise ValueError("read_metrics must not contain duplicates")
+        return value
 
 
 @router.post("", status_code=201)
@@ -106,7 +133,11 @@ async def create(body: NewPrompt, state: State) -> LibraryPrompt:
     if body.kind not in BUILT_IN:
         raise refuse(422, "unknown_prompt_kind", f"There is no {body.kind!r} prompt.")
     row = SavedPrompt(
-        name=body.name.strip(), kind=body.kind, body=body.body, based_on=body.based_on
+        name=body.name.strip(),
+        kind=body.kind,
+        body=body.body,
+        based_on=body.based_on,
+        read_metrics=json.dumps(body.read_metrics),
     )
     async with state.db.session() as session:
         session.add(row)
@@ -120,6 +151,14 @@ class EditPrompt(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=120)
     body: str | None = Field(default=None, max_length=MAX_BODY)
+    read_metrics: list[Metric] | None = Field(default=None, min_length=1, max_length=5)
+
+    @field_validator("read_metrics")
+    @classmethod
+    def unique_metrics(cls, value: list[Metric] | None) -> list[Metric] | None:
+        if value is not None and len(set(value)) != len(value):
+            raise ValueError("read_metrics must not contain duplicates")
+        return value
 
 
 @router.put("/{prompt_id}")
@@ -132,6 +171,8 @@ async def edit(prompt_id: int, body: EditPrompt, state: State) -> LibraryPrompt:
             row.name = body.name.strip()
         if body.body is not None:
             row.body = body.body
+        if body.read_metrics is not None:
+            row.read_metrics = json.dumps(body.read_metrics)
         await session.flush()
         await session.refresh(row)
     return _row(row)

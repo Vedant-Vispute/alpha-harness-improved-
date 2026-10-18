@@ -188,6 +188,7 @@ def create_app() -> FastAPI:
     app.include_router(search_lab.router)
     app.include_router(lab_tasks.router)
     app.include_router(power_pool_lab.router)
+    app.include_router(power_pool_lab.regular_router)
     app.include_router(region_agnostic_lab.router)
     app.include_router(super_lab.router)
     app.include_router(chat.router)

@@ -1,7 +1,6 @@
 /**
- * The Alphas a screen is looking at, narrowed by the Power Pool Workflow in three steps, each
- * on what the one before kept: unsubmitted, then no check FAIL or ERROR, then Power Pool
- * Correlation passed. The survivors carry After-Cost Sharpe to sort them by.
+ * Power Pool task results narrow Alphas by the Power Pool Workflow. Regular task results use
+ * the same table without Power Pool correlation or workflow filtering.
  *
  * Shared by a task's own results and the Submittable list across every task, because the two
  * differ only in which Alphas they start from — a second copy would be a second place for the
@@ -129,6 +128,7 @@ export function AlphaPane({
   poolColumnAfter,
   onRefresh,
   onOpenAlpha,
+  powerPoolMode = true,
 }: {
   title: string
   rows: RankedAlpha[]
@@ -145,24 +145,30 @@ export function AlphaPane({
   onRefresh?: () => Promise<unknown>
   /** Show a row's Alpha in the detail sheet, as the task detail's own table does. */
   onOpenAlpha?: (alphaId: string) => void
+  /** Regular Alpha task results omit Power Pool correlation and workflow controls. */
+  powerPoolMode?: boolean
 }) {
   const [showAll, setShowAll] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const unsubmitted = useMemo(() => rows.filter(isUnsubmitted), [rows])
   const clean = useMemo(() => unsubmitted.filter(isClean), [unsubmitted])
   const cleanIds = useMemo(() => clean.map((r) => r.alphaId), [clean])
-  const pool = usePowerPool(cleanIds)
+  const pool = usePowerPool(powerPoolMode ? cleanIds : [])
   const survivors = useMemo(
     () => clean.filter((r) => passesPool(pool.by.get(r.alphaId))),
     [clean, pool.by],
   )
-  const shown = showAll ? rows : survivors
+  const shown = powerPoolMode ? (showAll ? rows : survivors) : rows
   const sorted = useMemo(
-    () => [...shown].sort((a, b) => comparePool(a, b, sort, pool.by, compare)),
-    [shown, sort, pool.by, compare],
+    () =>
+      [...shown].sort((a, b) =>
+        powerPoolMode ? comparePool(a, b, sort, pool.by, compare) : compare(a, b, sort),
+      ),
+    [shown, sort, pool.by, compare, powerPoolMode],
   )
 
-  const refresh = () => Promise.all([onRefresh?.(), cleanIds.length ? pool.refresh() : null])
+  const refresh = () =>
+    Promise.all([onRefresh?.(), powerPoolMode && cleanIds.length ? pool.refresh() : null])
 
   const job = useJob(WORKFLOW)
   const running = job?.state === 'running'
@@ -226,7 +232,7 @@ export function AlphaPane({
   const uncosted = survivors.filter((r) => r.afterCostSharpe == null).length
   const columnsShown = () => {
     const own = columns()
-    if (!pool.found) return own
+    if (!powerPoolMode || !pool.found) return own
     const at = own.findIndex((c) => c.key === poolColumnAfter)
     const cut = at === -1 ? own.length : at + 1
     return [...own.slice(0, cut), poolColumn(pool.by), ...own.slice(cut)]
@@ -249,15 +255,17 @@ export function AlphaPane({
           >
             <RefreshCwIcon className={cn((refreshing || pool.refreshing) && 'animate-spin')} />
           </Button>
-          <Button
-            size="sm"
-            variant={showAll ? 'primary' : 'secondary'}
-            aria-pressed={showAll}
-            onClick={() => setShowAll(!showAll)}
-            title="Every Alpha here, not only the ones the workflow keeps"
-          >
-            Show All
-          </Button>
+          {powerPoolMode && (
+            <Button
+              size="sm"
+              variant={showAll ? 'primary' : 'secondary'}
+              aria-pressed={showAll}
+              onClick={() => setShowAll(!showAll)}
+              title="Every Alpha here, not only the ones the workflow keeps"
+            >
+              Show All
+            </Button>
+          )}
           {prodRunning ? (
             <div className="flex w-52 flex-col gap-1">
               <span className="num text-caption text-ink-muted">
@@ -289,40 +297,44 @@ export function AlphaPane({
               Check Production Correlation
             </Button>
           )}
-          {running ? (
-            <div className="flex w-52 flex-col gap-1">
-              <span className="num text-caption text-ink-muted">{job.detail || job.label}</span>
-              <Progress value={job.progress ?? null} label="Power Pool Workflow progress" />
-            </div>
-          ) : (
-            <Button
-              size="sm"
-              variant="primary"
-              disabled={cleanIds.length === 0 || prodRunning}
-              loading={start.isPending}
-              onClick={() => start.mutate()}
-              title="Downloads PnL where Power Pool Correlation is unmeasured, then turnover for the Alphas that satisfy it. No simulation quota."
-            >
-              <PlayIcon />
-              Run Power Pool Workflow
-            </Button>
-          )}
+          {powerPoolMode &&
+            (running ? (
+              <div className="flex w-52 flex-col gap-1">
+                <span className="num text-caption text-ink-muted">{job.detail || job.label}</span>
+                <Progress value={job.progress ?? null} label="Power Pool Workflow progress" />
+              </div>
+            ) : (
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={cleanIds.length === 0 || prodRunning}
+                loading={start.isPending}
+                onClick={() => start.mutate()}
+                title="Downloads PnL where Power Pool Correlation is unmeasured, then turnover for the Alphas that satisfy it. No simulation quota."
+              >
+                <PlayIcon />
+                Run Power Pool Workflow
+              </Button>
+            ))}
           <span className="num text-ink-subtle">{fmt.int(sorted.length)}</span>
         </div>
       }
     >
-      <p className="num mb-3 text-body-compact text-ink-muted">
-        {fmt.int(unsubmitted.length)} Unsubmitted Alphas → {fmt.int(clean.length)} with no Checks
-        FAIL or ERROR → {pool.found ? fmt.int(survivors.length) : DASH} Pass Power Pool Correlation
-        {unmeasured > 0 && ` · ${fmt.int(unmeasured)} not measured yet`}
-        {uncosted > 0 && ` · ${fmt.int(uncosted)} without After-Cost Sharpe yet`}
-      </p>
-      {job?.state === 'failed' && (
+      {powerPoolMode && (
+        <p className="num mb-3 text-body-compact text-ink-muted">
+          {fmt.int(unsubmitted.length)} Unsubmitted Alphas → {fmt.int(clean.length)} with no Checks
+          FAIL or ERROR → {pool.found ? fmt.int(survivors.length) : DASH} Pass Power Pool
+          Correlation
+          {unmeasured > 0 && ` · ${fmt.int(unmeasured)} not measured yet`}
+          {uncosted > 0 && ` · ${fmt.int(uncosted)} without After-Cost Sharpe yet`}
+        </p>
+      )}
+      {powerPoolMode && job?.state === 'failed' && (
         <Notice tone="error" className="mb-3" title="The Power Pool Workflow stopped">
           {job.error}
         </Notice>
       )}
-      {unsynced > 0 && (
+      {powerPoolMode && unsynced > 0 && (
         <Notice tone="warn" className="mb-3" title="Sync your Portfolio first">
           {fmt.int(unsynced)} submitted Power Pool Alpha{unsynced === 1 ? ' has' : 's have'} no PnL
           stored, so Power Pool Correlation is not measured against {unsynced === 1 ? 'it' : 'them'}
@@ -333,7 +345,7 @@ export function AlphaPane({
           page, then read these again.
         </Notice>
       )}
-      {pool.error != null && (
+      {powerPoolMode && pool.error != null && (
         <ErrorNotice error={pool.error} title="Could not measure Power Pool correlation" />
       )}
       <DataTable
@@ -344,11 +356,13 @@ export function AlphaPane({
         onRowClick={openRow(onOpenAlpha)}
         sort={sort}
         onSort={onSort}
-        loading={(loading ?? false) || (!showAll && cleanIds.length > 0 && pool.pending)}
+        loading={
+          (loading ?? false) || (powerPoolMode && !showAll && cleanIds.length > 0 && pool.pending)
+        }
         error={error}
         maxHeight="70vh"
         empty={
-          showAll || rows.length === 0
+          !powerPoolMode || showAll || rows.length === 0
             ? 'No Alphas back yet.'
             : unmeasured > 0
               ? 'Run Power Pool Workflow to measure the rest.'

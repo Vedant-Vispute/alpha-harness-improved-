@@ -1,10 +1,11 @@
 /** Syncing alphas from BRAIN, and the counts and background progress that go with it. */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { RefreshCwIcon } from 'lucide-react'
+import { ActivityIcon, RefreshCwIcon } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { tasks } from '@/api/core'
+import { errorMessage } from '@/api/http'
 import { cn } from '@/lib/cn'
 import { fmt } from '@/lib/format'
 import { useLive } from '@/lib/live'
@@ -49,6 +50,37 @@ export function SyncAlphasButton() {
         background and spends no simulations.
       </Confirm>
     </>
+  )
+}
+
+/** Analyze every stored Alpha that has no quality verdict yet. */
+export function AnalyzeAlphasButton() {
+  const mutation = useMutation({
+    mutationFn: pool.analyzeQuality,
+    onSuccess: () => toast.success('Alpha quality analysis started'),
+    onError: (error: unknown) => toast.error(errorMessage(error)),
+  })
+  const liveTasks = useLive((s) => s.tasks)
+  const polled = useQuery({
+    queryKey: ['background-tasks'],
+    queryFn: tasks.list,
+    enabled: liveTasks == null,
+    refetchInterval: 5000,
+  })
+  const active = ((liveTasks ?? polled.data)?.tasks ?? []).some(
+    (task) => task.kind === 'alpha-quality' && task.state === 'running',
+  )
+
+  return (
+    <Button
+      variant="secondary"
+      loading={mutation.isPending || active}
+      disabled={mutation.isPending || active}
+      onClick={() => mutation.mutate()}
+    >
+      {!mutation.isPending && !active && <ActivityIcon />}
+      {active || mutation.isPending ? 'Analyzing Alphas' : 'Analyze Alpha Quality'}
+    </Button>
   )
 }
 

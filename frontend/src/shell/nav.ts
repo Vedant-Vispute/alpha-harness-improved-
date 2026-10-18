@@ -29,14 +29,13 @@ export const AI_TABS = [
 ] as const
 
 /** The labs, each with its own route. Listed on the Research Labs screen and in ⌘K rather
- *  than under the sidebar entry: four children under one item is most of the sidebar, and
+ *  than under the sidebar entry: several children under one item is most of the sidebar, and
  *  the screen already introduces them properly. */
 export const LAB_TABS = [
   { tab: 'search', label: 'Search Lab', to: '/labs/search' },
-  { tab: 'template', label: 'Template Lab', to: '/labs/template' },
-  { tab: 'evolution', label: 'Evolution Lab', to: '/labs/evolution' },
-  { tab: 'power-pool', label: 'LLM Power Pool Lab', to: '/labs/power-pool' },
-  { tab: 'region-agnostic', label: 'Region Agnostic Lab', to: '/labs/region-agnostic' },
+  { tab: 'template-blocks', label: 'Build with Blocks (Legacy)', to: '/labs/template/basic' },
+  { tab: 'template-expression', label: 'Build with Expression', to: '/labs/template' },
+  { tab: 'region-agnostic', label: 'ARC Alpha Lab', to: '/labs/region-agnostic' },
   { tab: 'super-alpha', label: 'Super Alpha Lab', to: '/labs/super-alpha' },
 ] as const
 

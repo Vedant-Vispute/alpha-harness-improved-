@@ -1,5 +1,5 @@
 /**
- * Basic Template Research, Template Lab's classic block builder: open a template, change it
+ * Blocks Lab, Template Lab's visual block builder: open a template, change it
  * with blocks, choose datasets and settings, then add its search to Tasks. The lab tries each
  * choice and variable value the template allows and keeps what gives the best Sharpe.
  */
@@ -27,7 +27,6 @@ import {
   templateLab,
 } from '@/screens/research-labs/template-basic/api'
 import type { Blocks, TemplateDoc } from '@/screens/research-labs/template-basic/tree'
-import { TemplateSections } from '@/screens/research-labs/template-sections'
 import {
   Button,
   Empty,
@@ -208,7 +207,8 @@ export function BasicTemplateScreen() {
   return (
     <Page>
       <PageHeader
-        title="Template Lab"
+        title="Build with Blocks (Legacy)"
+        description="Build and search Alpha templates with visual blocks."
         actions={
           <>
             {saved !== null && (
@@ -246,7 +246,6 @@ export function BasicTemplateScreen() {
           </>
         }
       />
-      <TemplateSections />
       {options.isError && (
         <ErrorNotice error={options.error} title="Could not read your operators" />
       )}

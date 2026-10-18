@@ -3,10 +3,10 @@
  * The verdict leads; everything below it is the evidence. Submission stays on BRAIN.
  */
 
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from '@tanstack/react-router'
-import { ArrowLeftIcon, RefreshCwIcon } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { ArrowLeftIcon, RefreshCwIcon, SlidersHorizontalIcon, UnlinkIcon } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { errorMessage } from '@/api/http'
 import { cn } from '@/lib/cn'
@@ -17,12 +17,14 @@ import { AlphaActionsMenu, AstInspector, OpenInBrain, RecheckButton } from '@/sc
 import {
   Badge,
   Button,
+  Disclosure,
   ErrorNotice,
   Input,
   Metric,
   Notice,
   Page,
   Panel,
+  Progress,
   Segmented,
   Skeleton,
 } from '@/ui/kit'
@@ -32,13 +34,14 @@ import {
   drawdowns,
   hitRate,
   isQuickMode,
+  resultOf,
   rollingSharpe,
   underwater,
   verdictOf,
   YEAR,
 } from './analysis'
 import { type AlphaInfo, type AlphaView, alpha as api } from './api'
-import { AlphaChart, type ChartView } from './chart'
+import { AlphaChart, ArcChildrenChart, type ChartView } from './chart'
 import {
   AggregatesPanel,
   ChecksPanel,
@@ -46,10 +49,11 @@ import {
   CorrelationsPanel,
   EligibilityPanel,
   LineagePanel,
-  VerdictPanel,
   YearlyPanel,
 } from './panels'
 import { PropertiesPanel } from './properties'
+
+const arcChecksStarted = new Set<string>()
 
 export function AlphaScreen() {
   const { alphaId } = useParams({ from: '/alpha/$alphaId' })
@@ -124,12 +128,177 @@ function RegionAgnosticNote({ type }: { type: string | null }) {
     )
   if (type === 'RA_PARENT')
     return (
-      <Notice tone="info" title="This alpha holds four, one per region">
-        It carries no performance of its own — USA, Europe, Asia and Global each have their own
-        alpha, and submitting it submits every region that passed, at the cost of one submission.
+      <Notice tone="info" title="ARC results are split by covered region">
+        The ALL-region result contains one child Alpha per covered region. Performance is shown
+        below; open a child Alpha for its full chart, yearly metrics, and checks.
       </Notice>
     )
   return null
+}
+
+function ArcChildrenPanel({ view }: { view: AlphaView }) {
+  const alpha = view.alpha
+  const children = alpha.type === 'RA_PARENT' ? alpha.children : []
+  const results = useQueries({
+    queries: children.map((alphaId) => ({
+      queryKey: ['alpha', alphaId, 'page'],
+      queryFn: () => api.page(alphaId),
+      staleTime: 10 * 60 * 1000,
+      retry: false,
+    })),
+  })
+  const queryClient = useQueryClient()
+  useEffect(() => {
+    if (alpha.type !== 'RA_PARENT') return
+    for (const alphaId of children) {
+      if (arcChecksStarted.has(alphaId)) continue
+      arcChecksStarted.add(alphaId)
+      void api
+        .check(alphaId)
+        .then(() => queryClient.invalidateQueries({ queryKey: ['alpha', alphaId, 'page'] }))
+        .catch(() => arcChecksStarted.delete(alphaId))
+    }
+  }, [alpha.type, children, queryClient])
+  if (alpha.type !== 'RA_PARENT') return null
+
+  const loaded = results.filter((result) => result.data).length
+  const resolved = results
+    .map((result) => result.data?.alpha)
+    .filter((child) => child !== undefined)
+  const passes = resolved.filter((child) => child.verdict === 'submittable').length
+  const failures = resolved.filter((child) => child.verdict === 'refused').length
+  const required = Math.ceil((2 * children.length) / 3)
+  const pending = Math.max(0, children.length - passes - failures)
+  const familyStatus =
+    passes >= required ? 'Pass' : passes + pending < required ? 'Fail' : 'Pending'
+  const childCurves = results.flatMap((result, index) => {
+    const data = result.data
+    if (!data || data.dates.length < 2) return []
+    const region = data.alpha.settings['region']
+    return [
+      {
+        label: typeof region === 'string' ? region : (children[index] ?? 'Child Alpha'),
+        points: cumulative(data.dates, data.pnl),
+      },
+    ]
+  })
+  const curves =
+    childCurves.length > 0
+      ? childCurves
+      : view.dates.length > 1
+        ? [{ label: 'ALL (BRAIN)', points: cumulative(view.dates, view.pnl) }]
+        : []
+  return (
+    <Panel
+      title="ARC child results"
+      description={
+        childCurves.length > 0
+          ? 'Each line is a child Alpha’s PnL curve; lines are shown separately, not combined.'
+          : 'BRAIN’s separate ALL-region PnL series.'
+      }
+      bodyClassName="flex flex-col gap-4"
+    >
+      {children.length === 0 ? (
+        <p className="text-body-compact text-ink-subtle">
+          BRAIN has not returned regional Alphas yet.
+        </p>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-body-compact">
+            <span className="font-semibold text-ink">ARC validation: {familyStatus}</span>
+            <span className="text-ink-subtle">
+              {passes} pass · {failures} fail · {pending} pending · {required} required
+            </span>
+          </div>
+          {curves.length > 0 && (
+            <ArcChildrenChart series={curves} label="Separate regional ARC child PnL curves" />
+          )}
+          {loaded < children.length && (
+            <div className="flex items-center gap-3 px-4 py-3 text-body-compact text-ink-subtle">
+              <Progress
+                label="Loading ARC regional performance summaries"
+                value={loaded / children.length}
+                className="max-w-48"
+              />
+              <span>
+                {fmt.int(loaded)} / {fmt.int(children.length)} summaries loaded
+              </span>
+            </div>
+          )}
+          <table className="w-full text-body">
+            <thead>
+              <tr className="border-y border-hairline text-body-compact text-ink-subtle">
+                <th className="px-4 py-2 text-left font-medium">Region</th>
+                <th className="px-4 py-2 text-right font-medium">Sharpe</th>
+                <th className="px-4 py-2 text-right font-medium">Fitness</th>
+                <th className="px-4 py-2 text-right font-medium">Returns</th>
+                <th className="px-4 py-2 text-right font-medium">Turnover</th>
+                <th className="px-4 py-2 text-right font-medium">Submission</th>
+                <th className="px-4 py-2 text-right font-medium">Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              {children.map((alphaId, index) => {
+                const child = results[index]?.data?.alpha
+                const stats = child?.inSample
+                const region = child?.settings['region']
+                const verdict = child?.verdict
+                return (
+                  <tr key={alphaId} className="border-b border-hairline-subtle last:border-b-0">
+                    <td className="px-4 py-2 text-ink">
+                      {typeof region === 'string'
+                        ? region
+                        : results[index]?.isError
+                          ? 'Unavailable'
+                          : 'Loading'}
+                    </td>
+                    <td className="num px-4 py-2 text-right text-ink">
+                      {fmt.ratio(stats?.sharpe ?? null)}
+                    </td>
+                    <td className="num px-4 py-2 text-right text-ink">
+                      {fmt.ratio(stats?.fitness ?? null)}
+                    </td>
+                    <td className="num px-4 py-2 text-right text-ink">
+                      {fmt.pct(stats?.returns ?? null)}
+                    </td>
+                    <td className="num px-4 py-2 text-right text-ink">
+                      {fmt.pct(stats?.turnover ?? null)}
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      <Badge
+                        tone={
+                          verdict === 'submittable'
+                            ? 'profit'
+                            : verdict === 'refused'
+                              ? 'loss'
+                              : 'muted'
+                        }
+                      >
+                        {verdict === 'submittable'
+                          ? 'Pass'
+                          : verdict === 'refused'
+                            ? 'Fail'
+                            : 'Checking'}
+                      </Badge>
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      <Link
+                        to="/alpha/$alphaId"
+                        params={{ alphaId }}
+                        className="text-primary hover:underline"
+                      >
+                        Open full results
+                      </Link>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </>
+      )}
+    </Panel>
+  )
 }
 
 function Body({ view, refresh }: { view: AlphaView; refresh: React.ReactNode }) {
@@ -139,55 +308,93 @@ function Body({ view, refresh }: { view: AlphaView; refresh: React.ReactNode }) 
 
   return (
     <>
-      <Header alpha={a} fetchedAt={view.fetchedAt} />
-      {view.problems.map((p) => (
-        <Notice key={p} tone="warn">
-          {p}
-        </Notice>
-      ))}
-      <RegionAgnosticNote type={a.type} />
-      <VerdictPanel
-        verdict={verdict}
+      <Header
         alpha={a}
+        fetchedAt={view.fetchedAt}
         actions={
           <>
-            {/* BRAIN refuses the submission check on a Quick mode alpha outright, so the
-                button could only ever report its own refusal. */}
+            <Button
+              size="sm"
+              variant="secondary"
+              render={<Link to="/tools/settings-sampler" search={{ alpha: a.alphaId }} />}
+            >
+              <SlidersHorizontalIcon aria-hidden />
+              Send to Settings Sampler
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              render={<Link to="/tools/correlation-breaker" search={{ alpha: a.alphaId }} />}
+            >
+              <UnlinkIcon aria-hidden />
+              Send to Correlation Lab
+            </Button>
             {!isQuickMode(a) && <RecheckButton alphaId={a.alphaId} />}
             <OpenInBrain url={a.brainUrl} />
             <AlphaActionsMenu alphaId={a.alphaId} />
           </>
         }
       />
-      <div className="grid grid-cols-[minmax(0,1fr)] gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,26rem)]">
-        <div className="flex min-w-0 flex-col gap-4">
-          <ExpressionPanel alpha={a} />
-          <PerformancePanel view={view} cutoff={isNum(cutoff) ? cutoff : null} refresh={refresh} />
-          <YearlyPanel years={view.yearly} cutoff={isNum(cutoff) ? cutoff : null} />
-          <AggregatesPanel alpha={a} />
-          <ComparisonPanel alphaId={a.alphaId} />
-        </div>
-        <div className="flex min-w-0 flex-col gap-4">
-          <ChecksPanel groups={verdict.groups} />
-          <EligibilityPanel alpha={a} />
-          <CorrelationsPanel alphaId={a.alphaId} />
-          {/* Both, so the draft resets on a save *and* on a sibling: batch children share a
-              dateModified to the second, and a stale draft would save one Alpha's name onto
-              another. */}
+      {view.problems.map((p) => (
+        <Notice key={p} tone="warn">
+          {p}
+        </Notice>
+      ))}
+      {view.rejected && (
+        <Notice tone="error" title="Rejected by Alpha quality analysis">
+          {view.rejectionReason ?? 'This Alpha failed a multi-year quality check.'}
+        </Notice>
+      )}
+      <RegionAgnosticNote type={a.type} />
+      <ExpressionPanel alpha={a} />
+      {a.type === 'RA_PARENT' ? (
+        <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,26rem)]">
+          <div className="flex min-w-0 flex-col gap-4">
+            <ArcChildrenPanel view={view} />
+            <LineagePanel lineage={view.lineage} />
+          </div>
           <PropertiesPanel key={`${a.alphaId}:${a.dateModified ?? ''}`} alpha={a} />
-          <LineagePanel lineage={view.lineage} />
         </div>
-      </div>
+      ) : (
+        <div className="grid grid-cols-[minmax(0,1fr)] gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,26rem)]">
+          <div className="flex min-w-0 flex-col gap-4">
+            <PerformancePanel
+              view={view}
+              cutoff={isNum(cutoff) ? cutoff : null}
+              refresh={refresh}
+            />
+            <YearlyPanel years={view.yearly} cutoff={isNum(cutoff) ? cutoff : null} />
+            <AggregatesPanel alpha={a} />
+            <ComparisonPanel alphaId={a.alphaId} />
+            <LineagePanel lineage={view.lineage} />
+          </div>
+          <div className="flex min-w-0 flex-col gap-4">
+            <ChecksPanel groups={verdict.groups} />
+            <CorrelationsPanel alphaId={a.alphaId} />
+            <EligibilityPanel alpha={a} />
+            {/* Both, so the draft resets on a save and on a sibling. */}
+            <PropertiesPanel key={`${a.alphaId}:${a.dateModified ?? ''}`} alpha={a} />
+          </div>
+        </div>
+      )}
     </>
   )
 }
 
-function Header({ alpha: a, fetchedAt }: { alpha: AlphaInfo; fetchedAt: string }) {
+function Header({
+  alpha: a,
+  fetchedAt,
+  actions,
+}: {
+  alpha: AlphaInfo
+  fetchedAt: string
+  actions: React.ReactNode
+}) {
   const scope = [a.settings['region'], a.settings['universe'], `D${a.settings['delay'] ?? '?'}`]
   return (
     <header className="flex flex-wrap items-end justify-between gap-3 px-1">
       <div className="flex min-w-0 flex-col gap-1.5">
-        <h1 className="text-headline text-balance break-words text-ink">
+        <h1 className="text-title text-balance break-words text-ink">
           {a.name || <span className="num">{a.alphaId}</span>}
         </h1>
         <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-body-compact text-ink-subtle">
@@ -202,21 +409,27 @@ function Header({ alpha: a, fetchedAt }: { alpha: AlphaInfo; fetchedAt: string }
           ))}
         </p>
       </div>
-      <span className="text-body-compact text-ink-subtle">
-        Read from BRAIN {fmt.ago(fetchedAt)}
-      </span>
+      <div className="flex flex-wrap items-center gap-2">
+        {actions}
+        <span className="hidden text-body-compact text-ink-subtle 2xl:inline">
+          Read from BRAIN {fmt.ago(fetchedAt)}
+        </span>
+      </div>
     </header>
   )
 }
 
 const SETTING_LABELS: [string, string][] = [
-  ['instrumentType', 'Instrument'],
   ['region', 'Region'],
   ['universe', 'Universe'],
   ['delay', 'Delay'],
   ['decay', 'Decay'],
   ['neutralization', 'Neutralization'],
   ['truncation', 'Truncation'],
+]
+
+const EXTRA_SETTING_LABELS: [string, string][] = [
+  ['instrumentType', 'Instrument'],
   ['pasteurization', 'Pasteurization'],
   ['nanHandling', 'NaN handling'],
   ['unitHandling', 'Unit handling'],
@@ -230,24 +443,42 @@ const SETTING_LABELS: [string, string][] = [
 ]
 
 function ExpressionPanel({ alpha: a }: { alpha: AlphaInfo }) {
-  const shown = SETTING_LABELS.filter(
-    ([k]) => a.settings[k] !== undefined && a.settings[k] !== null,
+  const settings = (labels: [string, string][]) =>
+    labels.filter(([k]) => a.settings[k] !== undefined && a.settings[k] !== null)
+  const main = settings(SETTING_LABELS)
+  const extra = settings(EXTRA_SETTING_LABELS)
+  const settingGrid = (shown: [string, string][]) => (
+    <dl className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3 lg:grid-cols-6">
+      {shown.map(([k, label]) => (
+        <div key={k} className="flex min-w-0 flex-col gap-0.5">
+          <dt className="text-caption text-ink-subtle">{label}</dt>
+          <dd className="num truncate text-body text-ink">{String(a.settings[k])}</dd>
+        </div>
+      ))}
+    </dl>
   )
   return (
     <Panel
       title="Expression"
       description={isNum(a.operatorCount) ? `${a.operatorCount} operators` : undefined}
+      actions={
+        main.length > 0 && (
+          <dl className="grid max-w-[48rem] grid-cols-2 gap-x-5 gap-y-1 text-right sm:grid-cols-3 lg:grid-cols-6">
+            {main.map(([k, label]) => (
+              <div key={k} className="flex min-w-0 flex-col gap-0.5">
+                <dt className="text-caption text-ink-subtle">{label}</dt>
+                <dd className="num truncate text-body text-ink">{String(a.settings[k])}</dd>
+              </div>
+            ))}
+          </dl>
+        )
+      }
       bodyClassName="flex flex-col gap-4"
     >
       <AstInspector expression={a.code} className="text-body" />
-      <dl className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-4">
-        {shown.map(([k, label]) => (
-          <div key={k} className="flex min-w-0 flex-col gap-0.5">
-            <dt className="text-caption text-ink-subtle">{label}</dt>
-            <dd className="num truncate text-body text-ink">{String(a.settings[k])}</dd>
-          </div>
-        ))}
-      </dl>
+      {extra.length > 0 && (
+        <Disclosure summary="Additional settings">{settingGrid(extra)}</Disclosure>
+      )}
     </Panel>
   )
 }
@@ -270,6 +501,15 @@ function PerformancePanel({
   const [shown, setShown] = useState<ChartView>('pnl')
   const book = view.alpha.inSample?.bookSize ?? 20_000_000
   const alphaId = view.alpha.alphaId
+  const stats = view.alpha.inSample
+  const thresholdTone = (names: string[]) => {
+    const checks = view.alpha.checks.filter((check) => names.includes(check.name))
+    if (checks.length === 0) return 'neutral' as const
+    if (checks.some((check) => resultOf(check) === 'FAIL' || resultOf(check) === 'ERROR')) {
+      return 'loss' as const
+    }
+    return checks.every((check) => resultOf(check) === 'PASS') ? ('profit' as const) : 'neutral'
+  }
 
   // Cost is opt-in: at 0 bps the page is exactly what BRAIN reports, and nothing is fetched.
   const [costText, setCostText] = useState('5')
@@ -346,6 +586,30 @@ function PerformancePanel({
       }
       bodyClassName="flex flex-col gap-4"
     >
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+        <Metric
+          boxed
+          label="Sharpe"
+          value={fmt.ratio(stats?.sharpe)}
+          hint={cutoff === null ? undefined : `Target ≥ ${fmt.ratio(cutoff)}`}
+          tone={thresholdTone(['LOW_SHARPE'])}
+        />
+        <Metric
+          boxed
+          label="Fitness"
+          value={fmt.ratio(stats?.fitness)}
+          tone={thresholdTone(['LOW_FITNESS'])}
+        />
+        <Metric boxed label="Returns (ann.)" value={fmt.pct(stats?.returns, 1)} tone="profit" />
+        <Metric
+          boxed
+          label="Turnover"
+          value={fmt.pct(stats?.turnover, 1)}
+          hint={stats?.turnover == null ? undefined : 'Annualized'}
+          tone={thresholdTone(['LOW_TURNOVER', 'HIGH_TURNOVER'])}
+        />
+        <Metric boxed label="Max drawdown" value={fmt.pct(stats?.drawdown, 1)} tone="neutral" />
+      </div>
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <Metric size="sm" label="Profitable days" value={fmt.pct(series.hitRate, 1)} />
         <Metric
@@ -378,6 +642,7 @@ function PerformancePanel({
         cutoff={cutoff}
         testStart={view.testStart}
         label={`${VIEWS.find((v) => v.value === shown)?.label} of ${view.alpha.alphaId}`}
+        stacked={shown === 'pnl'}
       />
       {shown === 'pnl' &&
         (series.constrained.length > 1 || view.testStart !== null || netCurve.length > 1) && (

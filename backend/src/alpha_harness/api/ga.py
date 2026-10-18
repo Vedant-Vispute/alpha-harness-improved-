@@ -26,7 +26,7 @@ from ..labs.launch import (
     neutralizations_for,
     preview_samples,
 )
-from ..labs.params import GA_SAMPLER, EvolutionParams
+from ..labs.params import GA_SAMPLER, REGULAR_GA_SAMPLER, EvolutionParams
 from ..labs.study import vault_summary
 from ..schemas import Out
 from ..tasks import spawn
@@ -60,6 +60,7 @@ class EvolutionRequest(BaseModel):
     mutation_rate: float = Field(default=ga.MUTATION_RATE, ge=0.01, le=0.2)
     #: Needed to add a task; a preview uses it to size the population.
     simulations: int = Field(default=0, ge=0, le=search.MAX_SIMULATIONS)
+    regular: bool = False
 
 
 class AutoSeedsRequest(BaseModel):
@@ -373,7 +374,7 @@ async def add_task(body: EvolutionRequest, state: State) -> AddedTask:
     return await add_study(
         state,
         now=now,
-        sampler=GA_SAMPLER,
+        sampler=REGULAR_GA_SAMPLER if body.regular else GA_SAMPLER,
         params=EvolutionParams(
             region=body.region,
             delay=body.delay,

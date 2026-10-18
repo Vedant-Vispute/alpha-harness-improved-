@@ -20,6 +20,7 @@ separately, so trials stay joinable to the simulations that produced them.
 
 import asyncio
 import contextlib
+import json
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -36,7 +37,14 @@ from ..db.models import (
     TrialState,
     utcnow,
 )
-from ..vault.yields import IGNORED_CHECKS, QUOTA_CHECKS, checks_of, clean, gating_results, verdict
+from ..vault.yields import (
+    IGNORED_CHECKS,
+    QUOTA_CHECKS,
+    checks_of,
+    clean,
+    gating_results,
+    verdict,
+)
 from . import objectives as obj
 from . import scheduler
 from .objectives import StudyNotFoundError
@@ -72,7 +80,7 @@ VAULT_WAIT = timedelta(minutes=5)
 class Optimizer:
     """Owns every running study."""
 
-    #: Set by ``AppState`` once the assistant exists; LLM Power Pool Lab tasks call it.
+    #: Set by ``AppState`` once the assistant exists; LLM Alpha Lab tasks call it.
     llm: LLMService
 
     def __init__(
@@ -682,6 +690,7 @@ def ranked(
                 # a quota check is not the Alpha's business, so it is filtered on the way out
                 # as well as on the way in.
                 "failedChecks": (failed := without_quota_checks_by_name(result)),
+                "checkCounts": check_counts(result.get("checks") or []),
                 # Of those, the ones that actually refuse the Alpha. A check in
                 # ``IGNORED_CHECKS`` can FAIL without meaning anything about the Alpha --
                 # ``REGULAR_SUBMISSION`` is your submission quota -- so ``verdict`` skips it
@@ -692,6 +701,8 @@ def ranked(
                 "source": bool((t.params or {}).get("source")),
                 "quick": bool(result.get("quick")),
                 "errored": "ERROR" in gating_results(result.get("checks") or []),
+                "rejected": bool((result.get("analysis") or {}).get("rejected")),
+                "rejectionReason": (result.get("analysis") or {}).get("reason"),
             }
         )
     return rows
@@ -701,6 +712,30 @@ def without_quota_checks_by_name(result: dict[str, Any]) -> list[str]:
     """A result's failed checks, less the ones that describe the day's submission quota."""
     failed = result.get("failedChecks") or []
     return [c for c in failed if str(c).upper() not in QUOTA_CHECKS]
+
+
+def check_counts(raw: Any) -> dict[str, int]:
+    """Count resolved submission-check outcomes used by the task-results colour bar."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError, TypeError:
+            raw = []
+    counts = {"pass": 0, "warning": 0, "fail": 0}
+    for check in raw if isinstance(raw, list) else []:
+        if not isinstance(check, dict):
+            continue
+        if str(check.get("name", "")).upper() in QUOTA_CHECKS:
+            continue
+        result_value = check.get("result")
+        result = str(getattr(result_value, "value", result_value) or "").upper()
+        if result == "PASS":
+            counts["pass"] += 1
+        elif result == "WARNING":
+            counts["warning"] += 1
+        elif result in {"FAIL", "ERROR"}:
+            counts["fail"] += 1
+    return counts
 
 
 def vault_summary(saved: dict[str, Any]) -> dict[str, Any]:

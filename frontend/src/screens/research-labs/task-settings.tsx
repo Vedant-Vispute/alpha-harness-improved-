@@ -225,11 +225,16 @@ export function DatasetsPanel({
         </div>
       ) : (
         <Empty title="No datasets or fields chosen" icon={<DatabaseIcon />}>
-          Tick whole datasets, or single fields ranked by how you sort them, in the Data Explorer.
-          <Button className="mt-2" onClick={onChoose}>
-            <DatabaseIcon />
-            Choose Datasets or Fields
-          </Button>
+          <div className="flex flex-col items-center gap-3">
+            <p>
+              Tick whole datasets, or single fields ranked by how you sort them, in the Data
+              Explorer.
+            </p>
+            <Button onClick={onChoose}>
+              <DatabaseIcon />
+              Choose Datasets or Fields
+            </Button>
+          </div>
         </Empty>
       )}
       {children && <div className="mt-4 border-t border-hairline pt-4">{children}</div>}

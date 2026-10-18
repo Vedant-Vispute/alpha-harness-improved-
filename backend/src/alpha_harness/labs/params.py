@@ -19,15 +19,17 @@ if TYPE_CHECKING:
 
 #: Studies with this sampler breed generations (labs.ga) instead of asking Optuna.
 GA_SAMPLER = "ga"
+REGULAR_GA_SAMPLER = "regular-ga"
 #: Studies with this sampler write their own expressions (labs.search), asked define-by-run.
 SEARCH_SAMPLER = "search"
 TEMPLATE_SAMPLER = "template"
 POWER_POOL_SAMPLER = "power-pool"
+REGULAR_ALPHA_SAMPLER = "regular-alpha"
 #: An LLM writes Alphas from region-agnostic fields; each runs as an ordinary simulation in every
 #: chosen region that carries its fields (labs.power_pool).
 REGION_AGNOSTIC_SAMPLER = "region-agnostic"
 #: The labs an LLM writes for, which share one machinery.
-LLM_SAMPLERS = frozenset({POWER_POOL_SAMPLER, REGION_AGNOSTIC_SAMPLER})
+LLM_SAMPLERS = frozenset({POWER_POOL_SAMPLER, REGULAR_ALPHA_SAMPLER, REGION_AGNOSTIC_SAMPLER})
 #: Studies that re-run one proven expression across markets and settings (tools.settings_sampler).
 SETTINGS_SAMPLER = "settings-sampler"
 #: Studies that re-shape one Alpha's expression at its own settings (tools.correlation_breaker).
@@ -39,8 +41,10 @@ TASK_SAMPLERS = {
     SEARCH_SAMPLER: "Search Lab",
     TEMPLATE_SAMPLER: "Template Lab",
     GA_SAMPLER: "Evolution Lab",
-    POWER_POOL_SAMPLER: "LLM Power Pool Lab",
-    REGION_AGNOSTIC_SAMPLER: "Region Agnostic Lab",
+    REGULAR_GA_SAMPLER: "Regular Evolution Lab",
+    POWER_POOL_SAMPLER: "LLM Alpha Lab",
+    REGULAR_ALPHA_SAMPLER: "Regular LLM Alpha Lab",
+    REGION_AGNOSTIC_SAMPLER: "ARC Alpha Lab",
     SETTINGS_SAMPLER: "Settings Sampler",
     CORRELATION_BREAKER: "Correlation Breaker",
     SUPER_LAB: "Super Alpha Lab",
@@ -119,6 +123,10 @@ class PowerPoolParams(TaskParams):
     calls: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class RegularAlphaParams(PowerPoolParams):
+    """An ordinary LLM Alpha task, without Power Pool expression limits or workflow."""
+
+
 class RegionAgnosticParams(PowerPoolParams):
     """Region Agnostic Lab: every Alpha runs once per region, the settings otherwise shared.
 
@@ -184,7 +192,9 @@ BY_SAMPLER: dict[str, type[TaskParams]] = {
     SEARCH_SAMPLER: SearchParams,
     TEMPLATE_SAMPLER: TemplateParams,
     GA_SAMPLER: EvolutionParams,
+    REGULAR_GA_SAMPLER: EvolutionParams,
     POWER_POOL_SAMPLER: PowerPoolParams,
+    REGULAR_ALPHA_SAMPLER: RegularAlphaParams,
     REGION_AGNOSTIC_SAMPLER: RegionAgnosticParams,
     SETTINGS_SAMPLER: SettingsParams,
     CORRELATION_BREAKER: BreakerParams,

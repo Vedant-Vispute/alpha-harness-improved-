@@ -1,4 +1,4 @@
-/** LLM Power Pool Lab: datasets, a model, cores and simulations, then add the task to Tasks. */
+/** LLM Alpha Lab: datasets, a model, cores and simulations, then add the task to Tasks. */
 
 import type { components } from '@/api/generated'
 import { http } from '@/api/http'
@@ -38,4 +38,12 @@ export const powerPoolLab = {
   /** Free: no LLM call, no simulation. */
   preview: (body: PowerPoolRequest) => http.post<PowerPoolPreview>(`${B}/preview`, body),
   addTask: (body: PowerPoolRequest) => http.post<Schemas['AddedTask']>(`${B}/tasks`, body),
+}
+
+export const regularAlphaLab = {
+  options: () => http.get<PowerPoolOptions>('/api/regular-alpha-lab/options'),
+  preview: (body: PowerPoolRequest) =>
+    http.post<PowerPoolPreview>('/api/regular-alpha-lab/preview', body),
+  addTask: (body: PowerPoolRequest) =>
+    http.post<Schemas['AddedTask']>('/api/regular-alpha-lab/tasks', body),
 }

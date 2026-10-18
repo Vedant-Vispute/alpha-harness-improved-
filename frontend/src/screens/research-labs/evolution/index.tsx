@@ -20,6 +20,7 @@ import {
   type SeedRow,
 } from '@/screens/research-labs/evolution/api'
 import { MAX_SEEDS, useSeedPick } from '@/screens/research-labs/evolution/seed-pick'
+import { LabInfoButton } from '@/screens/research-labs/lab-info'
 import { MAX_SIMULATIONS, simulationsValid, useLabPreview } from '@/screens/research-labs/lab-task'
 import { NeutralizationPicker } from '@/screens/research-labs/neutralization'
 import { CoresSetting, SimulationsSetting } from '@/screens/research-labs/task-settings'
@@ -41,19 +42,22 @@ import {
 } from '@/ui/kit'
 import { Select } from '@/ui/overlay'
 import { type Column, DataTable } from '@/ui/table'
-import { useEvolutionLab } from './state'
+import { useEvolutionLab, useRegularEvolutionLab } from './state'
 
 const POPULATIONS = [50, 100, 200]
 const MUTATION_RATES = [0.03, 0.05, 0.08]
 
-export function EvolutionLabScreen() {
-  const draft = useEvolutionLab()
-  const set = useEvolutionLab.setState
+export function EvolutionLabScreen({ regular = false }: { regular?: boolean } = {}) {
+  const powerPoolDraft = useEvolutionLab()
+  const regularDraft = useRegularEvolutionLab()
+  const draft = regular ? regularDraft : powerPoolDraft
+  const set = regular ? useRegularEvolutionLab.setState : useEvolutionLab.setState
   const navigate = useNavigate()
+  const labPath = regular ? '/labs/evolution-general' : '/labs/evolution'
 
   // Back from Alphas with a finished pick of seeds.
   useEffect(() => {
-    const pick = useSeedPick.getState().take('/labs/evolution')
+    const pick = useSeedPick.getState().take(labPath)
     if (pick)
       set({
         region: pick.scope.region,
@@ -62,7 +66,7 @@ export function EvolutionLabScreen() {
         seedIds: pick.ids,
         autoJobId: null,
       })
-  }, [])
+  }, [labPath, set])
 
   const options = useQuery({
     queryKey: ['evolution-lab', 'options'],
@@ -88,6 +92,7 @@ export function EvolutionLabScreen() {
     population: draft.population,
     mutation_rate: draft.mutationRate,
     simulations: draft.simulations ?? 0,
+    regular,
   }
   const { preview, current: planned } = useLabPreview('evolution-lab', body, evolutionLab.preview)
   const plan = preview.data
@@ -108,7 +113,7 @@ export function EvolutionLabScreen() {
     const error = job.error
     if (error instanceof ApiError && (error.code === 'unknown_job' || error.status === 404))
       set({ autoJobId: null })
-  }, [job.error])
+  }, [job.error, set])
   // A finished Auto Select replaces the seeds, once.
   useEffect(() => {
     if (found && autoJobId !== appliedJobId)
@@ -116,7 +121,7 @@ export function EvolutionLabScreen() {
         seedIds: found.seeds.map((s) => s.alphaId),
         appliedJobId: autoJobId,
       })
-  }, [found, autoJobId, appliedJobId])
+  }, [found, autoJobId, appliedJobId, set])
 
   // The population is sized from the simulations; until they are assigned, seed for the notes' 100.
   const sized = draft.population !== null || draft.simulations !== null
@@ -144,7 +149,7 @@ export function EvolutionLabScreen() {
         universe: draft.universe,
       },
       draft.seedIds,
-      '/labs/evolution',
+      labPath,
     )
     void navigate({ to: '/pool/$tab', params: { tab: 'stored' } })
   }
@@ -250,7 +255,19 @@ export function EvolutionLabScreen() {
 
   return (
     <Page>
-      <PageHeader title="Evolution Lab" actions={<AddTaskButtons add={add} disabled={!ready} />} />
+      <PageHeader
+        title={regular ? 'Regular Evolution Lab' : 'Power Pool Evolution Lab'}
+        actions={
+          <>
+            <LabInfoButton title={regular ? 'Regular Evolution Lab' : 'Power Pool Evolution Lab'}>
+              {regular
+                ? 'Choose seed Alphas, then the genetic search crosses and mutates their expressions and settings. Children run as a task from Tasks and are scored on Fitness over the first eight years, with the last two held out. Regular Evolution uses the same general genetic search without Power Pool-specific expression or result requirements.'
+                : 'Choose seed Alphas, then the genetic search crosses and mutates their expressions and settings within the selected market. Children run as a task from Tasks and are scored on Fitness over the first eight years, with the last two held out.'}
+            </LabInfoButton>
+            <AddTaskButtons add={add} disabled={!ready} />
+          </>
+        }
+      />
       {options.isError && (
         <ErrorNotice error={options.error} title="Could not load the lab's options" />
       )}
@@ -440,6 +457,10 @@ export function EvolutionLabScreen() {
       </Panel>
     </Page>
   )
+}
+
+export function RegularEvolutionLabScreen() {
+  return <EvolutionLabScreen regular />
 }
 
 function Reasons({ items }: { items: SeedReason[] }) {

@@ -95,6 +95,8 @@ class AlphaInfo(Out):
     power_pool_operators: int | None
     #: Distinct data fields, grouping fields excluded; null when the code is unreadable.
     data_fields: list[str] | None
+    #: Region-agnostic parent results own their per-region child Alpha ids here.
+    children: list[str]
     #: Operators called, once each, for the Power Pool description template.
     operators: list[str] | None
     #: ``vault.yields.verdict`` on its checks: the same rule the Planner and Tasks use.
@@ -120,6 +122,8 @@ class AlphaLineage(Out):
     params: dict[str, Any]
     generation: int | None
     simulated_at: str | None
+    rejected: bool = False
+    rejection_reason: str | None = None
     #: The task's best other Alphas on what it searches for.
     siblings: list[LineageSibling]
 
@@ -134,6 +138,8 @@ class AlphaView(Out):
     test_start: str | None
     yearly: list[AlphaYear]
     lineage: AlphaLineage | None
+    rejected: bool = False
+    rejection_reason: str | None = None
     #: When the Alpha itself was last read from BRAIN; series are kept until refreshed.
     fetched_at: str
     #: Anything that could not be loaded, said plainly.
@@ -271,6 +277,7 @@ def _info(alpha_id: str, body: dict[str, Any]) -> AlphaInfo:
         brain_url=f"{PLATFORM_ALPHA_URL}{alpha_id}",
         power_pool_operators=counted,
         data_fields=fields,
+        children=[c for c in body.get("children") or [] if isinstance(c, str)],
         operators=operators,
         # The mode matters as much as the checks: a quick-mode alpha is sent the performance
         # checks and none of the submission ones, so the checks alone read as "all clear".
@@ -366,6 +373,12 @@ async def _lineage(state: State, alpha_id: str) -> AlphaLineage | None:
         params=dict(trial.params or {}) if trial is not None else {},
         generation=trial.generation if trial is not None else None,
         simulated_at=sent.isoformat() if sent is not None else None,
+        rejected=bool((trial.result or {}).get("analysis", {}).get("rejected"))
+        if trial is not None
+        else False,
+        rejection_reason=(trial.result or {}).get("analysis", {}).get("reason")
+        if trial is not None
+        else None,
         siblings=siblings,
     )
 
@@ -418,17 +431,23 @@ async def page(alpha_id: str, state: State, refresh: Refresh = False) -> AlphaVi
             problems=problems,
         )
     )
-    yearly = _yearly(
-        await _cached_or_stale(
-            state,
-            f"yearly:{alpha_id}",
-            lambda: state.endpoints.recordset_body(alpha_id, "yearly-stats"),
-            refresh=refresh,
-            what="yearly stats",
-            problems=problems,
+    # ALL-region parent records do not expose yearly-stats in BRAIN. Their regional child
+    # Alphas carry the metrics, so don't request an endpoint that will always return 404.
+    yearly: list[AlphaYear] = []
+    if body.get("type") != "RA_PARENT":
+        yearly = _yearly(
+            await _cached_or_stale(
+                state,
+                f"yearly:{alpha_id}",
+                lambda: state.endpoints.recordset_body(alpha_id, "yearly-stats"),
+                refresh=refresh,
+                what="yearly stats",
+                problems=problems,
+            )
         )
-    )
 
+    lineage = await _lineage(state, alpha_id)
+    diagnostic = (await state.alphas.quality_for([alpha_id])).get(alpha_id)
     return AlphaView(
         alpha=_info(alpha_id, body),
         dates=dates,
@@ -436,7 +455,17 @@ async def page(alpha_id: str, state: State, refresh: Refresh = False) -> AlphaVi
         investability_pnl=constrained,
         test_start=(body.get("test") or {}).get("startDate"),
         yearly=yearly,
-        lineage=await _lineage(state, alpha_id),
+        lineage=lineage,
+        rejected=bool(
+            diagnostic.get("rejected") if diagnostic is not None else lineage and lineage.rejected
+        ),
+        rejection_reason=(
+            diagnostic.get("reason")
+            if diagnostic is not None
+            else lineage.rejection_reason
+            if lineage is not None
+            else None
+        ),
         fetched_at=fetched.isoformat(),
         problems=problems,
     )

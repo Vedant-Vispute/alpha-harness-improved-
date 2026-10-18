@@ -6,6 +6,7 @@ of a task that is already running.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 from ..db.models import SavedPrompt
@@ -44,3 +45,21 @@ async def resolve(db: Database, kind: str, prompt_id: int | None) -> tuple[str, 
         return p.label, p.body
     row = await saved(db, prompt_id, kind)
     return row.name, row.body
+
+
+async def resolve_with_metric(
+    db: Database, kind: str, prompt_id: int | None
+) -> tuple[str, str, list[str]]:
+    if prompt_id is None:
+        p = built_in(kind)
+        return p.label, p.body, ["sharpe"]
+    row = await saved(db, prompt_id, kind)
+    try:
+        metrics = json.loads(row.read_metrics or "")
+    except json.JSONDecodeError:
+        metrics = [row.read_metric]
+    allowed = {"sharpe", "fitness", "turnover", "returns", "drawdown"}
+    selected = (
+        [metric for metric in metrics if metric in allowed] if isinstance(metrics, list) else []
+    )
+    return row.name, row.body, selected or ["sharpe"]

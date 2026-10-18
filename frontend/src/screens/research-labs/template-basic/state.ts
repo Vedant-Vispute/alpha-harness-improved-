@@ -1,4 +1,4 @@
-/** Basic Template Research's draft: the open block template, its undo history and the task's settings. */
+/** Blocks Lab draft: the open block template, its undo history and the task's settings. */
 
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'

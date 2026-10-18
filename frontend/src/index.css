@@ -155,6 +155,11 @@
     var(--spec-status-warning) 12%,
     var(--spec-surface-1)
   );
+  /* Task result rows use deeper, saturated blends: vivid enough to separate outcomes without
+   * competing with the metric text. */
+  --color-pnl-positive-row: color-mix(in oklab, #16853d 28%, var(--spec-surface-1));
+  --color-pnl-negative-row: color-mix(in oklab, #c3383f 28%, var(--spec-surface-1));
+  --color-status-warning-row: color-mix(in oklab, #c87508 28%, var(--spec-surface-1));
   /* Status outlines. */
   --color-pnl-positive-edge: color-mix(
     in oklab,

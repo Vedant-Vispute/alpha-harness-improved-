@@ -27,6 +27,8 @@ export interface EvolutionRequest {
   mutation_rate: number
   /** Needed to add a task; a preview uses it to size the population. */
   simulations?: number
+  /** Names tasks from the Regular Evolution Lab while reusing the same genetic search. */
+  regular?: boolean
 }
 
 const B = '/api/evolution-lab'

@@ -4,7 +4,6 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { CopyIcon } from 'lucide-react'
 import { toast } from 'sonner'
 import { type AlphaCheck, type Scope, scopeLabel } from '@/api/types'
-import { cn } from '@/lib/cn'
 import { fmt, isNum } from '@/lib/format'
 import { marketKey, useScope } from '@/lib/scope'
 import { useRefetchOn } from '@/lib/ws'
@@ -18,18 +17,17 @@ import { Sparkline } from '@/screens/pool/pnl-chart'
 import {
   Badge,
   Button,
-  checkTone,
   Disclosure,
   Empty,
   ErrorNotice,
   Metric,
+  Notice,
   Panel,
   Skeleton,
   type Tone,
 } from '@/ui/kit'
-import { Tooltip } from '@/ui/overlay'
 import { ScopePicker } from '@/ui/scope-picker'
-import { AlphaActionsMenu, AstInspector, checkFigure, OpenInBrain, RecheckButton } from './shared'
+import { AlphaActionsMenu, AstInspector, OpenInBrain, RecheckButton } from './shared'
 
 /** Why Submittable Alphas are missing from Top picks, one clause per reason. */
 const hiddenReasons = (data: SubmittableResponse) =>
@@ -54,6 +52,7 @@ export function Submittable({ onOpen }: { onOpen: (alphaId: string) => void }) {
     placeholderData: keepPreviousData,
   })
   useRefetchOn('simulations', ['pool', 'submittable'], 5000)
+  useRefetchOn('tasks', ['pool', 'submittable'], 5000)
   const data = q.data
 
   return (
@@ -178,8 +177,6 @@ function Card({
   const d0 = a.settings.delay === 0
   const sharpeBar = limitOf(a.checks, 'LOW_SHARPE') ?? (d0 ? 2.69 : 1.58)
   const fitnessBar = limitOf(a.checks, 'LOW_FITNESS') ?? (d0 ? 1.5 : 1.0)
-  const passed = a.checks.filter((c) => c.result === 'PASS')
-
   const copy = () =>
     navigator.clipboard.writeText(a.expression ?? '').then(
       () => toast.success(`Copied the expression of ${a.alphaId}`),
@@ -196,8 +193,18 @@ function Card({
         >
           {a.alphaId}
         </button>
+        {a.rejected && (
+          <Badge tone="loss" title={a.rejectionReason ?? 'Rejected by Alpha quality analysis'}>
+            Rejected
+          </Badge>
+        )}
         <span className="num text-caption text-ink-subtle">{fmt.dateTime(a.dateCreated)}</span>
       </div>
+      {a.rejected && (
+        <Notice tone="error" title="Rejected by Alpha quality analysis">
+          {a.rejectionReason ?? 'This Alpha failed a multi-year quality check.'}
+        </Notice>
+      )}
       <AstInspector expression={a.expression} />
       <SettingsLine settings={a.settings} />
       <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
@@ -248,16 +255,10 @@ function Card({
           />
         </div>
       )}
+      <CheckSummary checks={a.checks} />
       {a.pnl.length > 1 && (
         <div className="rounded-md border border-hairline bg-surface-2 p-2">
           <Sparkline values={a.pnl} label={`Cumulative PnL of ${a.alphaId}`} />
-        </div>
-      )}
-      {passed.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {passed.map((c, i) => (
-            <CheckBadge key={`${c.name}-${i}`} check={c} />
-          ))}
         </div>
       )}
       <div className="flex flex-wrap gap-2 border-t border-hairline-subtle pt-2">
@@ -279,35 +280,59 @@ const limitOf = (checks: AlphaCheck[], name: string) => {
   return isNum(limit) ? limit : null
 }
 
-function CheckBadge({ check }: { check: AlphaCheck }) {
-  const result = check.result ?? 'PENDING'
-  const figures = isNum(check.value)
-    ? `${checkFigure(check.name, check.value)}${isNum(check.limit) ? ` / ${checkFigure(check.name, check.limit)}` : ''}`
-    : null
-  const tone = checkTone(check.result ?? 'PENDING')
+function CheckSummary({ checks }: { checks: AlphaCheck[] }) {
+  const counts = checks.reduce(
+    (summary, check) => {
+      if (check.result === 'PASS') summary.pass += 1
+      else if (check.result === 'WARNING') summary.warning += 1
+      else if (check.result === 'FAIL' || check.result === 'ERROR') summary.fail += 1
+      return summary
+    },
+    { pass: 0, warning: 0, fail: 0 },
+  )
+  const total = counts.pass + counts.warning + counts.fail
+  if (total === 0) return null
+
+  const segments = [
+    { key: 'pass', label: 'pass', count: counts.pass, className: 'bg-pnl-positive' },
+    { key: 'warning', label: 'warnings', count: counts.warning, className: 'bg-status-warning' },
+    { key: 'fail', label: 'fail', count: counts.fail, className: 'bg-pnl-negative' },
+  ]
+
   return (
-    <Tooltip
-      content={`${result}${check.message ? ` · ${check.message}` : figures && isNum(check.limit) ? ' · value / limit' : ''}`}
+    <div
+      className="flex flex-col gap-1.5"
+      role="img"
+      aria-label={`${counts.pass}/${total} pass, ${counts.warning}/${total} warnings, ${counts.fail}/${total} fail`}
     >
-      <span>
-        <span
-          className={cn(
-            'mono-metric inline-flex items-center gap-1 rounded-xs border px-1.5 py-0.5 text-caption',
-            tone === 'profit' &&
-              'border-pnl-positive-edge bg-pnl-positive-tint text-pnl-positive-text',
-            tone === 'loss' &&
-              'border-pnl-negative-edge bg-pnl-negative-tint text-pnl-negative-text',
-            tone === 'warn' &&
-              'border-status-warning-edge bg-status-warning-tint text-status-warning',
-            (tone === 'neutral' || tone === 'muted') &&
-              'border-hairline bg-surface-2 text-ink-subtle',
-          )}
-        >
-          <span>{check.name}</span>
-          {figures && <span className="text-ink-subtle">{figures}</span>}
-        </span>
-      </span>
-    </Tooltip>
+      <div className="flex h-3 w-full overflow-hidden rounded-pill bg-surface-3">
+        {segments.map(
+          (segment) =>
+            segment.count > 0 && (
+              <div
+                key={segment.key}
+                className={segment.className}
+                style={{ width: `${(segment.count / total) * 100}%` }}
+                title={`${segment.count}/${total} ${segment.label}`}
+              />
+            ),
+        )}
+      </div>
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-caption text-ink-subtle">
+        {segments.map(
+          (segment) =>
+            segment.count > 0 && (
+              <span key={segment.key} className="inline-flex items-center gap-1">
+                <span className={`size-2 rounded-pill ${segment.className}`} aria-hidden />
+                <span className="num">
+                  {segment.count}/{total}
+                </span>{' '}
+                {segment.label}
+              </span>
+            ),
+        )}
+      </div>
+    </div>
   )
 }
 

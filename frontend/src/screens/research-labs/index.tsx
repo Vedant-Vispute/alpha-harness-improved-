@@ -1,8 +1,9 @@
-/** Research Labs: every lab, two by two. */
+/** Research Labs hub. */
 
 import { Link } from '@tanstack/react-router'
 import {
   ArrowUpRightIcon,
+  BlocksIcon,
   BracesIcon,
   DnaIcon,
   GlobeIcon,
@@ -11,14 +12,14 @@ import {
   SearchIcon,
   ZapIcon,
 } from 'lucide-react'
+import { useLabMode } from '@/lib/lab-mode'
 import { LAB_TABS } from '@/shell/nav'
 import { Page, PageHeader } from '@/ui/kit'
 
 const ICONS: Record<(typeof LAB_TABS)[number]['tab'], LucideIcon> = {
   search: SearchIcon,
-  template: BracesIcon,
-  evolution: DnaIcon,
-  'power-pool': ZapIcon,
+  'template-blocks': BlocksIcon,
+  'template-expression': BracesIcon,
   'region-agnostic': GlobeIcon,
   'super-alpha': LayersIcon,
 }
@@ -26,12 +27,10 @@ const ICONS: Record<(typeof LAB_TABS)[number]['tab'], LucideIcon> = {
 /** What each one searches, since a name alone does not say which to start with. */
 const ABOUT: Record<(typeof LAB_TABS)[number]['tab'], string> = {
   search: 'Writes one- and two-operator Alphas from the datasets you pick, steering to Sharpe.',
-  template:
-    'Searches a template you type with $variables for fields, values and operators, or one you build from blocks.',
-  evolution: 'Breeds new Alphas from seeds you pick, holding the last two years back as a test.',
-  'power-pool': 'An LLM writes Power Pool Alphas for the datasets you pick.',
+  'template-blocks': 'Build and search Alpha templates with the legacy block builder.',
+  'template-expression': 'Build and search Alpha templates with a Fast Expression.',
   'region-agnostic':
-    'An LLM writes Alphas from region-agnostic fields, each run in every region that carries them.',
+    'Build an ARC Alpha from shared fields, then follow its separate simulation in each selected region.',
   'super-alpha': "Combines your submitted Alphas into SuperAlphas that pass BRAIN's checks.",
 }
 
@@ -73,15 +72,38 @@ export function HubCardBody({
 }
 
 export function ResearchLabsScreen() {
+  const powerPool = useLabMode((s) => s.powerPool)
+  const setPowerPool = useLabMode((s) => s.setPowerPool)
+  const ordinaryLabs = LAB_TABS.filter(
+    (lab) => lab.tab !== 'template-blocks' && lab.tab !== 'template-expression',
+  )
+
   return (
     <Page>
       <PageHeader title="Research Labs" />
       <div className="grid gap-3 sm:grid-cols-2">
-        {LAB_TABS.map((lab, index) => (
+        <ModeCard
+          powerPool={powerPool}
+          setPowerPool={setPowerPool}
+          icon={DnaIcon}
+          label="Evolution Lab"
+          powerPoolTo="/labs/evolution"
+          generalTo="/labs/evolution-general"
+        />
+        <ModeCard
+          powerPool={powerPool}
+          setPowerPool={setPowerPool}
+          icon={ZapIcon}
+          label="LLM Alpha Lab"
+          powerPoolTo="/labs/power-pool"
+          generalTo="/labs/regular-alpha"
+        />
+        <TemplateChoiceCard />
+        {ordinaryLabs.map((lab, index) => (
           <Link key={lab.tab} to={lab.to} className={HUB_CARD}>
             <HubCardBody
               icon={ICONS[lab.tab]}
-              index={index}
+              index={index + 5}
               label={lab.label}
               about={ABOUT[lab.tab]}
             />
@@ -89,5 +111,77 @@ export function ResearchLabsScreen() {
         ))}
       </div>
     </Page>
+  )
+}
+
+function TemplateChoiceCard() {
+  return (
+    <section className="overflow-hidden rounded-lg border border-hairline bg-surface-1">
+      <header className="flex min-h-24 items-center gap-4 border-b border-hairline px-5 py-4">
+        <span className="flex size-11 shrink-0 items-center justify-center rounded-md border border-hairline-strong bg-surface-2 text-ink-muted">
+          <BracesIcon className="size-5" aria-hidden />
+        </span>
+        <h2 className="text-headline font-semibold text-ink">Template Lab</h2>
+      </header>
+      <div className="grid grid-cols-2 divide-x divide-hairline">
+        <Link
+          to="/labs/template/basic"
+          className="flex min-h-32 items-center justify-center px-5 py-4 text-center transition-colors hover:bg-surface-2"
+        >
+          <span className="text-headline font-semibold text-ink">Build with Blocks (Legacy)</span>
+        </Link>
+        <Link
+          to="/labs/template"
+          className="flex min-h-32 items-center justify-center px-5 py-4 text-center transition-colors hover:bg-surface-2"
+        >
+          <span className="text-headline font-semibold text-ink">Build with Expression</span>
+        </Link>
+      </div>
+    </section>
+  )
+}
+
+function ModeCard({
+  powerPool,
+  setPowerPool,
+  icon: Icon,
+  label,
+  powerPoolTo,
+  generalTo,
+}: {
+  powerPool: boolean
+  setPowerPool: (powerPool: boolean) => void
+  icon: LucideIcon
+  label: string
+  powerPoolTo: '/labs/evolution' | '/labs/power-pool'
+  generalTo: '/labs/evolution-general' | '/labs/regular-alpha'
+}) {
+  return (
+    <section className="overflow-hidden rounded-lg border border-hairline bg-surface-1">
+      <header className="flex min-h-24 items-center gap-4 border-b border-hairline px-5 py-4">
+        <span className="flex size-11 shrink-0 items-center justify-center rounded-md border border-hairline-strong bg-surface-2 text-ink-muted">
+          <Icon className="size-5" aria-hidden />
+        </span>
+        <h2 className="text-headline font-semibold text-ink">{label}</h2>
+      </header>
+      <div className="grid grid-cols-2 divide-x divide-hairline">
+        <Link
+          to={powerPoolTo}
+          onClick={() => setPowerPool(true)}
+          aria-current={powerPool ? 'page' : undefined}
+          className={`flex min-h-32 items-center justify-center px-5 py-4 text-center transition-colors hover:bg-surface-2 ${powerPool ? 'bg-surface-2' : 'opacity-55 grayscale'}`}
+        >
+          <span className="text-headline font-semibold text-ink">Power Pool</span>
+        </Link>
+        <Link
+          to={generalTo}
+          onClick={() => setPowerPool(false)}
+          aria-current={!powerPool ? 'page' : undefined}
+          className={`flex min-h-32 items-center justify-center px-5 py-4 text-center transition-colors hover:bg-surface-2 ${!powerPool ? 'bg-surface-2' : 'opacity-55 grayscale'}`}
+        >
+          <span className="text-headline font-semibold text-ink">Regular</span>
+        </Link>
+      </div>
+    </section>
   )
 }

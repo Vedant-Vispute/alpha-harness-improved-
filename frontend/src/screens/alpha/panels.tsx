@@ -83,7 +83,7 @@ function Gauge({ check }: { check: AlphaCheck }) {
   )
 }
 
-function CheckRow({ check }: { check: AlphaCheck }) {
+function CheckRow({ check, showGauge = true }: { check: AlphaCheck; showGauge?: boolean }) {
   const result = resultOf(check)
   const { value, limit } = check
   return (
@@ -116,7 +116,7 @@ function CheckRow({ check }: { check: AlphaCheck }) {
         )}
         <Badge tone={checkTone(result)}>{result}</Badge>
       </div>
-      <Gauge check={check} />
+      {showGauge && <Gauge check={check} />}
     </li>
   )
 }
@@ -192,7 +192,7 @@ export function VerdictPanel({
       {shown.length > 0 && (
         <ul className="divide-y divide-hairline-subtle border-t border-hairline-subtle">
           {shown.map((c, i) => (
-            <CheckRow key={`${c.name}-${i}`} check={c} />
+            <CheckRow key={`${c.name}-${i}`} check={c} showGauge={false} />
           ))}
         </ul>
       )}
@@ -203,16 +203,15 @@ export function VerdictPanel({
 // ── Checks ─────────────────────────────────────────────────────────────────────────────────
 
 export function ChecksPanel({ groups }: { groups: CheckGroups }) {
-  const count = groups.failing.length + groups.pending.length + groups.passing.length
   return (
     <Panel
-      title="Submission checks"
-      description={`${groups.passing.length} of ${count} pass, as BRAIN last reported them`}
+      title="Validation Summary"
+      description={`${groups.passing.length} passed · ${groups.failing.length} failed · ${groups.pending.length} pending`}
       bodyClassName="flex flex-col gap-3 py-2"
     >
       <ul className="divide-y divide-hairline-subtle">
-        {[...groups.failing, ...groups.pending, ...groups.passing].map((c, i) => (
-          <CheckRow key={`${c.name}-${i}`} check={c} />
+        {[...groups.passing, ...groups.failing, ...groups.pending].map((c, i) => (
+          <CheckRow key={`${c.name}-${i}`} check={c} showGauge={false} />
         ))}
       </ul>
       {groups.notes.length > 0 && (
@@ -539,15 +538,17 @@ function CorrelationRow({
   const error = run.error ?? kept.error
 
   return (
-    <li className="flex flex-col gap-2 py-3 first:pt-0 last:pb-0">
+    <li className="flex flex-col gap-1 py-2 first:pt-0 last:pb-0">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <span className="text-body text-ink">{label}</span>
         {isNum(max) && (
           <span
-            className={cn('num text-body', max >= limit ? 'text-pnl-negative-text' : 'text-ink')}
+            className={cn(
+              'num text-body',
+              max < limit ? 'text-pnl-positive-text' : 'text-status-warning',
+            )}
           >
-            max {fmt.ratio(max)}
-            <span className="text-ink-subtle"> of {fmt.ratio(limit, 1)}</span>
+            {fmt.ratio(max)}
           </span>
         )}
         <span className="ml-auto flex items-center gap-2">
@@ -573,7 +574,9 @@ function CorrelationRow({
           <ErrorNotice error={error} title={`${label} did not run`} />
         ))}
       {data && rows.length > 0 && (
-        <Disclosure summary={`${rows.length} most correlated Alphas`}>
+        <Disclosure
+          summary={kind === 'prod' ? 'Prod table' : `${rows.length} most correlated Alphas`}
+        >
           <div className="max-h-64 overflow-auto">
             <table className="w-full text-body-compact">
               <thead>
@@ -623,10 +626,7 @@ function CorrelationRow({
 
 export function CorrelationsPanel({ alphaId }: { alphaId: string }) {
   return (
-    <Panel
-      title="Correlations"
-      description="Each is a slow BRAIN job, so it runs when you ask. Answers are kept here."
-    >
+    <Panel title="Correlations">
       <ul className="divide-y divide-hairline-subtle">
         {KINDS.map((k) => (
           <CorrelationRow key={k.kind} alphaId={alphaId} {...k} />

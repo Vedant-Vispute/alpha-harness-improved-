@@ -126,6 +126,20 @@ ANSWER
 Only JSON: {"alphas": [{"expression": "..."}]} holding exactly 20 different expressions.
 """
 
+REGULAR_ALPHA_LAB = """\
+You write ordinary Alphas for WorldQuant BRAIN in Fast Expression.
+
+Use only the data fields and operators listed in the message, spelled exactly. Each expression
+must use at least one of the chosen dataset's fields. Follow the field-type rules and the
+simulation settings described in the message. Make useful, meaningfully different signals;
+vary fields, lookbacks, comparisons, and combinations instead of changing numbers alone.
+
+The message includes earlier Alphas and their metrics. Build on approaches that worked, avoid
+expressions already tried, and use any Rejected diagnostic to correct the next expressions.
+
+Only JSON: {"alphas": [{"expression": "..."}]} holding exactly 20 different expressions.
+"""
+
 #: Every built-in prompt, as LLM Prompts lists them. Each slug is also a saved prompt's kind.
 PROMPTS = (
     Prompt(
@@ -136,7 +150,7 @@ PROMPTS = (
     ),
     Prompt(
         slug="power_pool_lab",
-        label="LLM Power Pool Lab",
+        label="LLM Alpha Lab · Power Pool",
         purpose=(
             "Writes 20 Power Pool Alphas per call for one dataset, given BRAIN's operators, "
             "the dataset's fields and the task's earlier Alphas with their Sharpe."
@@ -144,11 +158,20 @@ PROMPTS = (
         body=POWER_POOL_LAB,
     ),
     Prompt(
-        slug="region_agnostic_lab",
-        label="Region Agnostic Lab",
+        slug="regular_alpha_lab",
+        label="Regular Alpha Lab",
         purpose=(
-            "Writes 20 Alphas per call from region-agnostic fields, each simulated in every "
-            "chosen region that carries its fields."
+            "Writes 20 ordinary Alphas per call for one dataset, without the Power Pool "
+            "operator or field limits."
+        ),
+        body=REGULAR_ALPHA_LAB,
+    ),
+    Prompt(
+        slug="region_agnostic_lab",
+        label="ARC Alpha Lab",
+        purpose=(
+            "Writes 20 ARC Alphas per call from shared fields, with one regional simulation for "
+            "each selected region that carries the expression's fields."
         ),
         body=REGION_AGNOSTIC_LAB,
     ),

@@ -79,6 +79,17 @@ export const zeroLine = () => ({
   axisLabelVisible: false,
 })
 
+/** A text-only latest-value tag, kept white regardless of the series colour. */
+export const textOnlyValueLabel = (price: number, title = '') => ({
+  price,
+  color: 'rgba(0, 0, 0, 0)',
+  lineVisible: false,
+  axisLabelVisible: true,
+  axisLabelColor: 'rgba(0, 0, 0, 0)',
+  axisLabelTextColor: '#ffffff',
+  title,
+})
+
 /** Distance below the running peak, filled in the loss colour. */
 export function addUnderwater(
   chart: IChartApi,
@@ -132,7 +143,7 @@ export function Sparkline({ values, label }: { values: number[]; label: string }
           stroke="currentColor"
           strokeWidth="1.5"
           vectorEffect="non-scaling-stroke"
-          className="text-ink-muted"
+          className="text-ink"
         />
       </svg>
     </div>
@@ -175,13 +186,15 @@ export function PnlChart({
       handleScale: false,
     })
     const series = chart.addSeries(LineSeries, {
-      color: color('color-ink-muted'),
+      color: '#ffffff',
       lineWidth: 2,
       priceLineVisible: false,
-      lastValueVisible: true,
+      lastValueVisible: false,
     })
     series.setData(values.map((value, index) => ({ time: time(index), value })))
     series.createPriceLine(zeroLine())
+    const latest = values.at(-1)
+    if (latest !== undefined) series.createPriceLine(textOnlyValueLabel(latest))
     let peak = Number.NEGATIVE_INFINITY
     addUnderwater(chart, 1).setData(
       values.map((value, index) => {

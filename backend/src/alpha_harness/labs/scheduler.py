@@ -16,6 +16,7 @@ from ..brain.schemas import SimulationRequest, SimulationSettings, SimulationTyp
 from ..brain.settings_schema import validate_settings
 from ..db.models import SimStatus, SimulationRecord, Study, StudyStatus, Trial, TrialState, utcnow
 from ..engine.packer import MAX_BATCH
+from ..tasks import spawn
 from . import ga, search, template, template_v1
 from .objectives import StudyNotFoundError
 from .params import (
@@ -23,6 +24,8 @@ from .params import (
     GA_SAMPLER,
     POWER_POOL_SAMPLER,
     REGION_AGNOSTIC_SAMPLER,
+    REGULAR_ALPHA_SAMPLER,
+    REGULAR_GA_SAMPLER,
     SEARCH_SAMPLER,
     SETTINGS_SAMPLER,
     SUPER_LAB,
@@ -300,10 +303,26 @@ async def advance(optimizer: Optimizer, study_id: int) -> int:
                 return await send_parked(optimizer, row, owed)
     if stopping or committed >= row.max_trials:
         if not waiting:
+            if row.sampler in (POWER_POOL_SAMPLER, REGULAR_ALPHA_SAMPLER):
+                from . import power_pool
+
+                spawn(
+                    power_pool.analyze_all_completed(optimizer, row.id),
+                    name=f"power-pool-analysis-{row.id}",
+                )
             await optimizer.set_status(study_id, StudyStatus.COMPLETE)
         return 0
     want = to_ask(room, int(in_flight or 0), row.max_trials - committed)
-    if row.sampler in (GA_SAMPLER, SEARCH_SAMPLER, TEMPLATE_SAMPLER) and want > 0:
+    if (
+        row.sampler
+        in (
+            GA_SAMPLER,
+            REGULAR_GA_SAMPLER,
+            SEARCH_SAMPLER,
+            TEMPLATE_SAMPLER,
+        )
+        and want > 0
+    ):
         # Only after a crash between writing a round's trials and sending them (`_queue`).
         async with optimizer.db.session() as session:
             leftovers = (
@@ -320,9 +339,9 @@ async def advance(optimizer: Optimizer, study_id: int) -> int:
             ).all()
             if leftovers:
                 return await send_parked(optimizer, row, leftovers)
-    if row.sampler == GA_SAMPLER:
+    if row.sampler in (GA_SAMPLER, REGULAR_GA_SAMPLER):
         return await _breed(optimizer, row, last_number, want, waiting)
-    if row.sampler in (POWER_POOL_SAMPLER, REGION_AGNOSTIC_SAMPLER):
+    if row.sampler in (POWER_POOL_SAMPLER, REGULAR_ALPHA_SAMPLER, REGION_AGNOSTIC_SAMPLER):
         from . import power_pool  # imported here: labs.power_pool builds on this module
 
         return await power_pool.refill(optimizer, row, want, waiting)
@@ -588,6 +607,7 @@ def park_message(sampler: str) -> str | None:
         SETTINGS_SAMPLER: PENDING_SEND,
         CORRELATION_BREAKER: PENDING_SEND,
         POWER_POOL_SAMPLER: PROPOSED,
+        REGULAR_ALPHA_SAMPLER: PROPOSED,
         REGION_AGNOSTIC_SAMPLER: PROPOSED,
     }.get(sampler)
 

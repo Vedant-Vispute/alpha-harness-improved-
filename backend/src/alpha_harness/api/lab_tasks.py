@@ -20,7 +20,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, update
 
 from ..brain.errors import BrainError, BrainRateLimited
+from ..brain.schemas import REGION_AGNOSTIC_REGION, SimulationRequest, SimulationSettings
+from ..brain.settings_schema import validate_settings
 from ..db.models import (
+    ArcSimulation,
     BrainCache,
     SimStatus,
     SimulationRecord,
@@ -41,10 +44,13 @@ from ..labs.params import (
     GA_SAMPLER,
     LLM_SAMPLERS,
     REGION_AGNOSTIC_SAMPLER,
+    REGULAR_GA_SAMPLER,
     SETTINGS_SAMPLER,
     TASK_SAMPLERS,
     TEMPLATE_SAMPLER,
     PowerPoolParams,
+    RegionAgnosticParams,
+    params_of,
     task_params,
 )
 from ..labs.study import ranked
@@ -136,7 +142,7 @@ class LabTask(Out):
     dataset_names: list[str] = Field(default_factory=list)
     #: Single fields the task was told to use, when it was; zero uses its datasets whole.
     chosen_fields: int = 0
-    #: LLM Power Pool Lab only: the prompt it sends and the model it asks.
+    #: LLM Alpha Lab only: the prompt it sends and the model it asks.
     prompt_name: str | None = None
     model: str | None = None
     fields: int
@@ -203,6 +209,7 @@ class RankedAlpha(Out):
     prod_correlation: float | None = None
     feasible: bool | None
     failed_checks: list[str]
+    check_counts: dict[str, int] = Field(default_factory=dict)
     #: Of ``failed_checks``, those that gate submission. A check BRAIN fails for a reason
     #: that is nothing to do with the Alpha is left out, so an empty list means submittable.
     refused_by: list[str]
@@ -224,6 +231,8 @@ class RankedAlpha(Out):
     #: A check that decides submission came back ERROR: BRAIN could not judge it, which is
     #: told apart from an Alpha a check refused.
     errored: bool = False
+    rejected: bool = False
+    rejection_reason: str | None = None
 
 
 class WorkflowStarted(Out):
@@ -756,7 +765,7 @@ async def continue_task(task_id: int, body: ContinueTask, state: State) -> LabTa
 class CloneTask(BaseModel):
     #: Its target; omitted copies the original's.
     simulations: int | None = Field(default=None, ge=1, le=search.MAX_SIMULATIONS)
-    #: LLM Power Pool Lab only: send another prompt. With ``prompt_id`` null, the built-in.
+    #: LLM Alpha Lab only: send another prompt. With ``prompt_id`` null, the built-in.
     change_prompt: bool = False
     prompt_id: int | None = None
     #: Queue it at once rather than leaving it Not Started.
@@ -794,7 +803,7 @@ async def clone(task_id: int, body: CloneTask, state: State) -> AddedTask:
                     .order_by(Trial.number)
                 )
             ).all()
-        elif row.sampler == GA_SAMPLER:
+        elif row.sampler in (GA_SAMPLER, REGULAR_GA_SAMPLER):
             written = (
                 await session.scalars(
                     select(Trial)
@@ -807,7 +816,7 @@ async def clone(task_id: int, body: CloneTask, state: State) -> AddedTask:
     now = utcnow()
 
     def seeds(study_id: int) -> list[Trial]:
-        if row.sampler == GA_SAMPLER:
+        if row.sampler in (GA_SAMPLER, REGULAR_GA_SAMPLER):
             return [
                 Trial(
                     study_id=study_id,
@@ -938,7 +947,7 @@ class TaskDataset(Out):
 
 
 class TaskCall(Out):
-    """One LLM call of an LLM Power Pool Lab task."""
+    """One LLM call of an LLM Alpha Lab task."""
 
     at: str | None
     dataset: str | None
@@ -1152,6 +1161,38 @@ NOT_FITNESS = ("THEME", "CLUSTER", "PYRAMID")
 
 #: Tasks being calibrated now, so the view can say so and wait.
 _calibrating: set[int] = set()
+_arc_simulation_lock = asyncio.Lock()
+
+
+class ArcSimulationView(Out):
+    state: Literal["queued", "running", "complete", "failed"]
+    progress: float | None = None
+    alpha_id: str | None = None
+    message: str | None = None
+
+
+def _arc_simulation_view(record: SimulationRecord | None) -> ArcSimulationView | None:
+    if record is None:
+        return None
+    if record.status == SimStatus.QUEUED:
+        state = "queued"
+    elif record.status in (SimStatus.PENDING, SimStatus.RUNNING, SimStatus.ORPHANED):
+        state = "running"
+    elif (
+        record.status in (SimStatus.COMPLETE, SimStatus.WARNING, SimStatus.SKIPPED)
+        and record.alpha_id
+    ):
+        state = "complete"
+    elif record.status == SimStatus.SKIPPED and not record.alpha_id:
+        state = "running"
+    else:
+        state = "failed"
+    return ArcSimulationView(
+        state=state,
+        progress=1.0 if state == "complete" else record.progress,
+        alpha_id=record.alpha_id,
+        message=record.message,
+    )
 
 
 class GroupAlpha(Out):
@@ -1179,6 +1220,7 @@ class AlphaGroup(Out):
     neutralization: str | None
     decay: int | None
     truncation: float | None
+    arc_simulation: ArcSimulationView | None = None
     alphas: list[GroupAlpha]
     passed: int
     failed: int
@@ -1246,9 +1288,20 @@ async def groups(task_id: int, state: State) -> AlphaGroups:
     """
     row = await _one(state, task_id)
     if row.sampler != REGION_AGNOSTIC_SAMPLER:
-        raise refuse(422, "not_region_agnostic", "Only a Region Agnostic Lab task has groups.")
+        raise refuse(422, "not_region_agnostic", "Only an ARC Alpha Lab task has groups.")
     trials = await _group_rows(state, task_id)
     stored = await state.alphas.by_ids([t.alpha_id for t in trials if t.alpha_id])
+    async with state.db.session() as session:
+        arc_rows = (
+            await session.execute(
+                select(ArcSimulation, SimulationRecord)
+                .outerjoin(
+                    SimulationRecord, SimulationRecord.id == ArcSimulation.simulation_record_id
+                )
+                .where(ArcSimulation.study_id == task_id)
+            )
+        ).all()
+    arc_by_group = {arc.group_id: _arc_simulation_view(record) for arc, record in arc_rows}
     by_group: dict[int, list[Trial]] = {}
     for t in trials:
         # ``is None``, not ``or``: the first Alpha a task writes is group 0.
@@ -1300,6 +1353,7 @@ async def groups(task_id: int, state: State) -> AlphaGroups:
                 neutralization=first.get("neutralization"),
                 decay=first.get("decay"),
                 truncation=first.get("truncation"),
+                arc_simulation=arc_by_group.get(group),
                 alphas=alphas,
                 passed=sum(a.passed for a in alphas),
                 failed=sum(a.failed for a in alphas),
@@ -1328,6 +1382,79 @@ async def groups(task_id: int, state: State) -> AlphaGroups:
     )
 
 
+@router.post("/{task_id}/groups/{group_id}/arc-simulation", status_code=202)
+async def run_arc_simulation(task_id: int, group_id: int, state: State) -> ArcSimulationView:
+    """Queue the expression once in BRAIN's ALL region, then expose its parent Alpha result."""
+    row = await _one(state, task_id)
+    if row.sampler != REGION_AGNOSTIC_SAMPLER:
+        raise refuse(422, "not_arc_task", "Only an ARC Alpha Lab task has ARC Alpha groups.")
+
+    members = []
+    for trial in await _group_rows(state, task_id):
+        raw_group = (trial.params or {}).get("group")
+        if (trial.number if raw_group is None else int(raw_group)) == group_id:
+            members.append(trial)
+    expression = next((trial.expression for trial in members if trial.expression), None)
+    if not expression:
+        raise refuse(409, "expression_not_ready", "This ARC Alpha expression is not ready yet.")
+
+    params = params_of(row, RegionAgnosticParams)
+    if not params.universe:
+        raise refuse(
+            409, "all_universe_missing", "The task has no All Regions universe to simulate."
+        )
+    source_settings = members[0].settings or {}
+    settings = SimulationSettings.model_validate(
+        {
+            **source_settings,
+            "region": REGION_AGNOSTIC_REGION,
+            "universe": params.universe,
+            "delay": params.delay,
+        }
+    )
+    serialized = settings.model_dump(by_alias=True, exclude_none=True)
+    problems = validate_settings(
+        await state.metadata.cached_settings_schema(), serialized, require_all=True
+    )
+    if problems:
+        raise refuse(422, "arc_settings_unavailable", problems[0])
+    request = SimulationRequest(settings=settings, regular=expression)
+
+    async with _arc_simulation_lock:
+        async with state.db.session() as session:
+            existing = await session.scalar(
+                select(ArcSimulation).where(
+                    ArcSimulation.study_id == task_id,
+                    ArcSimulation.group_id == group_id,
+                )
+            )
+            existing_record = (
+                await session.get(SimulationRecord, existing.simulation_record_id)
+                if existing and existing.simulation_record_id
+                else None
+            )
+        current = _arc_simulation_view(existing_record)
+        if current and current.state in ("queued", "running", "complete"):
+            return current
+
+        result = await state.engine.enqueue([request], task=f"arc:{task_id}:{group_id}")
+        outcome = result["outcomes"][0]
+        async with state.db.session() as session:
+            association = await session.scalar(
+                select(ArcSimulation).where(
+                    ArcSimulation.study_id == task_id,
+                    ArcSimulation.group_id == group_id,
+                )
+            )
+            if association is None:
+                association = ArcSimulation(study_id=task_id, group_id=group_id)
+                session.add(association)
+            association.simulation_record_id = int(outcome["recordId"])
+        async with state.db.session() as session:
+            record = await session.get(SimulationRecord, int(outcome["recordId"]))
+        return _arc_simulation_view(record) or ArcSimulationView(state="queued")
+
+
 @router.post("/{task_id}/calibrate", status_code=202)
 async def calibrate(task_id: int, state: State) -> WorkflowStarted:
     """Run BRAIN's submission checks on every Alpha the task has back, without submitting.
@@ -1337,7 +1464,7 @@ async def calibrate(task_id: int, state: State) -> WorkflowStarted:
     """
     row = await _one(state, task_id)
     if row.sampler != REGION_AGNOSTIC_SAMPLER:
-        raise refuse(422, "not_region_agnostic", "Only a Region Agnostic Lab task calibrates.")
+        raise refuse(422, "not_region_agnostic", "Only an ARC Alpha Lab task calibrates.")
     ids = list(
         dict.fromkeys(
             t.alpha_id

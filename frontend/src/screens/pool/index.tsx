@@ -3,24 +3,24 @@
  * on BRAIN: this screen links there and never submits.
  */
 
-import { Link, useParams } from '@tanstack/react-router'
-import { useState } from 'react'
+import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { POOL_TABS } from '@/shell/nav'
 import { Empty, LINK, Page, PageHeader, Panel, TabBar, TabLink } from '@/ui/kit'
-import { DetailSheet } from './detail'
 import { Stored } from './stored'
 import { Submittable } from './submittable'
-import { AlphaCounts, SyncAlphasButton } from './vault'
+import { AlphaCounts, AnalyzeAlphasButton, SyncAlphasButton } from './vault'
 
 export function PoolScreen() {
   const { tab } = useParams({ from: '/pool/$tab' })
-  const [detailId, setDetailId] = useState<string | null>(null)
+  const navigate = useNavigate()
+  const openAlpha = (alphaId: string) =>
+    void navigate({ to: '/alpha/$alphaId', params: { alphaId } })
 
   const body =
     tab === 'stored' ? (
-      <Stored onOpen={setDetailId} />
+      <Stored onOpen={openAlpha} />
     ) : tab === 'submittable' ? (
-      <Submittable onOpen={setDetailId} />
+      <Submittable onOpen={openAlpha} />
     ) : (
       <Panel>
         <Empty title={`No tab called “${tab}”`}>
@@ -33,7 +33,15 @@ export function PoolScreen() {
 
   return (
     <Page>
-      <PageHeader title="Alphas" actions={<SyncAlphasButton />} />
+      <PageHeader
+        title="Alphas"
+        actions={
+          <>
+            <AnalyzeAlphasButton />
+            <SyncAlphasButton />
+          </>
+        }
+      />
       <AlphaCounts />
       <TabBar>
         {POOL_TABS.map((t) => (
@@ -43,7 +51,6 @@ export function PoolScreen() {
         ))}
       </TabBar>
       {body}
-      <DetailSheet alphaId={detailId} onClose={() => setDetailId(null)} />
     </Page>
   )
 }

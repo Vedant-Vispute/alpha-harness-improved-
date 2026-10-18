@@ -490,8 +490,8 @@ export function Models() {
       >
         {setUp.length === 0 ? (
           <Empty title="No model set up yet" className="m-4">
-            Pick a model your Key can reach and give it the limits your provider shows you. The
-            assistant and the Power Pool Lab use only the models set up here.
+            Pick a model your Key can reach and give it the limits your provider shows you. The the
+            Assistant and LLM labs use only the models set up here.
           </Empty>
         ) : (
           <DataTable

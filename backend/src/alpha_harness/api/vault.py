@@ -11,6 +11,7 @@ from ..brain.filters import AlphaQuery
 from ..schemas import Out
 from ..vault import yields
 from ..vault.yields import PLATFORM_ALPHA_URL, checks_of
+from .alpha_feedback import feedback_for
 from .deps import State, refuse
 
 router = APIRouter(prefix="/api/vault", tags=["vault"])
@@ -77,6 +78,8 @@ class SubmittableAlpha(Out):
     test_sharpe: float | None
     #: BRAIN's own check results, as stored.
     checks: list[dict[str, Any]]
+    rejected: bool = False
+    rejection_reason: str | None = None
     #: At most 120 points.
     pnl: list[float]
     brain_url: str
@@ -138,6 +141,8 @@ class AlphaRow(Out):
     pyramids: list[str] = Field(default_factory=list)
     train_sharpe: float | None = None
     test_sharpe: float | None = None
+    rejected: bool = False
+    rejection_reason: str | None = None
     #: Picking seeds only: the region a region-agnostic Alpha's figures come from.
     standing_region: str | None = None
 
@@ -152,12 +157,18 @@ class SyncStarted(Out):
     since: str | None
 
 
+class QualityAnalysisStarted(Out):
+    task_id: str
+
+
 class AlphaDetail(Out):
     alpha_id: str
     expression: str | None
     settings: AlphaSettings
     checks: list[dict[str, Any]]
     brain_url: str
+    rejected: bool = False
+    rejection_reason: str | None = None
 
 
 class AlphaPnl(Out):
@@ -206,6 +217,16 @@ async def submittable(
         instrument_type=instrument_type,
         limit=limit,
     )
+    ids = list(
+        dict.fromkeys(
+            str(row["alphaId"]) for row in [*found.get("shortlist", []), *found.get("alphas", [])]
+        )
+    )
+    analyses = await feedback_for(state.db, ids, state.alphas)
+    for row in [*found.get("shortlist", []), *found.get("alphas", [])]:
+        diagnostic = analyses.get(str(row["alphaId"]), {})
+        row["rejected"] = bool(diagnostic.get("rejected"))
+        row["rejectionReason"] = diagnostic.get("reason")
     # Without a series a candidate cannot be de-correlated against the others.
     state.backfill.schedule_returns(found.pop("pnlMissing"))
     return SubmittableResponse.model_validate(found)
@@ -215,7 +236,7 @@ async def submittable(
 
 
 class AlphaPageRequest(BaseModel):
-    submitted: bool = False
+    submitted: bool | None = False
     sort_by: str = "date_created"
     sort_desc: bool = True
     regions: list[str] | None = None
@@ -226,6 +247,7 @@ class AlphaPageRequest(BaseModel):
     search: str | None = None
     #: Only Alphas the Evolution Lab can breed from, for when this table is a seed picker.
     evolvable: bool = False
+    rejected_only: bool = False
     limit: int = Field(default=100, ge=1, le=500)
     offset: int = Field(default=0, ge=0)
 
@@ -233,7 +255,15 @@ class AlphaPageRequest(BaseModel):
 @router.post("/alphas/query")
 async def query_alphas(body: AlphaPageRequest, state: State) -> AlphaPage:
     """The Simulations table: stored alphas, sorted and filtered locally."""
-    return AlphaPage.model_validate(await state.alphas.page(**body.model_dump()))
+    payload = await state.alphas.page(**body.model_dump())
+    analysis = await feedback_for(
+        state.db, [str(r["alphaId"]) for r in payload["results"]], state.alphas
+    )
+    for row in payload["results"]:
+        diagnostic = analysis.get(str(row["alphaId"]), {})
+        row["rejected"] = bool(diagnostic.get("rejected"))
+        row["rejectionReason"] = diagnostic.get("reason")
+    return AlphaPage.model_validate(payload)
 
 
 @router.post("/sync")
@@ -257,6 +287,13 @@ async def sync_alphas(state: State) -> SyncStarted:
     return SyncStarted(task_id=task_id, since=since.isoformat() if since else None)
 
 
+@router.post("/analyze-quality")
+async def analyze_quality(state: State) -> QualityAnalysisStarted:
+    """Analyze every stored Alpha that does not yet have a quality verdict."""
+    task_id = await state.backfill.start_quality_analysis()
+    return QualityAnalysisStarted(task_id=task_id)
+
+
 @router.get("/alphas/{alpha_id}/detail")
 async def alpha_detail(alpha_id: str, state: State) -> AlphaDetail:
     """One stored alpha: its expression, settings and checks. Local only, so it answers at once;
@@ -266,6 +303,7 @@ async def alpha_detail(alpha_id: str, state: State) -> AlphaDetail:
         raise refuse(
             404, "unknown_alpha", f"{alpha_id} is not stored here yet. Sync from BRAIN first."
         )
+    diagnostic = (await feedback_for(state.db, [alpha_id], state.alphas)).get(alpha_id, {})
     return AlphaDetail.model_validate(
         {
             "alphaId": alpha_id,
@@ -276,6 +314,8 @@ async def alpha_detail(alpha_id: str, state: State) -> AlphaDetail:
             },
             "checks": checks_of(row.get("checks")),
             "brainUrl": f"{PLATFORM_ALPHA_URL}{alpha_id}",
+            "rejected": bool(diagnostic.get("rejected")),
+            "rejectionReason": diagnostic.get("reason"),
         }
     )
 

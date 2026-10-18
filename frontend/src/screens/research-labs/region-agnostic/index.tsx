@@ -1,7 +1,6 @@
 /**
- * Region Agnostic Lab: an LLM writes Alphas from region-agnostic fields, and each runs as an
- * ordinary simulation in every chosen region that carries its fields, the settings the same
- * but for the region. BRAIN runs two region-agnostic simulations at a time; this runs none.
+ * ARC Alpha Lab: an LLM writes one expression at a time, then the harness runs it in each
+ * selected region and keeps those regional results together as one ARC Alpha.
  */
 
 import { useQuery } from '@tanstack/react-query'
@@ -40,7 +39,6 @@ import {
   Disclosure,
   ErrorNotice,
   Fieldset,
-  Metric,
   Notice,
   Page,
   PageHeader,
@@ -169,8 +167,8 @@ export function RegionAgnosticLabScreen() {
   return (
     <Page>
       <PageHeader
-        title="Region Agnostic Lab"
-        description="Region-agnostic fields, written into Alphas by an LLM and run as ordinary simulations in every region that carries them: the same settings but the region, ten to a core. Results come back grouped by Alpha, a row per region."
+        title="ARC Alpha Lab"
+        description="Build one Alpha from fields shared across regions. The harness schedules its regional simulations across your chosen cores, then keeps the results together as one ARC Alpha. BRAIN allows two ARC simulations at a time."
         actions={<AddTaskButtons add={add} disabled={!ready} />}
       />
       {options.isError && <ErrorNotice error={options.error} title="Could not load the options" />}
@@ -191,8 +189,8 @@ export function RegionAgnosticLabScreen() {
       <DatasetsPanel {...panel}>
         <div className="flex flex-col gap-4">
           <p className="text-body-compact text-pretty text-ink-subtle">
-            Choose Datasets or Fields opens the All Regions market. There, More filters has Regions
-            per field: keep to fields two or more regions carry, then tick the ones to use.
+            Choose fields from All Regions. Fields need coverage in at least two selected regions to
+            contribute to an ARC Alpha.
           </p>
           <Fieldset
             legend="Prompt"
@@ -244,24 +242,28 @@ export function RegionAgnosticLabScreen() {
               />
             </Fieldset>
           </div>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {regions.map((region) => {
-              const o = offered.find((x) => x.region === region)
-              const count = plan?.perRegion.find((p) => p.region === region)?.fields
-              return (
-                <Fieldset
-                  key={region}
-                  legend={`${region} universe`}
-                  hint={count === undefined ? undefined : `${fmt.int(count)} of the fields here`}
-                >
-                  <span className="num text-body text-ink">{universeOf(region) || '—'}</span>
-                  {o && !o.universes.includes(universeOf(region)) && (
-                    <span className="text-body-compact text-pnl-negative">Not downloaded</span>
-                  )}
-                </Fieldset>
-              )
-            })}
-          </div>
+          <Disclosure summary="Region universes and field coverage">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {regions.map((region) => {
+                const o = offered.find((x) => x.region === region)
+                const count = plan?.perRegion.find((p) => p.region === region)?.fields
+                return (
+                  <Fieldset
+                    key={region}
+                    legend={`${region} universe`}
+                    hint={
+                      count === undefined ? undefined : `${fmt.int(count)} of the chosen fields`
+                    }
+                  >
+                    <span className="num text-body text-ink">{universeOf(region) || '—'}</span>
+                    {o && !o.universes.includes(universeOf(region)) && (
+                      <span className="text-body-compact text-pnl-negative">Not downloaded</span>
+                    )}
+                  </Fieldset>
+                )
+              })}
+            </div>
+          </Disclosure>
         </div>
       </Panel>
 
@@ -299,21 +301,20 @@ export function RegionAgnosticLabScreen() {
               hint="Only what every chosen region offers. None chosen draws from all of them; each Alpha gets one, the same in every region."
             />
           )}
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Metric boxed label="Fields" value={fmt.int(plan?.fields)} hint="Chosen, ranked" />
-            <Metric boxed label="Regions" value={fmt.int(regions.length)} />
-            <Metric
-              boxed
-              label="LLM Calls"
-              value={fmt.int(plan?.llmCalls)}
-              hint="20 Alphas each, a simulation per region"
-            />
-            <Metric
-              boxed
-              label="Single-region fields"
-              value={fmt.int(plan?.lonely)}
-              hint="Need another field beside them"
-            />
+          <div className="flex flex-wrap gap-x-4 gap-y-1 rounded-md border border-hairline bg-surface-1 px-3 py-2 text-body-compact text-ink-muted">
+            <span>
+              <strong className="num text-ink">{fmt.int(plan?.fields)}</strong> fields
+            </span>
+            <span>
+              <strong className="num text-ink">{fmt.int(regions.length)}</strong> regions
+            </span>
+            <span>
+              <strong className="num text-ink">~{fmt.int(plan?.llmCalls)}</strong> LLM calls
+            </span>
+            <span title="These fields need another shared field beside them">
+              <strong className="num text-ink">{fmt.int(plan?.lonely)}</strong> fields only in one
+              selected region
+            </span>
           </div>
           {preview.isError && <ErrorNotice error={preview.error} title="Could not plan the task" />}
           {plan?.problems.map((m) => (

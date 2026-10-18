@@ -539,9 +539,10 @@ function SelectionLists({ scope, onOpen }: { scope: Scope; onOpen: (id: string) 
 /** The labs a selection of fields can be sent to. */
 const FIELD_LABS: { label: string; to: PickFrom }[] = [
   { label: 'Search Lab', to: '/labs/search' },
-  { label: 'Basic Template Research', to: '/labs/template/basic' },
-  { label: 'LLM Power Pool Lab', to: '/labs/power-pool' },
-  { label: 'Region Agnostic Lab', to: '/labs/region-agnostic' },
+  { label: 'Build with Blocks (Legacy)', to: '/labs/template/basic' },
+  { label: 'LLM Alpha Lab', to: '/labs/power-pool' },
+  { label: 'Regular LLM Alpha Lab', to: '/labs/regular-alpha' },
+  { label: 'ARC Alpha Lab', to: '/labs/region-agnostic' },
 ]
 
 /**

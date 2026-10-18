@@ -5,7 +5,15 @@
 
 import { type QueryClient, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useSearch } from '@tanstack/react-router'
-import { CopyIcon, LockIcon, PlusIcon, ScrollTextIcon, Trash2Icon } from 'lucide-react'
+import {
+  ChevronRightIcon,
+  CopyIcon,
+  PlusIcon,
+  ScrollTextIcon,
+  SearchIcon,
+  Trash2Icon,
+  XIcon,
+} from 'lucide-react'
 import { useCallback, useDeferredValue, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { errorMessage } from '@/api/http'
@@ -13,6 +21,7 @@ import { cn } from '@/lib/cn'
 import { fmt } from '@/lib/format'
 import {
   Button,
+  Disclosure,
   Empty,
   ErrorNotice,
   Field,
@@ -42,7 +51,7 @@ import {
 import { diffCounts, diffWords } from './diff'
 
 const TEXT =
-  'num min-h-[60vh] resize-y text-body-compact leading-relaxed whitespace-pre-wrap text-ink'
+  'num min-h-[50vh] resize-y text-body-compact leading-relaxed whitespace-pre-wrap text-ink'
 
 /** Change one saved prompt in the cached library, so the list and every picker agree at once. */
 function patchLibrary(queryClient: QueryClient, id: number, patch: Partial<LibraryPrompt>) {
@@ -65,6 +74,7 @@ export function PromptsScreen() {
   const all = library.data?.prompts ?? []
   const kinds = library.data?.kinds ?? []
   const current = all.find((p) => promptKey(p) === String(open)) ?? all[0]
+  const [search, setSearch] = useState('')
 
   const select = useCallback(
     (key: string) =>
@@ -85,6 +95,7 @@ export function PromptsScreen() {
         const saved = lib.prompts.filter((p) => !p.builtIn)
         return { ...lib, prompts: [...builtIns, row, ...saved] }
       })
+      setSearch('')
       select(promptKey(row))
       toast.success(`Saved “${row.name}”`)
     },
@@ -94,7 +105,7 @@ export function PromptsScreen() {
     <Page>
       <PageHeader
         title="LLM Prompts"
-        description="The instructions a model gets before anything else. Built-in prompts stay as they are; save a copy to change one, then choose it next to the datasets in LLM Power Pool Lab, or in the Assistant."
+        description="Manage the instructions used by LLM Alpha Lab and the Assistant."
         actions={
           <Menu
             trigger={
@@ -116,9 +127,20 @@ export function PromptsScreen() {
       {!library.data ? (
         !library.isError && <Skeleton className="h-96" />
       ) : (
-        <SplitPane id="llm-prompts" first={{ default: 300, min: 220, max: 460 }}>
-          <Panel title="Library" bodyClassName="p-2">
-            <PromptList kinds={kinds} prompts={all} current={current} onSelect={select} />
+        <SplitPane id="llm-prompts" first={{ default: 360, min: 280, max: 500 }}>
+          <Panel
+            title="Prompt library"
+            description="Choose a prompt to view or edit it."
+            bodyClassName="p-3"
+          >
+            <PromptList
+              kinds={kinds}
+              prompts={all}
+              current={current}
+              search={search}
+              onSearch={setSearch}
+              onSelect={select}
+            />
           </Panel>
           {current ? (
             <Editor
@@ -145,58 +167,120 @@ function PromptList({
   kinds,
   prompts: all,
   current,
+  search,
+  onSearch,
   onSelect,
 }: {
   kinds: PromptKind[]
   prompts: LibraryPrompt[]
   current: LibraryPrompt | undefined
+  search: string
+  onSearch: (value: string) => void
   onSelect: (key: string) => void
 }) {
+  const needle = search.trim().toLocaleLowerCase()
+  const groups = kinds
+    .map((kind) => ({
+      kind,
+      prompts: all.filter(
+        (prompt) =>
+          prompt.kind === kind.slug &&
+          (!needle || prompt.name.toLocaleLowerCase().includes(needle)),
+      ),
+    }))
+    .filter((group) => group.prompts.length > 0)
+
   return (
-    <div className="flex max-h-[75vh] flex-col gap-3 overflow-auto">
-      {kinds.map((k) => (
-        <section key={k.slug} aria-label={k.label} className="flex flex-col gap-0.5">
-          <h3 className="px-2 pt-1 pb-0.5 text-caption font-medium text-ink-subtle">{k.label}</h3>
-          <ul className="flex flex-col gap-0.5">
-            {all
-              .filter((p) => p.kind === k.slug)
-              .map((p) => {
-                const active = current !== undefined && promptKey(p) === promptKey(current)
-                return (
-                  <li key={promptKey(p)}>
-                    <button
-                      type="button"
-                      onClick={() => onSelect(promptKey(p))}
-                      aria-current={active ? 'true' : undefined}
-                      className={cn(
-                        'flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface-2',
-                        active && 'bg-surface-2',
-                      )}
-                    >
-                      <span
-                        className={cn(
-                          'flex items-center gap-1.5 truncate text-body',
-                          active ? 'text-ink' : 'text-ink-muted',
-                        )}
-                      >
-                        {p.builtIn && <LockIcon className="size-3 shrink-0 text-ink-subtle" />}
-                        <span className="truncate">{p.name || 'Untitled'}</span>
-                      </span>
-                      <span className="num truncate text-body-compact text-ink-subtle">
-                        {p.builtIn ? 'Built-in' : fmt.ago(p.updatedAt)} · {fmt.int(p.words)} words
-                      </span>
-                    </button>
-                  </li>
-                )
-              })}
-          </ul>
-        </section>
-      ))}
+    <div className="flex max-h-[75vh] min-h-72 flex-col gap-3">
+      <div className="relative shrink-0">
+        <SearchIcon
+          className="pointer-events-none absolute top-1/2 left-3.5 size-3.5 -translate-y-1/2 text-ink-tertiary"
+          aria-hidden
+        />
+        <Input
+          aria-label="Search prompts"
+          placeholder="Search prompts"
+          className="h-10 pl-9 pr-9"
+          value={search}
+          onChange={(event) => onSearch(event.target.value)}
+        />
+        {search && (
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            className="absolute top-1/2 right-2 -translate-y-1/2"
+            aria-label="Clear prompt search"
+            onClick={() => onSearch('')}
+          >
+            <XIcon />
+          </Button>
+        )}
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto">
+        {groups.length ? (
+          <div className="flex flex-col gap-5">
+            {groups.map(({ kind, prompts }) => (
+              <section
+                key={kind.slug}
+                aria-label={`Prompts for ${kind.label}`}
+                className="flex flex-col gap-2"
+              >
+                <h3
+                  className="flex min-h-12 items-center justify-between gap-3 rounded-md border border-white/10 border-l-4 px-3 py-2 text-title font-semibold text-white shadow-sm"
+                  style={{
+                    backgroundImage:
+                      'linear-gradient(105deg, color-mix(in oklab, #0f3156 55%, var(--color-surface-2)), color-mix(in oklab, #0d463c 48%, var(--color-surface-2)))',
+                    borderLeftColor: 'color-mix(in oklab, #28665c 48%, var(--color-surface-2))',
+                  }}
+                >
+                  <span className="truncate">{kind.label}</span>
+                  <span className="num rounded-pill border border-white/10 bg-black/15 px-2.5 py-0.5 text-caption font-semibold text-white">
+                    {prompts.length}
+                  </span>
+                </h3>
+                <ul className="flex flex-col gap-1.5">
+                  {prompts.map((prompt) => {
+                    const active = current !== undefined && promptKey(prompt) === promptKey(current)
+                    return (
+                      <li key={promptKey(prompt)}>
+                        <button
+                          type="button"
+                          onClick={() => onSelect(promptKey(prompt))}
+                          aria-current={active ? 'true' : undefined}
+                          className={cn(
+                            'flex min-h-10 w-full items-center justify-between gap-3 rounded-md border px-3 py-2 text-left text-body transition-colors',
+                            active
+                              ? 'border-primary/50 bg-primary-subtle text-ink'
+                              : 'border-hairline bg-surface-1 text-ink-muted hover:border-hairline-strong hover:bg-surface-2',
+                          )}
+                        >
+                          <span className="truncate">{prompt.name || 'Untitled'}</span>
+                          <ChevronRightIcon
+                            className={cn(
+                              'size-4 shrink-0 text-ink-tertiary transition-transform',
+                              active && 'translate-x-0.5 text-primary',
+                            )}
+                            aria-hidden
+                          />
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </section>
+            ))}
+          </div>
+        ) : (
+          <p className="px-2 py-4 text-body-compact text-ink-subtle">
+            {needle ? 'No prompts match your search.' : 'No prompts in this library yet.'}
+          </p>
+        )}
+      </div>
     </div>
   )
 }
 
-type Change = { name?: string; body?: string }
+type Change = { name?: string; body?: string; read_metrics?: string[] }
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
 /**
@@ -315,10 +399,20 @@ function Editor({
   const readOnly = prompt.builtIn
   const [name, setName] = useState(prompt.name)
   const [body, setBody] = useState(prompt.body)
+  const [readMetrics, setReadMetrics] = useState(
+    prompt.readMetrics?.length ? prompt.readMetrics : ['sharpe'],
+  )
   const [view, setView] = useState<'edit' | 'changes'>('edit')
   const [confirmDelete, setConfirmDelete] = useState(false)
   const save = useAutosave(prompt.id)
   const counts = countText(body)
+  const metricOptions: [string, string][] = [
+    ['sharpe', 'Sharpe'],
+    ['fitness', 'Fitness'],
+    ['turnover', 'Turnover'],
+    ['returns', 'Returns'],
+    ['drawdown', 'Drawdown'],
+  ]
 
   const remove = useMutation({
     mutationFn: () => prompts.remove(prompt.id as number),
@@ -340,13 +434,14 @@ function Editor({
       name: `${name.trim() || 'Untitled'} (copy)`.slice(0, 120),
       kind: prompt.kind,
       body,
+      read_metrics: readMetrics,
       based_on: readOnly ? prompt.kind : name.trim() || null,
     })
   }
 
   return (
     <Panel
-      title={name.trim() || 'Untitled'}
+      title={readOnly ? name.trim() || 'Untitled' : 'Edit prompt'}
       description={kind?.purpose}
       actions={
         <>
@@ -375,10 +470,9 @@ function Editor({
     >
       <div className="flex flex-col gap-4">
         {readOnly ? (
-          <Notice tone="info" title="Built-in prompts can't be changed">
-            Save a copy to edit it word by word. The copy saves itself as you type, and can be
-            chosen wherever {kind?.label ?? 'this prompt'} runs.
-          </Notice>
+          <p className="text-body-compact text-ink-subtle">
+            Built-in prompt · Save a copy to edit it.
+          </p>
         ) : (
           <Field label="Name">
             <Input
@@ -410,6 +504,9 @@ function Editor({
                 'Size',
                 `${fmt.int(counts.words)} words · ${fmt.int(counts.characters)} chars · ~${fmt.int(counts.estimatedTokens)} tokens`,
               ],
+              ...(prompt.updatedAt
+                ? ([['Updated', fmt.ago(prompt.updatedAt)]] as [string, string][])
+                : []),
             ]}
           />
           {!readOnly && original && (
@@ -424,6 +521,34 @@ function Editor({
             />
           )}
         </div>
+        <Disclosure summary={`Alpha context metrics · ${readMetrics.length} selected`}>
+          <div className="flex flex-col gap-2">
+            <p className="text-body-compact text-ink-subtle">
+              Choose which metrics the LLM can see for earlier Alphas. The first selected metric
+              controls the ordering.
+            </p>
+            <div className="flex flex-wrap gap-x-4 gap-y-2 text-body-compact text-ink">
+              {metricOptions.map(([value, label]) => (
+                <label key={value} className="inline-flex items-center gap-1.5">
+                  <input
+                    type="checkbox"
+                    checked={readMetrics.includes(value)}
+                    disabled={readOnly}
+                    onChange={(e) => {
+                      const next = e.target.checked
+                        ? [...readMetrics, value]
+                        : readMetrics.filter((metric) => metric !== value)
+                      if (!next.length) return
+                      setReadMetrics(next)
+                      save.queue({ read_metrics: next })
+                    }}
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+          </div>
+        </Disclosure>
 
         {view === 'changes' && original ? (
           <Changes before={original.body} after={body} label={original.name} />

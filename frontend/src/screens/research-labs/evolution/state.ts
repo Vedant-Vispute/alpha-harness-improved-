@@ -23,26 +23,30 @@ export interface EvolutionDraft {
   appliedJobId: string | null
 }
 
-export const useEvolutionLab = create<EvolutionDraft>()(
-  persist(
-    (): EvolutionDraft => ({
-      region: DEFAULT_SCOPE.region,
-      delay: DEFAULT_SCOPE.delay,
-      universe: DEFAULT_SCOPE.universe,
-      seedIds: [],
-      cores: null,
-      simulations: null,
-      population: null,
-      neutralizations: [],
-      mutationRate: 0.05,
-      autoJobId: null,
-      appliedJobId: null,
-    }),
-    {
-      name: 'alpha-harness-evolution-lab',
-      // Version 1 leaves cores unchosen, so Settings' default for new tasks applies.
-      version: 1,
-      migrate: (stored) => ({ ...(stored as EvolutionDraft), cores: null }),
-    },
-  ),
-)
+const makeEvolutionLab = (name: string) =>
+  create<EvolutionDraft>()(
+    persist(
+      (): EvolutionDraft => ({
+        region: DEFAULT_SCOPE.region,
+        delay: DEFAULT_SCOPE.delay,
+        universe: DEFAULT_SCOPE.universe,
+        seedIds: [],
+        cores: null,
+        simulations: null,
+        population: null,
+        neutralizations: [],
+        mutationRate: 0.05,
+        autoJobId: null,
+        appliedJobId: null,
+      }),
+      {
+        name,
+        // Version 1 leaves cores unchosen, so Settings' default for new tasks applies.
+        version: 1,
+        migrate: (stored) => ({ ...(stored as EvolutionDraft), cores: null }),
+      },
+    ),
+  )
+
+export const useEvolutionLab = makeEvolutionLab('alpha-harness-evolution-lab')
+export const useRegularEvolutionLab = makeEvolutionLab('alpha-harness-regular-evolution-lab')

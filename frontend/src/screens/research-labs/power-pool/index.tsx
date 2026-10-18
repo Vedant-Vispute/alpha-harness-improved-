@@ -1,4 +1,4 @@
-/** LLM Power Pool Lab: an LLM writes Power Pool Alphas for your datasets while the task runs in Tasks. */
+/** LLM Alpha Lab: an LLM writes 20 Alphas per call for your datasets while the task runs in Tasks. */
 
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
@@ -12,6 +12,7 @@ import type { PickedField } from '@/screens/data/dataset-pick'
 import type { FieldFilterState } from '@/screens/data/state'
 import { PromptPicker, useChosenPrompt } from '@/screens/prompts/picker'
 import { AddTaskButtons, useAddTask } from '@/screens/research-labs/add-task'
+import { LabInfoButton } from '@/screens/research-labs/lab-info'
 import {
   fieldIdsOf,
   MAX_SIMULATIONS,
@@ -20,7 +21,11 @@ import {
   useLabPreview,
 } from '@/screens/research-labs/lab-task'
 import { NeutralizationPicker } from '@/screens/research-labs/neutralization'
-import { type PowerPoolRequest, powerPoolLab } from '@/screens/research-labs/power-pool/api'
+import {
+  type PowerPoolRequest,
+  powerPoolLab,
+  regularAlphaLab,
+} from '@/screens/research-labs/power-pool/api'
 import {
   CoresSetting,
   DatasetsPanel,
@@ -61,50 +66,64 @@ interface PowerPoolDraft {
   universes: string[]
 }
 
-const useDraft = create<PowerPoolDraft>()(
-  persist(
-    (): PowerPoolDraft => ({
-      region: DEFAULT_SCOPE.region,
-      delay: DEFAULT_SCOPE.delay,
-      universe: DEFAULT_SCOPE.universe,
-      datasetIds: [],
-      fieldFilter: null,
-      fields: [],
-      rankBy: null,
-      cores: null,
-      simulations: null,
-      model: null,
-      promptId: null,
-      neutralizations: [],
-      universes: [],
-    }),
-    {
-      name: 'alpha-harness-power-pool-lab',
-      // Version 1 leaves cores unchosen, so Settings' default for new tasks applies.
-      // Version 2 adds universes, none chosen: every downloaded one, as before.
-      version: 2,
-      migrate: (stored, version) => ({
-        ...(stored as PowerPoolDraft),
-        ...(version < 1 ? { cores: null } : {}),
+const makeDraft = (name: string) =>
+  create<PowerPoolDraft>()(
+    persist(
+      (): PowerPoolDraft => ({
+        region: DEFAULT_SCOPE.region,
+        delay: DEFAULT_SCOPE.delay,
+        universe: DEFAULT_SCOPE.universe,
+        datasetIds: [],
+        fieldFilter: null,
+        fields: [],
+        rankBy: null,
+        cores: null,
+        simulations: null,
+        model: null,
+        promptId: null,
+        neutralizations: [],
         universes: [],
       }),
-    },
-  ),
-)
+      {
+        name,
+        // Version 1 leaves cores unchosen, so Settings' default for new tasks applies.
+        // Version 2 adds universes, none chosen: every downloaded one, as before.
+        version: 2,
+        migrate: (stored, version) => ({
+          ...(stored as PowerPoolDraft),
+          ...(version < 1 ? { cores: null } : {}),
+          universes: [],
+        }),
+      },
+    ),
+  )
+const usePowerPoolDraft = makeDraft('alpha-harness-power-pool-lab')
+const useRegularDraft = makeDraft('alpha-harness-regular-alpha-lab')
 
 /** The built-in this lab sends, and the kind of every saved prompt it can send instead. */
-const PROMPT_KIND = 'power_pool_lab'
-
 const PRE =
   'num max-h-80 overflow-auto rounded-md border border-hairline bg-canvas p-3 text-body-compact whitespace-pre-wrap text-ink-muted'
 
-export function PowerPoolLabScreen() {
-  const draft = useDraft()
-  const set = useDraft.setState
-  const { panel } = useLabMarket(draft, set, '/labs/power-pool')
+export function PowerPoolLabScreen({ regular = false }: { regular?: boolean } = {}) {
+  return <AlphaLabScreen regular={regular} />
+}
+
+export function RegularAlphaLabScreen() {
+  return <AlphaLabScreen regular />
+}
+
+function AlphaLabScreen({ regular }: { regular: boolean }) {
+  const powerPoolDraft = usePowerPoolDraft()
+  const regularDraft = useRegularDraft()
+  const draft = regular ? regularDraft : powerPoolDraft
+  const set = regular ? useRegularDraft.setState : usePowerPoolDraft.setState
+  const lab = regular ? regularAlphaLab : powerPoolLab
+  const promptKind = regular ? 'regular_alpha_lab' : 'power_pool_lab'
+  const labPath = regular ? '/labs/regular-alpha' : '/labs/power-pool'
+  const { panel } = useLabMarket(draft, set, labPath)
   const options = useQuery({
-    queryKey: ['power-pool-lab', 'options'],
-    queryFn: powerPoolLab.options,
+    queryKey: [promptKind, 'options'],
+    queryFn: lab.options,
   })
   const models = options.data?.models ?? []
   const providerLabel = useProviderLabel()
@@ -113,7 +132,7 @@ export function PowerPoolLabScreen() {
       ? draft.model
       : (options.data?.defaultModel ?? null)
 
-  const promptId = useChosenPrompt(PROMPT_KIND, draft.promptId ?? null)
+  const promptId = useChosenPrompt(promptKind, draft.promptId ?? null)
 
   // BRAIN's legal list for this market; the LLM draws from whatever is chosen, or all of it.
   const scopeOptions = useScopeOptions({
@@ -139,10 +158,10 @@ export function PowerPoolLabScreen() {
     cores,
     simulations: draft.simulations ?? 0,
   }
-  const { preview, current } = useLabPreview('power-pool-lab', body, powerPoolLab.preview)
+  const { preview, current } = useLabPreview(promptKind, body, lab.preview)
   const plan = preview.data
   const maxSimulations = options.data?.maxSimulations ?? MAX_SIMULATIONS
-  const add = useAddTask(() => powerPoolLab.addTask(body))
+  const add = useAddTask(() => lab.addTask(body))
   const ready =
     plan !== undefined &&
     current &&
@@ -152,8 +171,17 @@ export function PowerPoolLabScreen() {
   return (
     <Page>
       <PageHeader
-        title="LLM Power Pool Lab"
-        actions={<AddTaskButtons add={add} disabled={!ready} />}
+        title={regular ? 'Regular LLM Alpha Lab' : 'LLM Alpha Lab'}
+        actions={
+          <>
+            <LabInfoButton title={regular ? 'Regular LLM Alpha Lab' : 'Power Pool LLM Alpha Lab'}>
+              {regular
+                ? 'Choose datasets, fields, a prompt, model and simulation settings. The selected prompt is sent to the LLM, which writes batches of Alpha expressions; the task simulates them and reports the results in Tasks. Regular mode accepts general Alpha prompts and does not apply the Power Pool expression limits or Power Pool result workflow.'
+                : 'Choose datasets, fields, a Power Pool prompt, model and simulation settings. The LLM writes batches of Power Pool Alphas; the task simulates them, analyzes their results and provides the Power Pool workflow and correlation tools in Tasks.'}
+            </LabInfoButton>
+            <AddTaskButtons add={add} disabled={!ready} />
+          </>
+        }
       />
       {options.isError && <ErrorNotice error={options.error} title="Could not load the models" />}
       {options.isSuccess && models.length === 0 && (
@@ -176,7 +204,7 @@ export function PowerPoolLabScreen() {
           hint="What the LLM is told before the datasets. Edits in LLM Prompts reach running tasks on their next call."
         >
           <PromptPicker
-            kind={PROMPT_KIND}
+            kind={promptKind}
             value={promptId}
             onChange={(next) => set({ promptId: next })}
           />

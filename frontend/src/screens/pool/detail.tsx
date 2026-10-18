@@ -83,6 +83,11 @@ function Body({ alphaId }: { alphaId: string }) {
 
   return (
     <div className="flex flex-col gap-4">
+      {d.rejected && (
+        <Notice tone="error" title="Rejected by Alpha quality analysis">
+          {d.rejectionReason ?? 'This Alpha failed a multi-year quality check.'}
+        </Notice>
+      )}
       <AstInspector expression={d.expression} />
       <div className="flex flex-wrap gap-2">
         <Button

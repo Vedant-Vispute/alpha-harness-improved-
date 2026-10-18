@@ -24,7 +24,7 @@ import {
 import { type FieldFilterState, labFilter, RELEVANCE, useFieldFilter } from './state'
 
 /**
- * The labs that take single fields. Advanced Template Research does not: its variables are
+ * The labs that take single fields. Build with Expression does not: its variables are
  * datasets under a filter, so ticks made while picking for it are left out and the datasets
  * go with the filter that was showing.
  */
@@ -33,6 +33,7 @@ export const TAKES_FIELDS: ReadonlySet<PickFrom> = new Set<PickFrom>([
   '/labs/template/basic',
   '/labs/power-pool',
   '/labs/region-agnostic',
+  '/labs/regular-alpha',
 ])
 
 /** Matches `labs.launch.MAX_PICKED_FIELDS`: past this, a lab wants whole datasets. */

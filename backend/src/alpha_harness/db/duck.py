@@ -165,6 +165,9 @@ ALTER TABLE alpha ADD COLUMN IF NOT EXISTS pnl_version INTEGER;
 -- An older database also carries `after_cost_sharpe`, the plain after-cost Sharpe, which
 -- nothing reads now; a new column rather than a rewrite, so startup rebuilds every value.
 ALTER TABLE alpha ADD COLUMN IF NOT EXISTS after_cost_t10 DOUBLE;
+-- Cached Alpha quality verdicts, persisted independently of the originating task.
+ALTER TABLE alpha ADD COLUMN IF NOT EXISTS quality_status VARCHAR;
+ALTER TABLE alpha ADD COLUMN IF NOT EXISTS quality_reason VARCHAR;
 -- In-sample figures rebuilt from the stored series (final days included), kept so the Portfolio
 -- list need not read every series. Apart from BRAIN's own, which a listing overwrites.
 -- An older database still carries `series_sharpe` and its five siblings, rebuilt locally

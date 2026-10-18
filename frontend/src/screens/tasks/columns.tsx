@@ -3,7 +3,7 @@
 import type { ComponentProps } from 'react'
 import { cn } from '@/lib/cn'
 import { CORE_METRICS, CORE_ORDER, DASH, fmt } from '@/lib/format'
-import type { LabTask, RankedAlpha, TaskStatus } from '@/screens/tasks/api'
+import type { LabTask, MetricThresholds, RankedAlpha, TaskStatus } from '@/screens/tasks/api'
 import { Badge, MetricBadge, signTone, TEXT_TONE } from '@/ui/kit'
 import type { Column, Sort } from '@/ui/table'
 
@@ -37,6 +37,28 @@ export function SharpeCell({ value }: { value: number | null | undefined }) {
     </MetricBadge>
   )
 }
+
+export function ThresholdCell({
+  value,
+  threshold,
+  format = fmt.ratio,
+  belowIsProfit = false,
+}: {
+  value: number | null | undefined
+  threshold: number
+  format?: (value: number | null | undefined) => string
+  belowIsProfit?: boolean
+}) {
+  if (value == null) return DASH
+  return (
+    <MetricBadge tone={(belowIsProfit ? value < threshold : value > threshold) ? 'profit' : 'loss'}>
+      {format(value)}
+    </MetricBadge>
+  )
+}
+
+export const thresholdValue = (thresholds: MetricThresholds, key: keyof MetricThresholds): number =>
+  thresholds[key]
 
 /** After-Cost Sharpe's header. The figure is scaled to ten years of data, which the name alone
  *  does not say, so the header does on hover. */
@@ -87,9 +109,18 @@ export function QuickBadge({ alpha }: { alpha: RankedAlpha }) {
 export const ALPHA_ID: Column<RankedAlpha> = {
   key: 'alphaId',
   header: 'Alpha',
-  width: '104px',
+  width: '160px',
   sortable: true,
-  cell: (r) => <span className="num text-ink">{r.alphaId ?? DASH}</span>,
+  cell: (r) => (
+    <span className="flex items-center gap-1.5">
+      <span className="num text-ink">{r.alphaId ?? DASH}</span>
+      {r.rejected && (
+        <Badge tone="loss" title={r.rejectionReason ?? 'Rejected by Alpha quality analysis'}>
+          Rejected
+        </Badge>
+      )}
+    </span>
+  ),
 }
 
 /** BRAIN wants it below 0.7, or a Sharpe 10% above each production Alpha it exceeds. */
@@ -253,6 +284,11 @@ export const METRIC_COLUMNS: Column<RankedAlpha>[] = METRICS.map((m) => ({
 
 /** Sorted client-side on any column above, absent values last whichever way. */
 export function compareAlphas(a: RankedAlpha, b: RankedAlpha, sort: Sort): number {
+  if (sort.key === 'expression') {
+    const count = (r: RankedAlpha) =>
+      sort.desc ? (r.checkCounts?.pass ?? 0) : (r.checkCounts?.fail ?? 0)
+    return count(b) - count(a)
+  }
   const pick = (r: RankedAlpha): string | number | null => {
     switch (sort.key) {
       case 'region':

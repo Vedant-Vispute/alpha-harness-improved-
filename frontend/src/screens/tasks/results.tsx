@@ -7,20 +7,18 @@
  */
 
 import { useQuery } from '@tanstack/react-query'
-import { Link, useParams } from '@tanstack/react-router'
+import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { ArrowLeftIcon } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { cn } from '@/lib/cn'
 import { DASH, fmt } from '@/lib/format'
 import { useRefetchOn } from '@/lib/ws'
-import { DetailSheet } from '@/screens/pool/detail'
 import { AstInspector } from '@/screens/pool/shared'
 import { AlphaPane } from '@/screens/tasks/alpha-pane'
 import { labTasks, type RankedAlpha } from '@/screens/tasks/api'
 import {
   ALPHA_ID,
   compareAlphas,
-  FAILED_CHECKS,
   Figure,
   METRIC_COLUMNS,
   METRICS,
@@ -44,7 +42,6 @@ const columns = (agent: boolean): Column<RankedAlpha>[] => [
   ...SETTING_COLUMNS,
   ...(agent ? [TRUNCATION] : []),
   PROD_CORRELATION,
-  FAILED_CHECKS,
   ...METRIC_COLUMNS,
 ]
 
@@ -171,18 +168,16 @@ export function TaskResultsScreen() {
   const { taskId } = useParams({ from: '/tasks/$taskId' })
   const id = Number(taskId)
   const [sort, setSort] = useState<Sort>({ key: 'sharpe', desc: true })
-  const [alphaId, setAlphaId] = useState<string | null>(null)
+  const navigate = useNavigate()
 
   const tasks = useQuery({ queryKey: ['lab-tasks'], queryFn: labTasks.list })
   const task = tasks.data?.tasks.find((t) => t.id === id)
-
   const top = useQuery({
     queryKey: ['lab-tasks', id, 'results'],
     queryFn: () => labTasks.top(id, LIMIT),
     enabled: Number.isFinite(id),
   })
   const rows = useMemo(() => top.data ?? [], [top.data])
-
   const byRegion = useMemo(() => {
     const seen = new Map<string, RegionRow>()
     for (const r of rows) {
@@ -359,7 +354,7 @@ export function TaskResultsScreen() {
       </Panel>
 
       <AlphaPane
-        title="Every Alpha"
+        title="Alphas"
         rows={rows}
         columns={() => columns(Boolean(task?.truncationAgent))}
         compare={compareAlphas}
@@ -368,12 +363,14 @@ export function TaskResultsScreen() {
         onSort={setSort}
         loading={top.isPending}
         error={top.error}
+        powerPoolMode={
+          task !== undefined && task.lab !== 'regular-alpha' && task.lab !== 'regular-ga'
+        }
         onRefresh={() => top.refetch()}
-        onOpenAlpha={setAlphaId}
+        onOpenAlpha={(alphaId) => navigate({ to: '/alpha/$alphaId', params: { alphaId } })}
       />
 
       <CheckSets rows={rows} />
-      <DetailSheet alphaId={alphaId} onClose={() => setAlphaId(null)} />
     </Page>
   )
 }

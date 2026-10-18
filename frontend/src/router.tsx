@@ -84,6 +84,22 @@ const powerPoolLab = createRoute({
     'PowerPoolLabScreen',
   ),
 })
+const generalEvolutionLab = createRoute({
+  getParentRoute: () => labs,
+  path: 'evolution-general',
+  component: lazyRouteComponent(
+    () => import('@/screens/research-labs/evolution'),
+    'RegularEvolutionLabScreen',
+  ),
+})
+const generalAlphaLab = createRoute({
+  getParentRoute: () => labs,
+  path: 'regular-alpha',
+  component: lazyRouteComponent(
+    () => import('@/screens/research-labs/power-pool'),
+    'RegularAlphaLabScreen',
+  ),
+})
 const regionAgnosticLab = createRoute({
   getParentRoute: () => labs,
   path: 'region-agnostic',
@@ -252,6 +268,8 @@ const routeTree = root.addChildren([
     templateBasicLab,
     evolutionLab,
     powerPoolLab,
+    generalEvolutionLab,
+    generalAlphaLab,
     regionAgnosticLab,
     superAlphaLab,
   ]),

@@ -16,23 +16,29 @@ import {
   Trash2Icon,
   TriangleAlertIcon,
 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { errorMessage } from '@/api/http'
 import { cn } from '@/lib/cn'
 import { DASH, fmt } from '@/lib/format'
 import { useNow } from '@/lib/now'
+import { usePreferences } from '@/lib/preferences'
 import { useRefetchOn } from '@/lib/ws'
 import { DatasetChips, useDatasetTree } from '@/screens/data/dataset-chips'
-import { DetailSheet } from '@/screens/pool/detail'
 import { MAX_SIMULATIONS } from '@/screens/research-labs/lab-task'
-import { type LabTask, labTasks, type RankedAlpha } from '@/screens/tasks/api'
+import {
+  type LabTask,
+  labTasks,
+  type MetricThresholds,
+  type RankedAlpha,
+} from '@/screens/tasks/api'
 import {
   AFTER_COST_HEADER,
+  compareAlphas,
   DELAY,
   INVESTABILITY,
   QuickBadge,
-  SharpeCell,
+  ThresholdCell,
   TRUNCATION,
   taskStatus,
 } from '@/screens/tasks/columns'
@@ -62,17 +68,70 @@ import {
   TEXT_TONE,
 } from '@/ui/kit'
 import { Confirm, Dialog, Menu } from '@/ui/overlay'
-import { type Column, DataTable } from '@/ui/table'
+import { type Column, DataTable, type Sort } from '@/ui/table'
 
 /** Matches `labs.params.SETTINGS_SAMPLER` and `REGION_AGNOSTIC_SAMPLER`. */
 const SETTINGS_SAMPLER = 'settings-sampler'
 const REGION_AGNOSTIC = 'region-agnostic'
 
-const TOP_COLUMNS: Column<RankedAlpha>[] = [
+const expressionCellStyle = (r: RankedAlpha) => {
+  const counts = r.checkCounts ?? { pass: 0, warning: 0, fail: 0 }
+  const total = counts.pass + counts.warning + counts.fail
+  if (total === 0) return undefined
+  const pass = (counts.pass / total) * 100
+  const warning = pass + (counts.warning / total) * 100
+  return {
+    backgroundImage: `linear-gradient(to right, var(--color-pnl-positive-row) 0% ${pass}%, var(--color-status-warning-row) ${pass}% ${warning}%, var(--color-pnl-negative-row) ${warning}% 100%)`,
+  }
+}
+
+const TOP_COLUMNS = (thresholds: MetricThresholds): Column<RankedAlpha>[] => [
+  {
+    key: 'sharpe',
+    header: 'Sharpe',
+    width: '90px',
+    align: 'right',
+    sortable: true,
+    cell: (r) => <ThresholdCell value={r.sharpe} threshold={thresholds.thresholdSharpe} />,
+  },
+  {
+    // The held-out years, where an Alpha that only fits its train years shows its decay.
+    key: 'testSharpe',
+    header: 'Test Sharpe',
+    width: '100px',
+    align: 'right',
+    sortable: true,
+    cell: (r) => <ThresholdCell value={r.testSharpe} threshold={thresholds.thresholdTestSharpe} />,
+  },
+  {
+    key: 'fitness',
+    header: 'Fitness',
+    width: '80px',
+    align: 'right',
+    sortable: true,
+    cell: (r) => <ThresholdCell value={r.fitness} threshold={thresholds.thresholdFitness} />,
+  },
+  {
+    key: 'turnover',
+    header: 'Turnover',
+    width: '88px',
+    align: 'right',
+    sortable: true,
+    cell: (r) => (
+      <ThresholdCell
+        value={r.turnover}
+        threshold={thresholds.thresholdTurnover}
+        format={fmt.pct}
+        belowIsProfit
+      />
+    ),
+  },
   {
     key: 'expression',
     header: 'Expression',
     width: 'minmax(280px,3fr)',
+    sortable: true,
+    cellStyle: expressionCellStyle,
     cell: (r) => (
       <span className="flex min-w-0 items-center gap-1.5">
         <QuickBadge alpha={r} />
@@ -81,37 +140,6 @@ const TOP_COLUMNS: Column<RankedAlpha>[] = [
         </span>
       </span>
     ),
-  },
-  {
-    key: 'sharpe',
-    header: 'Sharpe',
-    width: '90px',
-    align: 'right',
-    cell: (r) => <SharpeCell value={r.sharpe} />,
-  },
-  {
-    // The held-out years, where an Alpha that only fits its train years shows its decay.
-    key: 'testSharpe',
-    header: 'Test Sharpe',
-    width: '100px',
-    align: 'right',
-    cell: (r) => (
-      <span className={TEXT_TONE[signTone(r.testSharpe)]}>{fmt.ratio(r.testSharpe)}</span>
-    ),
-  },
-  {
-    key: 'fitness',
-    header: 'Fitness',
-    width: '80px',
-    align: 'right',
-    cell: (r) => fmt.ratio(r.fitness),
-  },
-  {
-    key: 'turnover',
-    header: 'Turnover',
-    width: '88px',
-    align: 'right',
-    cell: (r) => fmt.pct(r.turnover),
   },
   {
     key: 'universe',
@@ -161,7 +189,7 @@ const setting = (key: string, header: string, width: string): Column<RankedAlpha
  * A Settings Sampler row is only ever the same expression, so the settings lead instead and
  * Sharpe closes. The Alpha the sweep started from is starred as the reference point.
  */
-const SAMPLER_COLUMNS: Column<RankedAlpha>[] = [
+const samplerColumns = (thresholds: MetricThresholds): Column<RankedAlpha>[] => [
   {
     key: 'number',
     header: 'Trial',
@@ -187,21 +215,25 @@ const SAMPLER_COLUMNS: Column<RankedAlpha>[] = [
     header: 'Sharpe',
     width: '100px',
     align: 'right',
-    cell: (r) => <SharpeCell value={r.sharpe} />,
+    cell: (r) => <ThresholdCell value={r.sharpe} threshold={thresholds.thresholdSharpe} />,
   },
   AFTER_COST_SHARPE,
 ]
 
 /** What a task searches for leads the table when it is not Sharpe, which the table shows anyway. */
-const topColumns = (task: LabTask): Column<RankedAlpha>[] =>
+const topColumns = (task: LabTask, thresholds: MetricThresholds): Column<RankedAlpha>[] =>
   task.lab === SETTINGS_SAMPLER
     ? task.truncationAgent
-      ? [...SAMPLER_COLUMNS.slice(0, 5), TRUNCATION, ...SAMPLER_COLUMNS.slice(5)]
-      : SAMPLER_COLUMNS
+      ? [
+          ...samplerColumns(thresholds).slice(0, 5),
+          TRUNCATION,
+          ...samplerColumns(thresholds).slice(5),
+        ]
+      : samplerColumns(thresholds)
     : task.objectiveLabel === 'Sharpe'
-      ? TOP_COLUMNS
+      ? TOP_COLUMNS(thresholds)
       : [
-          ...TOP_COLUMNS.slice(0, 1),
+          ...TOP_COLUMNS(thresholds).slice(0, 4),
           {
             key: 'value',
             header: task.objectiveLabel,
@@ -209,7 +241,7 @@ const topColumns = (task: LabTask): Column<RankedAlpha>[] =>
             align: 'right',
             cell: (r) => <span className={TEXT_TONE[signTone(r.value)]}>{fmt.ratio(r.value)}</span>,
           },
-          ...TOP_COLUMNS.slice(1),
+          ...TOP_COLUMNS(thresholds).slice(4),
         ]
 
 /** A day in the reader's own timezone, as a key that sorts: `2026-11-28`. */
@@ -270,8 +302,8 @@ export function TasksScreen() {
   const [editing, setEditing] = useState<LabTask | null>(null)
   const [renaming, setRenaming] = useState<LabTask | null>(null)
   const [confirming, setConfirming] = useState<Act | null>(null)
-  const [alphaId, setAlphaId] = useState<string | null>(null)
   const [view, setView] = useState<'tasks' | 'submittable'>('tasks')
+  const navigate = useNavigate()
   const detail = useRef<HTMLDivElement>(null)
   const open = (id: number) => {
     setSelectedId(id)
@@ -448,7 +480,9 @@ export function TasksScreen() {
         }
       >
         {view === 'submittable' ? (
-          <SubmittableAlphas onOpenAlpha={setAlphaId} />
+          <SubmittableAlphas
+            onOpenAlpha={(alphaId) => navigate({ to: '/alpha/$alphaId', params: { alphaId } })}
+          />
         ) : list.data && all.length === 0 ? (
           <Empty title="No tasks yet">
             <Link to="/labs" className={LINK}>
@@ -465,54 +499,77 @@ export function TasksScreen() {
             error={list.error}
           />
         ) : (
-          <div className="flex flex-col gap-6">
-            {byDay(all, new Date()).map((day, i, days) => (
-              <section
-                key={day.key}
-                aria-label={day.today ? "Today's Tasks" : day.label}
-                className="flex flex-col gap-2"
-              >
-                <h2 className="flex flex-wrap items-baseline gap-x-2 border-b border-hairline-strong pb-1.5">
-                  <span className="text-title font-medium text-ink">
-                    {day.today ? "Today's Tasks" : <span className="num">{day.label}</span>}
-                  </span>
-                  {day.today && (
-                    <span className="num text-body-compact text-ink-subtle">{day.label}</span>
-                  )}
-                  <span className="num ml-auto text-body-compact text-ink-subtle">
-                    {fmt.int(day.tasks.length)} {day.tasks.length === 1 ? 'task' : 'tasks'}
-                  </span>
-                </h2>
-                {day.tasks.length === 0 ? (
-                  <p className="py-2 text-body-compact text-ink-subtle">
-                    No tasks added today yet.
-                  </p>
-                ) : (
-                  <DataTable
-                    label={day.today ? "Today's Tasks" : `Tasks added ${day.label}`}
-                    rows={day.tasks}
-                    columns={columns}
-                    // The columns are named once, on the first table: every day below has the
-                    // same ones.
-                    header={i === days.findIndex((d) => d.tasks.length > 0)}
-                    rowKey={(t) => String(t.id)}
-                    onRowClick={(t) => open(t.id)}
-                    // Held through hover, which otherwise repaints the row as if nothing were picked.
-                    rowClass={(t) =>
-                      t.id === selectedId ? 'bg-primary-subtle hover:bg-primary-subtle' : undefined
-                    }
-                  />
+          (() => {
+            const days = byDay(all, new Date())
+            const today = days[0]
+            const older = days.slice(1)
+            const taskTable = (day: TaskDay, header: boolean) => (
+              <DataTable
+                label={day.today ? "Today's Tasks" : `Tasks added ${day.label}`}
+                rows={day.tasks}
+                columns={columns}
+                header={header}
+                rowKey={(t) => String(t.id)}
+                onRowClick={(t) => open(t.id)}
+                rowClass={(t) =>
+                  t.id === selectedId ? 'bg-primary-subtle hover:bg-primary-subtle' : undefined
+                }
+              />
+            )
+            return (
+              <div className="flex flex-col gap-4">
+                {today && (
+                  <section aria-label="Today's Tasks" className="flex flex-col gap-2">
+                    <h2 className="flex flex-wrap items-baseline gap-x-2 border-b border-hairline-strong pb-1.5">
+                      <span className="text-title font-medium text-ink">Today's Tasks</span>
+                      <span className="num text-body-compact text-ink-subtle">{today.label}</span>
+                      <span className="num ml-auto text-body-compact text-ink-subtle">
+                        {fmt.int(today.tasks.length)} {today.tasks.length === 1 ? 'task' : 'tasks'}
+                      </span>
+                    </h2>
+                    {today.tasks.length === 0 ? (
+                      <p className="py-2 text-body-compact text-ink-subtle">
+                        No tasks added today yet.
+                      </p>
+                    ) : (
+                      taskTable(today, true)
+                    )}
+                  </section>
                 )}
-              </section>
-            ))}
-          </div>
+                {older.length > 0 && (
+                  <Disclosure
+                    summary={`Older tasks (${fmt.int(older.reduce((n, day) => n + day.tasks.length, 0))})`}
+                  >
+                    <div className="flex flex-col gap-6">
+                      {older.map((day, i) => (
+                        <section
+                          key={day.key}
+                          aria-label={day.label}
+                          className="flex flex-col gap-2"
+                        >
+                          <h2 className="flex flex-wrap items-baseline gap-x-2 border-b border-hairline-strong pb-1.5">
+                            <span className="num text-title font-medium text-ink">{day.label}</span>
+                            <span className="num ml-auto text-body-compact text-ink-subtle">
+                              {fmt.int(day.tasks.length)}{' '}
+                              {day.tasks.length === 1 ? 'task' : 'tasks'}
+                            </span>
+                          </h2>
+                          {taskTable(day, !today?.tasks.length && i === 0)}
+                        </section>
+                      ))}
+                    </div>
+                  </Disclosure>
+                )}
+              </div>
+            )
+          })()
         )}
       </Panel>
       {view === 'tasks' && selected && (
         <div ref={detail} className="scroll-mt-4">
           <TaskDetail
             task={selected}
-            onOpenAlpha={setAlphaId}
+            onOpenAlpha={(alphaId) => navigate({ to: '/alpha/$alphaId', params: { alphaId } })}
             onSelect={open}
             onDeleted={() => setSelectedId(null)}
           />
@@ -525,7 +582,6 @@ export function TasksScreen() {
       {renaming && (
         <RenameTask key={renaming.id} task={renaming} onClose={() => setRenaming(null)} />
       )}
-      <DetailSheet alphaId={alphaId} onClose={() => setAlphaId(null)} />
       <Confirm
         open={confirming !== null}
         onOpenChange={(isOpen) => {
@@ -751,13 +807,23 @@ function TaskDetail({
   onSelect: (id: number) => void
   onDeleted: () => void
 }) {
+  const savedPreferences = usePreferences()
+  const thresholds: MetricThresholds = {
+    thresholdSharpe: savedPreferences.data?.thresholdSharpe ?? 0,
+    thresholdTestSharpe: savedPreferences.data?.thresholdTestSharpe ?? 0,
+    thresholdFitness: savedPreferences.data?.thresholdFitness ?? 0,
+    thresholdTurnover: savedPreferences.data?.thresholdTurnover ?? 0,
+    thresholdReturns: savedPreferences.data?.thresholdReturns ?? 0,
+    thresholdDrawdown: savedPreferences.data?.thresholdDrawdown ?? 0,
+    thresholdMargin: savedPreferences.data?.thresholdMargin ?? 0,
+  }
   const top = useQuery({
     // Its own key, refreshed at most every 10s: the whole sweep is a megabyte or more on a
     // big task, too much to redo on each of the task list's two-second updates.
     queryKey: ['lab-task-top', task.id],
     // The whole sweep is worth scrolling; the table virtualises, so the rows are cheap.
     queryFn: () => labTasks.top(task.id, Math.min(Math.max(task.target, 50), 5000)),
-    // Region Agnostic Lab's results are its Alpha groups instead.
+    // ARC Alpha Lab's results are its Alpha groups instead.
     enabled: task.lab !== REGION_AGNOSTIC,
   })
   useRefetchOn('studies', ['lab-task-top', task.id], 10_000)
@@ -765,7 +831,12 @@ function TaskDetail({
   // result. Everything else arrives sorted on the objective already.
   const found = top.data ?? []
   const source = found.find((r) => r.source)
-  const rows = source ? [source, ...found.filter((r) => r !== source)] : found
+  const [sort, setSort] = useState<Sort>({ key: 'sharpe', desc: true })
+  const rows = useMemo(() => {
+    const ranked = found.filter((r) => r !== source)
+    ranked.sort((a, b) => compareAlphas(a, b, sort))
+    return source ? [source, ...ranked] : ranked
+  }, [found, source, sort])
   // Red only where a check refuses the Alpha. A row still waiting on BRAIN is green like a
   // passing one: nothing has said no, which is the question this pane answers. Whether it is
   // submittable *yet* is the Submittable count's job, and that one does hold pending back.
@@ -781,7 +852,6 @@ function TaskDetail({
     // The source keeps its verdict, and a heavier rule under it so the ranking below reads
     // as its own block.
     r.source ? `${verdict(r)} border-b-2 border-b-hairline-strong` : verdict(r)
-
   const done = task.status === 'COMPLETE' || task.status === 'FAILED'
   // Three outcomes and nothing else. Submittable: nothing has refused it, pending checks
   // included, which is what makes the figure an estimate. Error: a check BRAIN could not run,
@@ -821,6 +891,7 @@ function TaskDetail({
       description={description}
       actions={
         <>
+          <ElapsedText task={task} done={done} />
           <Button size="sm" variant="ghost" disabled={!rows.length} onClick={copyResults}>
             <CopyIcon />
             Copy Results
@@ -832,71 +903,67 @@ function TaskDetail({
       <div className="flex flex-col gap-4">
         <TaskControls task={task} onCloned={onSelect} onDeleted={onDeleted} />
         <TaskDatasets task={task} />
-        {/* As many boxes as there are figures, sharing the row: some only show when they
-            have something to say, and a fixed grid left a hole where they were. */}
-        <div className="flex flex-wrap gap-3 *:min-w-44 *:flex-1">
-          <Metric
-            boxed
-            label="Simulated"
-            value={`${fmt.int(task.simulated)} / ${fmt.int(task.target)}`}
-            hint={[
-              task.cached > 0 && `${fmt.int(task.cached)} from cache, no quota spent`,
-              task.fullRuns > 0 &&
-                `plus ${fmt.int(task.fullRuns)} Quick ${task.fullRuns === 1 ? 'Alpha' : 'Alphas'} run again in full`,
-            ]
-              .filter(Boolean)
-              .join(' · ')}
-          />
-          {/* Nothing is in flight once a task is over, so the box would only ever read 0. */}
-          {!done && <Metric boxed label="In Flight" value={fmt.int(task.queued + task.running)} />}
-          {/* `~` because the pending rows counted here have checks BRAIN has not run
-              yet, any one of which can still come back FAIL. */}
-          <Metric
-            boxed
-            tone="profit"
-            label="Submittable"
-            value={
-              <>
-                {pending > 0 && '~'}
-                {fmt.int(green)}
-              </>
-            }
-          />
-          <Metric
-            boxed
-            tone={red > 0 ? 'loss' : 'neutral'}
-            label="Unsubmittable"
-            value={fmt.int(red)}
-          />
-          {errors > 0 && (
-            <Metric
-              boxed
-              tone="loss"
-              label="Error"
-              value={fmt.int(errors)}
-              hint={task.failed > 0 ? `${fmt.int(task.failed)} returned no Alpha` : ''}
-            />
-          )}
-          <Elapsed task={task} done={done} />
+        <div className="grid items-start gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(360px,1.5fr)]">
+          <div className="flex min-w-0 flex-col gap-2 self-start">
+            <div className="flex flex-wrap items-start gap-x-4 gap-y-1">
+              <Metric
+                label="Simulated"
+                value={`${fmt.int(task.simulated)} / ${fmt.int(task.target)}`}
+                hint={[
+                  task.cached > 0 && `${fmt.int(task.cached)} from cache, no quota spent`,
+                  task.fullRuns > 0 &&
+                    `plus ${fmt.int(task.fullRuns)} Quick ${task.fullRuns === 1 ? 'Alpha' : 'Alphas'} run again in full`,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              />
+              {!done && <Metric label="In Flight" value={fmt.int(task.queued + task.running)} />}
+              <Metric
+                tone="profit"
+                label="Submittable"
+                value={
+                  <>
+                    {pending > 0 && '~'}
+                    {fmt.int(green)}
+                  </>
+                }
+              />
+              <Metric
+                tone={red > 0 ? 'loss' : 'neutral'}
+                label="Unsubmittable"
+                value={fmt.int(red)}
+              />
+              {errors > 0 && (
+                <Metric
+                  tone="loss"
+                  label="Error"
+                  value={fmt.int(errors)}
+                  hint={task.failed > 0 ? `${fmt.int(task.failed)} returned no Alpha` : ''}
+                />
+              )}
+            </div>
+            <TaskAbout task={task} />
+          </div>
+          <div className="flex flex-col gap-2">
+            {task.message && (
+              <Notice tone={task.status === 'PAUSED' ? 'warn' : 'info'} title={task.message} />
+            )}
+            {task.failures.length > 0 && (
+              <Notice
+                tone="error"
+                title={`${fmt.int(task.failed)} simulation${task.failed === 1 ? '' : 's'} returned no Alpha. BRAIN said:`}
+              >
+                <ul className="flex flex-col gap-1">
+                  {task.failures.map((f) => (
+                    <li key={f.reason}>
+                      <span className="num">{fmt.int(f.count)}×</span> {f.reason}
+                    </li>
+                  ))}
+                </ul>
+              </Notice>
+            )}
+          </div>
         </div>
-        {task.message && (
-          <Notice tone={task.status === 'PAUSED' ? 'warn' : 'info'} title={task.message} />
-        )}
-        <TaskAbout task={task} />
-        {task.failures.length > 0 && (
-          <Notice
-            tone="error"
-            title={`${fmt.int(task.failed)} simulation${task.failed === 1 ? '' : 's'} returned no Alpha. BRAIN said:`}
-          >
-            <ul className="flex flex-col gap-1">
-              {task.failures.map((f) => (
-                <li key={f.reason}>
-                  <span className="num">{fmt.int(f.count)}×</span> {f.reason}
-                </li>
-              ))}
-            </ul>
-          </Notice>
-        )}
         {task.template && (
           <Disclosure summary="Template">
             <code className="num text-body-compact break-all text-ink">{task.template}</code>
@@ -923,7 +990,9 @@ function TaskDetail({
           <DataTable
             label={task.lab === SETTINGS_SAMPLER ? 'Results' : 'Top Alphas'}
             rows={rows}
-            columns={topColumns(task)}
+            columns={topColumns(task, thresholds)}
+            sort={sort}
+            onSort={setSort}
             rowKey={(r) => String(r.trialId)}
             onRowClick={(r) => r.alphaId && onOpenAlpha(r.alphaId)}
             rowClass={rowClass}
@@ -960,7 +1029,7 @@ function TaskDatasets({ task }: { task: LabTask }) {
   return <DatasetChips tree={tree} value={datasetIds} nameOf={nameOf} ready={ready} />
 }
 
-function Elapsed({ task, done }: { task: LabTask; done: boolean }) {
+function ElapsedText({ task, done }: { task: LabTask; done: boolean }) {
   // Ticking while there is something to tick: a finished task's elapsed time is fixed, and a
   // timer behind it would wake the page every second to redraw the same string.
   const now = useNow(done ? 0 : 1000)
@@ -973,12 +1042,9 @@ function Elapsed({ task, done }: { task: LabTask; done: boolean }) {
   const ended = task.finishedAt ? Date.parse(task.finishedAt) : now
   const elapsed = Number.isNaN(began) ? null : Math.max(0, (ended - began) / 1000)
   return (
-    <Metric
-      boxed
-      label={waiting ? 'Waiting' : 'Time Elapsed'}
-      value={elapsed == null ? DASH : fmt.duration(elapsed)}
-      hint={done ? '' : waiting ? 'for cores to free up' : 'still running'}
-    />
+    <span className="num text-body-compact text-ink-subtle">
+      {elapsed == null ? DASH : fmt.duration(elapsed)}
+    </span>
   )
 }
 

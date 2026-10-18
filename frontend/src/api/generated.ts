@@ -2450,12 +2450,18 @@ export interface components {
             }[];
             /** Expression */
             expression: string | null;
+            /** Rejected */
+            rejected?: boolean;
+            /** Rejectionreason */
+            rejectionReason?: string | null;
             settings: components["schemas"]["AlphaSettings"];
         };
         /** AlphaGroup */
         AlphaGroup: {
             /** Alphas */
             alphas: components["schemas"]["GroupAlpha"][];
+            /** Arc simulation state for this expression in the ALL region. */
+            arcSimulation: components["schemas"]["ArcSimulationView"] | null;
             /** Bestsharpe */
             bestSharpe: number | null;
             /** Decay */
@@ -2474,6 +2480,17 @@ export interface components {
             pending: number;
             /** Truncation */
             truncation: number | null;
+        };
+        /** ArcSimulationView */
+        ArcSimulationView: {
+            /** Alphaid */
+            alphaId: string | null;
+            /** Message */
+            message: string | null;
+            /** Progress */
+            progress: number | null;
+            /** State */
+            state: "queued" | "running" | "complete" | "failed";
         };
         /** AlphaGroups */
         AlphaGroups: {
@@ -2508,6 +2525,8 @@ export interface components {
             checks: {
                 [key: string]: unknown;
             }[];
+            /** Children */
+            children: string[];
             /** Classifications */
             classifications: components["schemas"]["AlphaClassification"][];
             /** Code */
@@ -2561,6 +2580,10 @@ export interface components {
             params: {
                 [key: string]: unknown;
             };
+            /** Rejected */
+            rejected?: boolean;
+            /** Rejectionreason */
+            rejectionReason?: string | null;
             /** Siblings */
             siblings: components["schemas"]["LineageSibling"][];
             /** Simulatedat */
@@ -2705,6 +2728,10 @@ export interface components {
             region: string | null;
             /** Returns */
             returns: number | null;
+            /** Rejected */
+            rejected?: boolean;
+            /** Rejectionreason */
+            rejectionReason?: string | null;
             /** Sharpe */
             sharpe: number | null;
             /** Shortcount */
@@ -2778,6 +2805,10 @@ export interface components {
             pnl: (number | null)[];
             /** Problems */
             problems: string[];
+            /** Rejected */
+            rejected?: boolean;
+            /** Rejectionreason */
+            rejectionReason?: string | null;
             /** Teststart */
             testStart: string | null;
             /** Yearly */
@@ -3617,6 +3648,8 @@ export interface components {
             neutralizations?: string[];
             /** Population */
             population?: (50 | 100 | 200) | null;
+            /** Regular */
+            regular?: boolean;
             /** Region */
             region: string;
             /**
@@ -4136,6 +4169,8 @@ export interface components {
             basedOn: string | null;
             /** Body */
             body: string;
+            /** Read metrics */
+            readMetrics: string[];
             /** Builtin */
             builtIn: boolean;
             /** Characters */
@@ -4672,6 +4707,20 @@ export interface components {
              * @default true
              */
             autoUpdate: boolean;
+            /** Thresholddrawdown */
+            thresholdDrawdown: number;
+            /** Thresholdtestsharpe */
+            thresholdTestSharpe: number;
+            /** Thresholdfitness */
+            thresholdFitness: number;
+            /** Thresholdmargin */
+            thresholdMargin: number;
+            /** Thresholdreturns */
+            thresholdReturns: number;
+            /** Thresholdsharpe */
+            thresholdSharpe: number;
+            /** Thresholdturnover */
+            thresholdTurnover: number;
             /**
              * Defaultcores
              * @default 4
@@ -4872,6 +4921,10 @@ export interface components {
              * @default false
              */
             quick: boolean;
+            /** Rejected */
+            rejected?: boolean;
+            /** Rejectionreason */
+            rejectionReason?: string | null;
             /** Refusedby */
             refusedBy: string[];
             /** Returns */
@@ -5456,6 +5509,10 @@ export interface components {
             pnl: number[];
             /** Returns */
             returns: number | null;
+            /** Rejected */
+            rejected?: boolean;
+            /** Rejectionreason */
+            rejectionReason?: string | null;
             settings: components["schemas"]["AlphaSettings"];
             /** Sharpe */
             sharpe: number | null;
@@ -5729,6 +5786,8 @@ export interface components {
             source: boolean;
             /** Submittable */
             submittable: boolean;
+            /** Status */
+            status: string;
             /**
              * Submitted
              * @default false
@@ -5751,7 +5810,7 @@ export interface components {
         };
         /**
          * TaskCall
-         * @description One LLM call of an LLM Power Pool Lab task.
+         * @description One LLM call of an LLM Alpha Lab task.
          */
         TaskCall: {
             /** At */

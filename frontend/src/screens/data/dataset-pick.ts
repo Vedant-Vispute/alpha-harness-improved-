@@ -9,6 +9,7 @@ export type PickFrom =
   | '/labs/template/basic'
   | '/labs/power-pool'
   | '/labs/region-agnostic'
+  | '/labs/regular-alpha'
 
 /** A field ticked in the Fields table, with the dataset it belongs to. */
 export interface PickedField {

@@ -29,11 +29,13 @@ import { type Column, DataTable } from '@/ui/table'
 
 /** Matches `labs.params.POWER_POOL_SAMPLER` and the prompt kind that lab sends. */
 const POWER_POOL = 'power-pool'
+const REGULAR_ALPHA = 'regular-alpha'
 const PROMPT_KIND = 'power_pool_lab'
-/** Region Agnostic Lab: an LLM lab too, with a prompt of its own kind. */
+/** ARC Alpha Lab: an LLM lab too, with a prompt of its own kind. */
 const REGION_AGNOSTIC = 'region-agnostic'
 const LLM_LABS: Record<string, string> = {
   [POWER_POOL]: PROMPT_KIND,
+  [REGULAR_ALPHA]: 'regular_alpha_lab',
   [REGION_AGNOSTIC]: 'region_agnostic_lab',
 }
 /** Labs whose simulations are written when the task is added. */

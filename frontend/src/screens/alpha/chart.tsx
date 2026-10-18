@@ -6,10 +6,55 @@
 
 import { createSeriesMarkers, LineSeries, LineStyle, type Time } from 'lightweight-charts'
 import { useEffect, useRef } from 'react'
-import { addUnderwater, baseChart, color, compact, zeroLine } from '@/screens/pool/pnl-chart'
+import {
+  addUnderwater,
+  baseChart,
+  color,
+  compact,
+  textOnlyValueLabel,
+  zeroLine,
+} from '@/screens/pool/pnl-chart'
 import type { Point } from './analysis'
 
 export type ChartView = 'pnl' | 'underwater' | 'sharpe'
+
+export function ArcChildrenChart({
+  series,
+  label,
+}: {
+  series: { label: string; points: Point[] }[]
+  label: string
+}) {
+  const element = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const node = element.current
+    if (!node) return
+    const chart = baseChart(node)
+    chart.applyOptions({ localization: { priceFormatter: compact } })
+    const palette = [
+      color('color-primary'),
+      color('color-status-profit'),
+      color('color-status-warning'),
+      color('color-ink-subtle'),
+    ]
+    for (const [index, curve] of series.entries()) {
+      if (curve.points.length < 2) continue
+      const childSeries = chart.addSeries(LineSeries, {
+        color: palette[index % palette.length] ?? '#ffffff',
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        title: curve.label,
+      })
+      childSeries.setData(
+        curve.points.map((point) => ({ time: point.date as Time, value: point.value })),
+      )
+    }
+    chart.timeScale().fitContent()
+    return () => chart.remove()
+  }, [series])
+  return <div ref={element} role="img" aria-label={label} className="h-80 w-full min-w-0" />
+}
 
 export function AlphaChart({
   view,
@@ -21,6 +66,8 @@ export function AlphaChart({
   cutoff,
   testStart,
   label,
+  compact: compactChart = false,
+  stacked = false,
 }: {
   view: ChartView
   pnl: Point[]
@@ -34,6 +81,8 @@ export function AlphaChart({
   /** First held-out day, from BRAIN: the train years before it are drawn dimmer. */
   testStart: string | null
   label: string
+  compact?: boolean
+  stacked?: boolean
 }) {
   const element = useRef<HTMLDivElement>(null)
 
@@ -55,6 +104,18 @@ export function AlphaChart({
     const at = (points: Point[]) => points.map((p) => ({ time: p.date as Time, value: p.value }))
 
     if (view === 'pnl') {
+      if (stacked) {
+        const drawdownPane = chart.addPane()
+        chart.panes()[0]?.setStretchFactor(0.72)
+        drawdownPane.setStretchFactor(0.28)
+        addUnderwater(chart, 1, {
+          lastValueVisible: true,
+          priceFormat: {
+            type: 'custom',
+            formatter: (p: number) => `${(p * 100).toFixed(1)}%`,
+          },
+        }).setData(at(underwater))
+      }
       if (constrained.length > 1) {
         chart
           .addSeries(LineSeries, {
@@ -63,7 +124,6 @@ export function AlphaChart({
             lineStyle: LineStyle.Dashed,
             priceLineVisible: false,
             lastValueVisible: false,
-            title: 'Investability constrained',
           })
           .setData(at(constrained))
       }
@@ -76,16 +136,16 @@ export function AlphaChart({
             lineWidth: 1,
             priceLineVisible: false,
             lastValueVisible: false,
-            title: 'After cost',
           })
           .setData(at(net))
       }
-      const ink = color('color-ink')
+      const ink = '#ffffff'
       const trained = color('color-ink-subtle')
       const series = chart.addSeries(LineSeries, {
         color: ink,
         lineWidth: 2,
         priceLineVisible: false,
+        lastValueVisible: false,
         title: 'PnL',
       })
       // Compared, not matched: the boundary BRAIN reports can fall on a day with no trading.
@@ -94,6 +154,8 @@ export function AlphaChart({
         pnl.map((p) => ({ time: p.date as Time, value: p.value, color: held(p) ? ink : trained })),
       )
       series.createPriceLine(zeroLine())
+      const latest = pnl.at(-1)
+      if (latest) series.createPriceLine(textOnlyValueLabel(latest.value))
       const first = testStart === null ? undefined : pnl.find(held)
       if (first) {
         createSeriesMarkers(series, [
@@ -130,7 +192,14 @@ export function AlphaChart({
     }
     chart.timeScale().fitContent()
     return () => chart.remove()
-  }, [view, pnl, constrained, net, underwater, sharpe, cutoff, testStart])
+  }, [view, pnl, constrained, net, underwater, sharpe, cutoff, testStart, stacked])
 
-  return <div ref={element} role="img" aria-label={label} className="h-80 w-full min-w-0" />
+  return (
+    <div
+      ref={element}
+      role="img"
+      aria-label={label}
+      className={`${compactChart ? 'h-32' : 'h-80'} w-full min-w-0`}
+    />
+  )
 }

@@ -21,7 +21,7 @@ export type AlphaMetricKey =
 export type AlphaSortKey = AlphaMetricKey | 'date_created' | 'date_submitted'
 
 export interface AlphaPageRequest {
-  submitted?: boolean
+  submitted?: boolean | null
   sort_by?: AlphaSortKey
   sort_desc?: boolean
   regions?: string[] | null
@@ -32,6 +32,7 @@ export interface AlphaPageRequest {
   search?: string | null
   /** Only Alphas the Evolution Lab can breed from, for when this table picks seeds. */
   evolvable?: boolean
+  rejected_only?: boolean
   /** 1..500 */
   limit?: number
   offset?: number
@@ -78,6 +79,8 @@ export const pool = {
   /** Raw BRAIN counts by stage and status. One BRAIN read. */
   summary: () => http.get<Record<string, number>>('/api/alphas/summary'),
   sync: () => http.post<Schemas['SyncStarted']>('/api/vault/sync'),
+  /** Runs the stored-Alpha quality checks in the background, with task progress. */
+  analyzeQuality: () => http.post<{ taskId: string }>('/api/vault/analyze-quality'),
   query: (body: AlphaPageRequest) => http.post<AlphaPage>('/api/vault/alphas/query', body),
   detail: (alphaId: string) =>
     http.get<AlphaDetail>(`/api/vault/alphas/${encodeURIComponent(alphaId)}/detail`),

@@ -81,6 +81,7 @@ class AppState:
             self.alphas,
             self.endpoints,
             self.tasks,
+            db=self.db,
             on_stored=lambda payload: self.hub.broadcast(TOPIC_SIMULATIONS, payload, replay=False),
         )
         self.tracker = SimulationTracker(

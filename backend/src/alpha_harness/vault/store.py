@@ -308,6 +308,8 @@ def _page_row(r: dict[str, Any]) -> dict[str, Any]:
         "pyramids": json_list(r["pyramids"]),
         "trainSharpe": r["train_sharpe"],
         "testSharpe": r["test_sharpe"],
+        "rejected": r.get("quality_status") == "rejected",
+        "rejectionReason": r.get("quality_reason"),
         "standingRegion": r.get("standing_region"),
     }
 
@@ -552,10 +554,44 @@ class AlphaVault:
         """The newest alpha stored, which is where an incremental sync resumes."""
         return await self.catalog.scalar("SELECT max(date_created) FROM alpha")
 
+    async def quality_pending_ids(self) -> list[str]:
+        """Stored Alphas with no persisted quality verdict yet."""
+        rows = await self.catalog.query(
+            "SELECT alpha_id FROM alpha WHERE date_created IS NOT NULL "
+            "AND quality_status IS NULL ORDER BY date_created, alpha_id"
+        )
+        return [str(row["alpha_id"]) for row in rows]
+
+    async def save_quality(self, rows: list[tuple[str, str, str | None]]) -> int:
+        """Persist (Alpha, status, reason) diagnoses without affecting later Alpha syncs."""
+        return await self.catalog.upsert(
+            "alpha",
+            ("alpha_id", "quality_status", "quality_reason"),
+            rows,
+        )
+
+    async def quality_for(self, alpha_ids: list[str]) -> dict[str, dict[str, Any]]:
+        if not alpha_ids:
+            return {}
+        rows = await self.catalog.query(
+            "SELECT alpha_id, quality_status, quality_reason FROM alpha "  # noqa: S608
+            f"WHERE alpha_id IN ({', '.join('?' for _ in alpha_ids)})",
+            alpha_ids,
+        )
+        return {
+            str(row["alpha_id"]): {
+                "status": row["quality_status"],
+                "rejected": row["quality_status"] == "rejected",
+                "reason": row["quality_reason"],
+            }
+            for row in rows
+            if row["quality_status"] is not None
+        }
+
     async def page(
         self,
         *,
-        submitted: bool = False,
+        submitted: bool | None = False,
         sort_by: str = "date_created",
         sort_desc: bool = True,
         regions: list[str] | None = None,
@@ -565,6 +601,7 @@ class AlphaVault:
         maximum: dict[str, float] | None = None,
         search: str | None = None,
         evolvable: bool = False,
+        rejected_only: bool = False,
         limit: int = 100,
         offset: int = 0,
     ) -> dict[str, Any]:
@@ -576,7 +613,14 @@ class AlphaVault:
         and picking one only to be told later that it cannot be a seed is the table's fault,
         not the user's.
         """
-        clauses = ["a.date_created IS NOT NULL", SUBMITTED if submitted else f"NOT {SUBMITTED}"]
+        clauses = ["a.date_created IS NOT NULL"]
+        if submitted is not None:
+            clauses.append(SUBMITTED if submitted else f"NOT {SUBMITTED}")
+        clauses.append(
+            "a.quality_status = 'rejected'"
+            if rejected_only
+            else "coalesce(a.quality_status, '') <> 'rejected'"
+        )
         if evolvable:
             # Every condition ``ga.seed_problem`` and ``ga.auto_seeds`` apply, not just the
             # type: an Alpha with no Fitness is refused there too, so offering it here would
@@ -622,6 +666,7 @@ class AlphaVault:
                    a.date_created, a.date_submitted, a.long_count, a.short_count,
                    a.max_trade, a.max_position, a.classifications, a.pyramids,
                    a.train_sharpe, a.test_sharpe, {standing},
+                   a.quality_status, a.quality_reason,
                    EXISTS (SELECT 1 FROM alpha_pnl p WHERE p.alpha_id = a.alpha_id) AS has_pnl
             FROM {source} a
             WHERE {where}

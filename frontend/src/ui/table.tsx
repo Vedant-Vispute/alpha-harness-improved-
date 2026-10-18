@@ -5,7 +5,7 @@
 
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { ArrowDownIcon, ArrowUpIcon, ChevronLeftIcon, ChevronRightIcon } from 'lucide-react'
-import { type ReactNode, useRef } from 'react'
+import { type CSSProperties, type ReactNode, useRef } from 'react'
 import { cn } from '@/lib/cn'
 import { DASH, fmt } from '@/lib/format'
 import { Button, Empty, ErrorNotice, Skeleton } from './kit'
@@ -14,6 +14,7 @@ export interface Column<T> {
   key: string
   header: ReactNode
   cell: (row: T) => ReactNode
+  cellStyle?: (row: T) => CSSProperties | undefined
   /** CSS grid track, e.g. `120px` or `minmax(240px,2fr)`. */
   width?: string
   align?: 'left' | 'right'
@@ -31,6 +32,7 @@ export function DataTable<T>({
   rowKey,
   onRowClick,
   rowClass,
+  rowStyle,
   sort,
   onSort,
   selected,
@@ -51,6 +53,8 @@ export function DataTable<T>({
   onRowClick?: (row: T, event: React.MouseEvent | React.KeyboardEvent) => void
   /** Extra classes for one row, so a table can mark rows that mean something. */
   rowClass?: (row: T) => string | undefined
+  /** Inline styling for data-driven row treatments, such as proportional status backgrounds. */
+  rowStyle?: (row: T) => CSSProperties | undefined
   sort?: Sort
   onSort?: (sort: Sort) => void
   /** With `onSelect`, adds a checkbox column. */
@@ -138,6 +142,7 @@ export function DataTable<T>({
                   type="button"
                   className={cn(
                     'inline-flex min-w-0 items-end transition-colors hover:text-ink',
+                    column.align === 'right' && 'w-full justify-end',
                     active && 'text-ink',
                   )}
                   onClick={() => onSort({ key: column.key, desc: active ? !sort.desc : true })}
@@ -214,6 +219,7 @@ export function DataTable<T>({
                     gridTemplateColumns: template,
                     height: rowHeight,
                     transform: `translateY(${item.start}px)`,
+                    ...rowStyle?.(row),
                   }}
                 >
                   {selectable && (
@@ -242,6 +248,7 @@ export function DataTable<T>({
                           'flex min-w-0 items-center overflow-hidden px-3',
                           column.align === 'right' && 'mono-metric justify-end',
                         )}
+                        style={column.cellStyle?.(row)}
                       >
                         {/* A flex box clips without an ellipsis; plain text gets a block that truncates. */}
                         {typeof content === 'string' || typeof content === 'number' ? (

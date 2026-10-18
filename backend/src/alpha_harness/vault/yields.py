@@ -55,8 +55,6 @@ IGNORED_CHECKS = frozenset(
         "MATCHES_THEMES",
         "CLUSTER_TEST",
         "OSMOSIS_ALLOCATION",
-        "POWER_POOL_DESCRIPTION_LENGTH",
-        "POWER_POOL_DESCRIPTION_FORMAT",
     }
 )
 
@@ -191,7 +189,7 @@ async def submittable(
     that held up in the test years, ranked by :func:`stability_order`, each kept
     unless it moves with a better-ranked pick.
     """
-    clauses = [f"NOT {SUBMITTED}"]
+    clauses = [f"NOT {SUBMITTED}", "coalesce(a.quality_status, '') <> 'rejected'"]
     params: list[Any] = []
     for column, value in (
         ("region", region),

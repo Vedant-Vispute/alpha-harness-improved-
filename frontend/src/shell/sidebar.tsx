@@ -6,6 +6,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useRouterState } from '@tanstack/react-router'
 import {
+  BookOpenIcon,
   ChevronsUpDownIcon,
   ExternalLinkIcon,
   LogOutIcon,
@@ -22,7 +23,7 @@ import { cn } from '@/lib/cn'
 import { useRefetchOn } from '@/lib/ws'
 import { pool } from '@/screens/pool/api'
 import { Button, Kbd } from '@/ui/kit'
-import { Confirm, Menu, Tooltip } from '@/ui/overlay'
+import { Confirm, Dialog, Menu, Tooltip } from '@/ui/overlay'
 import { NAV } from './nav'
 import { SETTINGS_SHORTCUT, useSettings } from './settings'
 import { UpdateBadge, useQuitApp, useUpdateStatus, VersionBadge } from './update'
@@ -149,6 +150,7 @@ export function Sidebar({
   const total = submittable.data?.total ?? 0
 
   const [quitting, setQuitting] = useState(false)
+  const [tutorialOpen, setTutorialOpen] = useState(false)
   const quit = useQuitApp()
   const launched = useUpdateStatus().data?.launcher != null
 
@@ -220,6 +222,19 @@ export function Sidebar({
             </Link>
           </Fragment>
         ))}
+        <Button
+          variant="ghost"
+          title="Tutorial"
+          aria-label="Tutorial"
+          onClick={() => setTutorialOpen(true)}
+          className={cn(
+            'h-8 justify-start gap-3 rounded-md text-body text-ink-muted hover:bg-surface-3 hover:text-ink',
+            collapsed && 'justify-center px-0',
+          )}
+        >
+          <BookOpenIcon className="size-4 shrink-0" aria-hidden />
+          {!collapsed && <span className="truncate">Tutorial</span>}
+        </Button>
       </nav>
 
       <div className="flex flex-col gap-1 border-t border-hairline p-2">
@@ -227,6 +242,7 @@ export function Sidebar({
             update stays on the rail as an icon — it is the one thing here worth interrupting
             for — while the version hides: 52px has no room for a date. */}
         <UpdateBadge collapsed={collapsed} />
+        <BrowserMemoryUsage collapsed={collapsed} />
         {!collapsed && (
           <div className="px-1.5 pt-0.5 pb-1">
             <VersionBadge />
@@ -309,6 +325,209 @@ export function Sidebar({
         Simulations already on BRAIN keep running there. Queued work waits until you open Alpha
         Harness again.
       </Confirm>
+      <Dialog
+        open={tutorialOpen}
+        onOpenChange={setTutorialOpen}
+        title="Alpha Research Tutorial"
+        description="A practical path from data and an idea to reviewed Alpha results."
+        className="max-w-3xl"
+      >
+        <div className="flex flex-col gap-5 text-body text-ink-muted">
+          <section className="flex flex-col gap-2">
+            <h3 className="text-headline font-semibold text-ink">Before you start</h3>
+            <ol className="list-decimal space-y-1 pl-5">
+              <li>
+                Connect your WorldQuant BRAIN account in{' '}
+                <Link className="text-primary" to="/sync" onClick={() => setTutorialOpen(false)}>
+                  Sync
+                </Link>
+                , then sync the data and Alphas you need.
+              </li>
+              <li>
+                For LLM workflows, add a provider and API key in{' '}
+                <Link className="text-primary" to="/ai" onClick={() => setTutorialOpen(false)}>
+                  LLM Integration
+                </Link>
+                . Choose or create instructions in{' '}
+                <Link className="text-primary" to="/prompts" onClick={() => setTutorialOpen(false)}>
+                  LLM Prompts
+                </Link>
+                .
+              </li>
+              <li>
+                Use{' '}
+                <Link className="text-primary" to="/data" onClick={() => setTutorialOpen(false)}>
+                  Data Explorer
+                </Link>{' '}
+                to find datasets and fields for your region, delay, and universe.
+              </li>
+            </ol>
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <h3 className="text-headline font-semibold text-ink">Build and test an Alpha</h3>
+            <ol className="list-decimal space-y-1 pl-5">
+              <li>
+                Open{' '}
+                <Link className="text-primary" to="/labs" onClick={() => setTutorialOpen(false)}>
+                  Research Labs
+                </Link>
+                . Start with Search Lab to generate expressions from selected fields, Build with
+                Expression or Build with Blocks to define a template, or LLM Alpha Lab to have a
+                selected prompt generate expressions.
+              </li>
+              <li>
+                Set the market scope and simulation settings. Review the planned simulations and
+                available fields before running.
+              </li>
+              <li>
+                Choose <em>Add to Tasks</em> to queue work or <em>Run Now</em> to start immediately.
+                Follow progress in{' '}
+                <Link className="text-primary" to="/tasks" onClick={() => setTutorialOpen(false)}>
+                  Tasks
+                </Link>
+                .
+              </li>
+              <li>
+                Open completed results, inspect Alpha metrics and charts, then refine promising
+                candidates with Settings Sampler or Correlation Breaker from{' '}
+                <Link className="text-primary" to="/tools" onClick={() => setTutorialOpen(false)}>
+                  Tools
+                </Link>
+                .
+              </li>
+            </ol>
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <h3 className="text-headline font-semibold text-ink">Build a SuperAlpha</h3>
+            <ol className="list-decimal space-y-1 pl-5">
+              <li>
+                First build, simulate, review, and submit individual Alphas on BRAIN. The Super
+                Alpha Lab selects your submitted ACTIVE Alphas.
+              </li>
+              <li>
+                Open{' '}
+                <Link
+                  className="text-primary"
+                  to="/labs/super-alpha"
+                  onClick={() => setTutorialOpen(false)}
+                >
+                  Super Alpha Lab
+                </Link>
+                , choose a single region, delay, universe, neutralization, selection limit,
+                activation, and core count.
+              </li>
+              <li>
+                Review the planned selections, combinations, and simulation count. Add the plan to
+                Tasks or run it now.
+              </li>
+              <li>
+                Review completed SuperAlpha checks in Tasks. Eligible results appear in the
+                Submission Planner; submission itself is completed on BRAIN.
+              </li>
+            </ol>
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <h3 className="text-headline font-semibold text-ink">Build an ARC Alpha</h3>
+            <ol className="list-decimal space-y-1 pl-5">
+              <li>
+                Open the{' '}
+                <Link
+                  className="text-primary"
+                  to="/labs/region-agnostic"
+                  onClick={() => setTutorialOpen(false)}
+                >
+                  ARC Alpha Lab
+                </Link>{' '}
+                and choose fields from All Regions. Choose at least two regions where the fields
+                have coverage.
+              </li>
+              <li>
+                Choose delay, region universe size, model, prompt, cores, number of expressions, and
+                any shared neutralizations. The harness groups each expression and schedules its
+                regional simulations, with at most two running on BRAIN at once.
+              </li>
+              <li>Add the task to Tasks or run it now. Follow its progress in Tasks.</li>
+              <li>
+                In task results, click an expression, then choose <em>Run ARC simulation</em> to
+                simulate it once in ALL. Follow its progress and open the completed ARC results.
+                Click a region row to open that individual regional simulation.
+              </li>
+            </ol>
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <h3 className="text-headline font-semibold text-ink">Build a competition Alpha</h3>
+            <p>
+              Check the competition&apos;s rules, scope, and eligibility before submitting on BRAIN.
+              Use{' '}
+              <Link
+                className="text-primary"
+                to="/competitions"
+                onClick={() => setTutorialOpen(false)}
+              >
+                Competitions
+              </Link>{' '}
+              to view competition information in the harness.
+            </p>
+          </section>
+
+          <section className="flex flex-col gap-2 border-t border-hairline pt-3">
+            <h3 className="text-headline font-semibold text-ink">Review and submit</h3>
+            <p>
+              Use{' '}
+              <Link className="text-primary" to="/pool" onClick={() => setTutorialOpen(false)}>
+                Alphas
+              </Link>{' '}
+              to review stored and submittable candidates. Use the Submission Planner to choose and
+              order candidates, then complete submission on the BRAIN platform. Harness metrics and
+              checks help you review candidates; BRAIN determines final submission status.
+            </p>
+          </section>
+        </div>
+      </Dialog>
     </aside>
+  )
+}
+
+/** Chromium's non-standard heap estimate; browsers do not expose the tab hover-card figure. */
+function BrowserMemoryUsage({ collapsed }: { collapsed: boolean }) {
+  const [bytes, setBytes] = useState<number | null>(null)
+
+  useEffect(() => {
+    const read = () => {
+      const memory = (
+        performance as Performance & {
+          memory?: { usedJSHeapSize: number }
+        }
+      ).memory
+      setBytes(typeof memory?.usedJSHeapSize === 'number' ? memory.usedJSHeapSize : null)
+    }
+    read()
+    const timer = window.setInterval(read, 5000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  const label =
+    bytes == null
+      ? 'Page memory unavailable in this browser'
+      : `JS heap ${Math.round(bytes / 1024 / 1024)} MB`
+  return (
+    <Tooltip content={`${label}. Approximate JavaScript heap for this page, not total tab memory.`}>
+      <div
+        role="status"
+        aria-label={label}
+        className={cn(
+          'flex min-h-8 items-center text-caption text-ink-subtle',
+          collapsed ? 'justify-center px-0.5' : 'px-1.5',
+        )}
+      >
+        <span className="num">
+          {collapsed ? `M ${bytes == null ? '—' : `${Math.round(bytes / 1024 / 1024)}MB`}` : label}
+        </span>
+      </div>
+    </Tooltip>
   )
 }

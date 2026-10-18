@@ -54,8 +54,12 @@ const COLUMNS: Column<AlphaRow>[] = [
   {
     key: 'alpha_id',
     header: 'Alpha',
-    width: '96px',
-    cell: (r) => <span className="num text-ink-muted">{r.alphaId}</span>,
+    width: '160px',
+    cell: (r) => (
+      <span className="flex items-center gap-1.5">
+        <span className="num text-ink-muted">{r.alphaId}</span>
+      </span>
+    ),
   },
   {
     key: 'expression',
@@ -171,6 +175,7 @@ export function Stored({ onOpen }: { onOpen: (alphaId: string) => void }) {
     queryFn: pool.overview,
   })
   const [submitted, setSubmitted] = useState<'no' | 'yes'>('no')
+  const [rejectedOnly, setRejectedOnly] = useState(false)
   const [copying, setCopying] = useState(false)
   const [search, setSearch] = useState('')
   const [regions, setRegions] = useState<string[]>([])
@@ -198,7 +203,8 @@ export function Stored({ onOpen }: { onOpen: (alphaId: string) => void }) {
     }
 
   const body: AlphaPageRequest = {
-    submitted: market ? false : submitted === 'yes',
+    submitted: market ? false : rejectedOnly ? null : submitted === 'yes',
+    rejected_only: rejectedOnly,
     // While picking seeds, hide what the lab would refuse. A SuperAlpha's expression is a
     // combo, not a regular expression, so it can never be bred from — offering it here and
     // rejecting it on submit is the table misleading the user.
@@ -271,7 +277,10 @@ export function Stored({ onOpen }: { onOpen: (alphaId: string) => void }) {
   return (
     <>
       {market && <SeedPickBar market={market} />}
-      <Panel title="Stored Alphas" bodyClassName="flex flex-col gap-4">
+      <Panel
+        title={rejectedOnly ? 'Rejected Alphas' : 'Stored Alphas'}
+        bodyClassName="flex flex-col gap-4"
+      >
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative w-full max-w-sm">
             <SearchIcon
@@ -286,7 +295,7 @@ export function Stored({ onOpen }: { onOpen: (alphaId: string) => void }) {
               onChange={(e) => reset(setSearch)(e.target.value)}
             />
           </div>
-          {!market && (
+          {!market && !rejectedOnly && (
             <Segmented
               label="Submitted"
               value={submitted}
@@ -297,7 +306,18 @@ export function Stored({ onOpen }: { onOpen: (alphaId: string) => void }) {
               ]}
             />
           )}
-          {!market && submitted === 'yes' && (
+          {!market && (
+            <Segmented
+              label="Alpha list"
+              value={rejectedOnly ? 'rejected' : 'active'}
+              onChange={(value) => reset(setRejectedOnly)(value === 'rejected')}
+              items={[
+                { value: 'active', label: 'Alphas' },
+                { value: 'rejected', label: 'Rejected Alphas' },
+              ]}
+            />
+          )}
+          {!market && !rejectedOnly && submitted === 'yes' && (
             <Button
               size="sm"
               variant="ghost"
@@ -419,9 +439,28 @@ export function Stored({ onOpen }: { onOpen: (alphaId: string) => void }) {
         )}
 
         <DataTable
-          label="Stored Alphas"
+          label={rejectedOnly ? 'Rejected Alphas' : 'Stored Alphas'}
           rows={rows}
-          columns={COLUMNS}
+          columns={
+            rejectedOnly
+              ? [
+                  ...COLUMNS,
+                  {
+                    key: 'rejection_reason',
+                    header: 'Rejection reason',
+                    width: 'minmax(220px,2fr)',
+                    cell: (r) => (
+                      <span
+                        className="text-pnl-negative-text"
+                        title={r.rejectionReason ?? undefined}
+                      >
+                        {r.rejectionReason || 'Quality checks failed'}
+                      </span>
+                    ),
+                  },
+                ]
+              : COLUMNS
+          }
           rowKey={(r) => r.alphaId}
           onRowClick={(r) => onOpen(r.alphaId)}
           sort={sort}
@@ -436,7 +475,9 @@ export function Stored({ onOpen }: { onOpen: (alphaId: string) => void }) {
           empty={
             overview.data?.counts.alphas === 0
               ? 'No Alphas stored yet. Press Sync from BRAIN above.'
-              : 'No Alphas match these filters.'
+              : rejectedOnly
+                ? 'No Alphas have been rejected by quality analysis.'
+                : 'No Alphas match these filters.'
           }
         />
         <div className="flex flex-wrap items-center justify-between gap-2">

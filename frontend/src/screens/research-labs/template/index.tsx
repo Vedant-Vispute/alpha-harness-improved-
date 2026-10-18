@@ -1,5 +1,5 @@
 /**
- * Template Lab: type a Fast Expression with a `$name` wherever the search chooses, define each
+ * Expression Search: type a Fast Expression with a `$name` wherever the search chooses, define each
  * variable as fields or values, pick the settings to search, then add the search to Tasks. The
  * lab tries what the template allows and keeps what gives the best Sharpe.
  */
@@ -25,7 +25,6 @@ import {
   testPeriodOf,
 } from '@/screens/research-labs/simulation-settings'
 import { CoresSetting, SimulationsSetting } from '@/screens/research-labs/task-settings'
-import { TemplateSections } from '@/screens/research-labs/template-sections'
 import {
   Button,
   Chips,
@@ -358,8 +357,11 @@ export function TemplateLabScreen() {
 
   return (
     <Page>
-      <PageHeader title="Template Lab" actions={<AddTaskButtons add={add} disabled={!ready} />} />
-      <TemplateSections />
+      <PageHeader
+        title="Build with Expression"
+        description="Write a Fast Expression template and search its variables across datasets."
+        actions={<AddTaskButtons add={add} disabled={!ready} />}
+      />
       {options.isError && (
         <ErrorNotice error={options.error} title="Could not read your operators" />
       )}
