@@ -90,6 +90,12 @@ CREATE TABLE IF NOT EXISTS data_category (
     PRIMARY KEY (category_id, instrument_type, region, delay, universe)
 );
 
+-- Rebuilt from the user's submitted Alpha expressions when Data Explorer needs it.
+CREATE TABLE IF NOT EXISTS alpha_field_usage (
+    field_id          VARCHAR PRIMARY KEY,
+    your_alphas       INTEGER NOT NULL
+);
+
 -- Only region ALL sends it: how many regions hold the field, which is what says whether it
 -- can survive a region-agnostic simulation's intersection of regions.
 ALTER TABLE data_field ADD COLUMN IF NOT EXISTS region_coverage INTEGER;
@@ -168,6 +174,7 @@ ALTER TABLE alpha ADD COLUMN IF NOT EXISTS after_cost_t10 DOUBLE;
 -- Cached Alpha quality verdicts, persisted independently of the originating task.
 ALTER TABLE alpha ADD COLUMN IF NOT EXISTS quality_status VARCHAR;
 ALTER TABLE alpha ADD COLUMN IF NOT EXISTS quality_reason VARCHAR;
+ALTER TABLE alpha ADD COLUMN IF NOT EXISTS quality_version INTEGER;
 -- In-sample figures rebuilt from the stored series (final days included), kept so the Portfolio
 -- list need not read every series. Apart from BRAIN's own, which a listing overwrites.
 -- An older database still carries `series_sharpe` and its five siblings, rebuilt locally
@@ -730,5 +737,25 @@ class Catalog:
             table,
             ("DELETE FROM alpha_pnl WHERE alpha_id = ?", [alpha_id]),
             (f"INSERT INTO alpha_pnl ({columns}) SELECT {columns} FROM {_INCOMING}", []),  # noqa: S608
+        )
+        return len(rows)
+
+    async def replace_alpha_field_usage(self, rows: list[tuple[str, int]]) -> int:
+        """Replace the cached count of submitted Alphas using each data field."""
+        table = pa.table(
+            {
+                "field_id": pa.array([field for field, _ in rows], type=pa.string()),
+                "your_alphas": pa.array([count for _, count in rows], type=pa.int32()),
+            }
+        )
+        await self._locked(
+            self._load,
+            table,
+            ("DELETE FROM alpha_field_usage", []),
+            (
+                "INSERT INTO alpha_field_usage (field_id, your_alphas) "
+                "SELECT field_id, your_alphas FROM _incoming",
+                [],
+            ),
         )
         return len(rows)

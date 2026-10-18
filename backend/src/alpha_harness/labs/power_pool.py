@@ -592,7 +592,10 @@ def _feedback_line(trial: Any, metrics: dict[str, float]) -> str:
         return f"Rejected: {analysis.get('reason') or 'quality checks failed'} | {expression}"
     packet = json.dumps(metrics, separators=(",", ":"))
     if analysis.get("status") == "insufficient_data":
-        return f"Analysis incomplete (yearly or daily PnL data unavailable) {packet} | {expression}"
+        return (
+            f"Analysis incomplete (yearly trading activity data unavailable) "
+            f"{packet} | {expression}"
+        )
     return f"Accepted {packet} | {expression}" if metrics else f"Accepted | {expression}"
 
 
@@ -620,15 +623,20 @@ async def analyze_completed(optimizer: Optimizer, study_id: int, dataset: str) -
                 )
             ).all()
         )
-        pending = [t for t in pending if not (t.result or {}).get("analysis")]
+        pending = [
+            t
+            for t in pending
+            if not isinstance((analysis := (t.result or {}).get("analysis")), dict)
+            or analysis.get("qualityVersion") != alpha_analysis.QUALITY_VERSION
+        ]
         alpha_ids = [str(t.alpha_id) for t in pending if t.alpha_id]
 
     for alpha_id in dict.fromkeys(alpha_ids):
         # fetch_returns persists exact daily PnL and caches yearly stats, which are reused here.
         await backfill.fetch_returns(alpha_id)
         yearly = await backfill.yearly_rows(alpha_id)
-        days = await optimizer.alphas.pnl_series(alpha_id)
-        diagnostic = alpha_analysis.diagnose(yearly, alpha_analysis.daily_values(days))
+        activity = await optimizer.alphas.trading_days_by_year(alpha_id)
+        diagnostic = alpha_analysis.diagnose(yearly, activity)
         await backfill.vault.save_quality(
             [(alpha_id, str(diagnostic["status"]), diagnostic.get("reason"))]
         )

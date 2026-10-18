@@ -17,6 +17,7 @@ import numpy as np
 import structlog
 
 from ..db.duck import ALPHA_COLUMNS, TRAIN_COLUMNS, Catalog
+from ..labs.alpha_analysis import QUALITY_VERSION
 from . import metrics
 from .yields import SUBMITTED, without_quota_checks
 
@@ -555,26 +556,29 @@ class AlphaVault:
         return await self.catalog.scalar("SELECT max(date_created) FROM alpha")
 
     async def quality_pending_ids(self) -> list[str]:
-        """Stored Alphas with no persisted quality verdict yet."""
+        """Stored Alphas without a verdict from the current quality rules."""
         rows = await self.catalog.query(
             "SELECT alpha_id FROM alpha WHERE date_created IS NOT NULL "
-            "AND quality_status IS NULL ORDER BY date_created, alpha_id"
+            "AND (quality_status IS NULL OR coalesce(quality_version, 0) < ?) "
+            "ORDER BY date_created DESC, alpha_id",
+            [QUALITY_VERSION],
         )
         return [str(row["alpha_id"]) for row in rows]
 
     async def save_quality(self, rows: list[tuple[str, str, str | None]]) -> int:
         """Persist (Alpha, status, reason) diagnoses without affecting later Alpha syncs."""
+        versioned = [(*row, QUALITY_VERSION) for row in rows]
         return await self.catalog.upsert(
             "alpha",
-            ("alpha_id", "quality_status", "quality_reason"),
-            rows,
+            ("alpha_id", "quality_status", "quality_reason", "quality_version"),
+            versioned,
         )
 
     async def quality_for(self, alpha_ids: list[str]) -> dict[str, dict[str, Any]]:
         if not alpha_ids:
             return {}
         rows = await self.catalog.query(
-            "SELECT alpha_id, quality_status, quality_reason FROM alpha "  # noqa: S608
+            "SELECT alpha_id, quality_status, quality_reason, quality_version FROM alpha "  # noqa: S608
             f"WHERE alpha_id IN ({', '.join('?' for _ in alpha_ids)})",
             alpha_ids,
         )
@@ -586,6 +590,7 @@ class AlphaVault:
             }
             for row in rows
             if row["quality_status"] is not None
+            and (row["quality_version"] or 0) >= QUALITY_VERSION
         }
 
     async def page(
@@ -617,9 +622,10 @@ class AlphaVault:
         if submitted is not None:
             clauses.append(SUBMITTED if submitted else f"NOT {SUBMITTED}")
         clauses.append(
-            "a.quality_status = 'rejected'"
+            f"a.quality_status = 'rejected' AND coalesce(a.quality_version, 0) >= {QUALITY_VERSION}"
             if rejected_only
-            else "coalesce(a.quality_status, '') <> 'rejected'"
+            else f"(coalesce(a.quality_status, '') <> 'rejected' OR "
+            f"coalesce(a.quality_version, 0) < {QUALITY_VERSION})"
         )
         if evolvable:
             # Every condition ``ga.seed_problem`` and ``ga.auto_seeds`` apply, not just the
@@ -683,11 +689,39 @@ class AlphaVault:
             "SELECT date, pnl FROM alpha_pnl WHERE alpha_id = ? ORDER BY date", [alpha_id]
         )
 
+    async def trading_days_by_year(self, alpha_id: str) -> dict[int, int]:
+        """Count distinct positive-turnover days by in-sample year for quality analysis."""
+        rows = await self.catalog.query(
+            """
+            SELECT CAST(EXTRACT(YEAR FROM p.date) AS INTEGER) AS year,
+                   count(*) FILTER (WHERE coalesce(p.turnover, 0) > 0) AS trading_days
+            FROM alpha_pnl p
+            LEFT JOIN alpha a ON a.alpha_id = p.alpha_id
+            WHERE p.alpha_id = ? AND (a.test_start IS NULL OR p.date < a.test_start)
+            GROUP BY 1
+            ORDER BY 1
+            """,
+            [alpha_id],
+        )
+        return {int(row["year"]): int(row["trading_days"] or 0) for row in rows}
+
     async def series_length(self, alpha_id: str) -> int:
         value = await self.catalog.scalar(
             "SELECT count(*) FROM alpha_pnl WHERE alpha_id = ?", [alpha_id]
         )
         return int(value or 0)
+
+    async def has_complete_turnover(self, alpha_id: str) -> bool:
+        """Whether every stored daily PnL row has turnover for activity analysis."""
+        rows = await self.catalog.query(
+            """
+            SELECT count(*) AS total,
+                   count(*) FILTER (WHERE turnover IS NULL) AS missing
+            FROM alpha_pnl WHERE alpha_id = ?
+            """,
+            [alpha_id],
+        )
+        return bool(rows and rows[0]["total"] and not rows[0]["missing"])
 
     async def daily_pnl(self, alpha_ids: list[str]) -> dict[str, dict[date, float]]:
         """Each Alpha's stored daily PnL by date, oldest first. Alphas without one are absent."""

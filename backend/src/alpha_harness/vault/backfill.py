@@ -114,6 +114,9 @@ class Backfill:
         self._running: asyncio.Task[Any] | None = None
         self._quality_job: asyncio.Task[Any] | None = None
         self._quality_task_id: str | None = None
+        self._quality_task: Any | None = None
+        self._quality_pause = asyncio.Event()
+        self._quality_pause.set()
         self._starting = asyncio.Lock()
         self._background: set[asyncio.Task[Any]] = set()
         #: Yearly rows just read alongside returns, reused by Power Pool's analysis pass.
@@ -161,7 +164,7 @@ class Backfill:
         """
         return await self._launch(kind, label, lambda task: self._job(task, work))
 
-    async def start_quality_analysis(self) -> str:
+    async def start_quality_analysis(self, alpha_ids: list[str] | None = None) -> str:
         """Analyze every stored Alpha without colliding with an Alpha sync.
 
         A sync already in flight is allowed to finish first. While this job is queued or
@@ -172,14 +175,56 @@ class Backfill:
                 if self._quality_task_id is None:
                     raise RuntimeError("Alpha quality task has no task id.")
                 return self._quality_task_id
-            task = await self.tasks.start("alpha-quality", "Analyzing Alpha quality")
+            label = (
+                f"Analyzing {len(alpha_ids)} selected Alphas"
+                if alpha_ids is not None
+                else "Analyzing Alpha quality"
+            )
+            task = await self.tasks.start("alpha-quality", label)
             self._quality_task_id = task.id
+            self._quality_task = task
+            self._quality_pause.set()
             self._quality_job = asyncio.create_task(
-                self._run_quality_analysis(task), name="alpha-quality"
+                self._run_quality_analysis(task, alpha_ids=alpha_ids), name="alpha-quality"
             )
             self._background.add(self._quality_job)
             self._quality_job.add_done_callback(self._background.discard)
             return task.id
+
+    async def pause_quality(self, task_id: str) -> bool:
+        if not self._quality_is_current(task_id):
+            return False
+        self._quality_pause.clear()
+        task = self._quality_task
+        if task is not None:
+            await self.tasks.update(task, detail="Pausing after the current Alpha", paused=True)
+        return True
+
+    async def resume_quality(self, task_id: str) -> bool:
+        if not self._quality_is_current(task_id):
+            return False
+        self._quality_pause.set()
+        task = self._quality_task
+        if task is not None:
+            await self.tasks.update(task, paused=False)
+        return True
+
+    def cancel_quality(self, task_id: str) -> bool:
+        if not self._quality_is_current(task_id):
+            return False
+        job = self._quality_job
+        if job is None:
+            return False
+        self._quality_pause.set()
+        job.cancel()
+        return True
+
+    def _quality_is_current(self, task_id: str) -> bool:
+        return (
+            task_id == self._quality_task_id
+            and self._quality_job is not None
+            and not self._quality_job.done()
+        )
 
     def cancel_job(self, kind: str) -> bool:
         """Stop the running job if it is a ``kind``. Whatever it already saved stays."""
@@ -328,8 +373,10 @@ class Backfill:
         await asyncio.gather(*tasks, return_exceptions=True)
         self._running = None
 
-    async def _run_quality_analysis(self, task: Any) -> None:
+    async def _run_quality_analysis(self, task: Any, *, alpha_ids: list[str] | None = None) -> None:
         """Analyze cached Alphas sequentially and publish useful progress as they finish."""
+        saved: list[tuple[str, str, str | None]] = []
+        done = 0
         try:
             if self.busy:
                 await self.tasks.update(task, detail="Waiting for the current Alpha sync to finish")
@@ -339,9 +386,12 @@ class Backfill:
                     await asyncio.wait({running})
 
             await self.tasks.update(task, progress=0.0, detail="Checking existing Alpha analyses")
-            await self._seed_existing_task_diagnostics()
-            alpha_ids = await self.vault.quality_pending_ids()
-            total = len(alpha_ids)
+            if alpha_ids is None:
+                await self._seed_existing_task_diagnostics()
+            work_ids = (
+                alpha_ids if alpha_ids is not None else await self.vault.quality_pending_ids()
+            )
+            total = len(work_ids)
             if not total:
                 await self.tasks.update(task, progress=1.0, detail="All stored Alphas are analyzed")
                 await self.tasks.finish(task)
@@ -350,17 +400,28 @@ class Backfill:
             await self.tasks.update(
                 task,
                 progress=0.0,
-                detail=f"Analyzing 0 of {total} unanalyzed Alphas",
+                detail=f"Analyzing 0 of {total} Alphas needing analysis",
             )
             failed = 0
-            saved: list[tuple[str, str, str | None]] = []
             last_progress = asyncio.get_running_loop().time()
-            for done, alpha_id in enumerate(alpha_ids, start=1):
+            for done, alpha_id in enumerate(work_ids, start=1):
+                if not self._quality_pause.is_set():
+                    await self.tasks.update(
+                        task,
+                        detail=f"Paused after {done - 1} of {total} Alphas",
+                        paused=True,
+                    )
+                await self._quality_pause.wait()
+                await self.tasks.update(
+                    task, detail=f"Analyzing {done - 1} of {total} Alphas", paused=False
+                )
                 try:
-                    await self.fetch_returns(alpha_id)
-                    yearly = await self.yearly_rows(alpha_id)
-                    daily = await self.vault.pnl_series(alpha_id)
-                    diagnostic = alpha_analysis.diagnose(yearly, alpha_analysis.daily_values(daily))
+                    has_pnl = not await self.vault.lacking_pnl([alpha_id])
+                    has_turnover = await self.vault.has_complete_turnover(alpha_id)
+                    if not has_pnl or not has_turnover:
+                        await self.fetch_returns(alpha_id)
+                    activity = await self.vault.trading_days_by_year(alpha_id)
+                    diagnostic = alpha_analysis.diagnose([], activity)
                     saved.append((alpha_id, str(diagnostic["status"]), diagnostic.get("reason")))
                 except Exception as exc:  # noqa: BLE001
                     failed += 1
@@ -368,7 +429,9 @@ class Backfill:
                         "vault.quality_analysis_failed", alpha_id=alpha_id, error=str(exc)[:160]
                     )
 
-                if saved and (len(saved) >= 100 or done == total):
+                # Persist small batches so completed verdicts survive a restart promptly and
+                # appear in Rejected Alphas while a long sweep is still running.
+                if saved and (len(saved) >= 10 or done == total):
                     await self._save_quality_batch(saved)
                     saved.clear()
                 now = asyncio.get_running_loop().time()
@@ -387,6 +450,9 @@ class Backfill:
             await self.tasks.update(task, progress=1.0, detail=final)
             await self.tasks.finish(task)
         except asyncio.CancelledError:
+            if saved:
+                await self._save_quality_batch(saved)
+                saved.clear()
             await self.tasks.finish(task, state="cancelled")
             raise
         except Exception as exc:
@@ -403,6 +469,7 @@ class Backfill:
                 "rejected": status == "rejected",
                 "reason": reason,
                 "reasons": [reason] if reason else [],
+                "qualityVersion": alpha_analysis.QUALITY_VERSION,
             }
             for alpha_id, status, reason in rows
         }
@@ -441,6 +508,8 @@ class Backfill:
                     continue
                 diagnostic = result.get("analysis")
                 if not isinstance(diagnostic, dict):
+                    continue
+                if diagnostic.get("qualityVersion") != alpha_analysis.QUALITY_VERSION:
                     continue
                 status = diagnostic.get("status") or (
                     "rejected" if diagnostic.get("rejected") else "accepted"

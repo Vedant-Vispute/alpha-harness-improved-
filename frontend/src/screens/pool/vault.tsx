@@ -1,7 +1,7 @@
 /** Syncing alphas from BRAIN, and the counts and background progress that go with it. */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ActivityIcon, RefreshCwIcon } from 'lucide-react'
+import { ActivityIcon, PauseIcon, PlayIcon, RefreshCwIcon, XIcon } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { tasks } from '@/api/core'
@@ -53,13 +53,7 @@ export function SyncAlphasButton() {
   )
 }
 
-/** Analyze every stored Alpha that has no quality verdict yet. */
-export function AnalyzeAlphasButton() {
-  const mutation = useMutation({
-    mutationFn: pool.analyzeQuality,
-    onSuccess: () => toast.success('Alpha quality analysis started'),
-    onError: (error: unknown) => toast.error(errorMessage(error)),
-  })
+function useQualityTask() {
   const liveTasks = useLive((s) => s.tasks)
   const polled = useQuery({
     queryKey: ['background-tasks'],
@@ -67,19 +61,106 @@ export function AnalyzeAlphasButton() {
     enabled: liveTasks == null,
     refetchInterval: 5000,
   })
-  const active = ((liveTasks ?? polled.data)?.tasks ?? []).some(
-    (task) => task.kind === 'alpha-quality' && task.state === 'running',
+  const task = ((liveTasks ?? polled.data)?.tasks ?? []).find(
+    (candidate) => candidate.kind === 'alpha-quality' && candidate.state === 'running',
   )
+  return { task, active: Boolean(task) }
+}
+
+/** Analyze every stored Alpha that has no quality verdict yet, with controls for this job only. */
+export function AnalyzeAlphasButton() {
+  const mutation = useMutation({
+    mutationFn: pool.analyzeQuality,
+    onSuccess: () => toast.success('Alpha quality analysis started'),
+    onError: (error: unknown) => toast.error(errorMessage(error)),
+  })
+  const queryClient = useQueryClient()
+  const { task, active } = useQualityTask()
+  const control = useMutation({
+    mutationFn: (action: 'pause' | 'resume' | 'cancel') =>
+      pool.controlQuality(task?.id ?? '', action),
+    onSuccess: async (result, action) => {
+      if (!result.accepted) {
+        toast.error('This Alpha quality analysis is no longer running')
+        return
+      }
+      toast.success(
+        action === 'pause'
+          ? 'Alpha quality analysis paused'
+          : action === 'resume'
+            ? 'Alpha quality analysis resumed'
+            : 'Alpha quality analysis cancelled',
+      )
+      await queryClient.invalidateQueries({ queryKey: ['background-tasks'] })
+    },
+    onError: (error: unknown) => toast.error(errorMessage(error)),
+  })
+  const paused = task?.meta['paused'] === true
 
   return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button
+        variant="secondary"
+        loading={mutation.isPending || (active && !paused)}
+        disabled={mutation.isPending || active || control.isPending}
+        onClick={() => mutation.mutate()}
+      >
+        {!mutation.isPending && !active && <ActivityIcon />}
+        {active ? (paused ? 'Analysis paused' : 'Analyzing Alphas') : 'Analyze Alpha Quality'}
+      </Button>
+      {task && (
+        <>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={control.isPending}
+            onClick={() => control.mutate(paused ? 'resume' : 'pause')}
+          >
+            {paused ? <PlayIcon /> : <PauseIcon />}
+            {paused ? 'Resume' : 'Pause'}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={control.isPending}
+            onClick={() => control.mutate('cancel')}
+          >
+            <XIcon />
+            Cancel analysis
+          </Button>
+        </>
+      )}
+    </div>
+  )
+}
+
+/** Analyze exactly the Alpha rows selected in the stored list, including previously analyzed ones. */
+export function AnalyzeSelectedAlphasButton({
+  alphaIds,
+  onStarted,
+}: {
+  alphaIds: string[]
+  onStarted: () => void
+}) {
+  const { active } = useQualityTask()
+  const mutation = useMutation({
+    mutationFn: () => pool.analyzeQuality(alphaIds),
+    onSuccess: () => {
+      toast.success(`Analyzing ${alphaIds.length} selected Alphas`)
+      onStarted()
+    },
+    onError: (error: unknown) => toast.error(errorMessage(error)),
+  })
+  return (
     <Button
+      size="sm"
       variant="secondary"
-      loading={mutation.isPending || active}
-      disabled={mutation.isPending || active}
+      loading={mutation.isPending}
+      disabled={alphaIds.length === 0 || active || mutation.isPending}
       onClick={() => mutation.mutate()}
     >
-      {!mutation.isPending && !active && <ActivityIcon />}
-      {active || mutation.isPending ? 'Analyzing Alphas' : 'Analyze Alpha Quality'}
+      <ActivityIcon />
+      Analyze selected ({fmt.int(alphaIds.length)})
     </Button>
   )
 }

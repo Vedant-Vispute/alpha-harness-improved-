@@ -5,6 +5,11 @@ from typing import Any
 from sqlalchemy import select
 
 from ..db.models import Trial, TrialState
+from ..labs.alpha_analysis import QUALITY_VERSION
+
+
+def _current_diagnostic(value: Any) -> bool:
+    return value.get("qualityVersion") == QUALITY_VERSION
 
 
 async def feedback_for(
@@ -26,6 +31,6 @@ async def feedback_for(
         for alpha_id, result in rows:
             if alpha_id and alpha_id not in found and isinstance(result, dict):
                 analysis = result.get("analysis")
-                if isinstance(analysis, dict):
+                if isinstance(analysis, dict) and _current_diagnostic(analysis):
                     found[str(alpha_id)] = analysis
         return found

@@ -146,6 +146,7 @@ class DataFieldRow(BaseModel):
     date_coverage: float | None
     user_count: int | None
     alpha_count: int | None
+    your_alphas: int = 0
     pyramid_multiplier: float | None
     #: JSON array text.
     themes: str | None

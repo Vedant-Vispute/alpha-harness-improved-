@@ -8,12 +8,14 @@ names, because a user-supplied sort key must never reach SQL directly.
 """
 
 import asyncio
+from collections import Counter
 from datetime import date
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, Field
 
 from ..brain.schemas import REGION_AGNOSTIC_REGION
+from ..labs.fastexpr import ParseError, data_fields, parse
 from .search import MATCH, TABLE, query_terms
 from .search import ready as search_ready
 
@@ -30,6 +32,7 @@ SORTABLE = {
     "date_created",
     "user_count",
     "alpha_count",
+    "your_alphas",
     "pyramid_multiplier",
     "field_type",
 }
@@ -263,11 +266,24 @@ def _any_word(n: int) -> str:
     return "(" + " OR ".join(r"lower(description) LIKE ? ESCAPE '\'" for _ in range(n)) + ")"
 
 
+def _count_field_usage(expressions: list[str]) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for expression in expressions:
+        try:
+            counts.update(data_fields(parse(expression), grouping=True))
+        except ParseError:
+            continue
+    return counts
+
+
 class CatalogQueries:
     """Read-side of the catalog."""
 
     def __init__(self, catalog: Catalog) -> None:
         self.catalog = catalog
+        self._submitted_field_counts: Counter[str] = Counter()
+        self._submitted_field_signature: tuple[int, Any] | None = None
+        self._submitted_field_counts_lock = asyncio.Lock()
 
     # -- overview --------------------------------------------------------
 
@@ -342,6 +358,10 @@ class CatalogQueries:
             SELECT field_id, dataset_id, category_id, category_name,
                    subcategory_id, subcategory_name, description, field_type,
                    coverage, date_coverage, user_count, alpha_count, pyramid_multiplier,
+                   coalesce((
+                       SELECT u.your_alphas FROM alpha_field_usage u
+                       WHERE u.field_id = data_field.field_id
+                   ), 0) AS your_alphas,
                    themes, date_created
             FROM {source}
             WHERE {where}
@@ -357,6 +377,44 @@ class CatalogQueries:
             "results": rows,
         }
 
+    async def _refresh_submitted_field_counts(self) -> None:
+        """Rebuild the field-usage index when this account's submitted Alphas change."""
+        summary = await self.catalog.query(
+            """
+            SELECT count(*) AS total, max(fetched_at) AS newest
+            FROM alpha
+            WHERE status IS NOT NULL AND upper(status) <> 'UNSUBMITTED'
+              AND expression IS NOT NULL
+            """
+        )
+        first = summary[0] if summary else {"total": 0, "newest": None}
+        signature = (int(first["total"] or 0), first["newest"])
+        if signature != self._submitted_field_signature:
+            async with self._submitted_field_counts_lock:
+                if signature != self._submitted_field_signature:
+                    expressions = await self.catalog.query(
+                        """
+                        SELECT expression FROM alpha
+                        WHERE status IS NOT NULL AND upper(status) <> 'UNSUBMITTED'
+                          AND expression IS NOT NULL
+                        """
+                    )
+                    self._submitted_field_counts = await asyncio.to_thread(
+                        _count_field_usage,
+                        [str(row["expression"]) for row in expressions],
+                    )
+                    await self.catalog.replace_alpha_field_usage(
+                        list(self._submitted_field_counts.items())
+                    )
+                    self._submitted_field_signature = signature
+
+    async def your_alpha_counts(self, field_ids: list[str]) -> dict[str, int]:
+        """Count this account's submitted Alphas that reference each requested data field."""
+        if not field_ids:
+            return {}
+        await self._refresh_submitted_field_counts()
+        return {field_id: self._submitted_field_counts[field_id] for field_id in field_ids}
+
     async def fields(self, scope: Tuple4, filters: FieldFilter) -> dict[str, Any]:
         """A filtered, sorted, paginated page of fields plus the total match count.
 
@@ -365,12 +423,17 @@ class CatalogQueries:
         so that is tried first; the count it produces is also the test of whether it found
         anything, and only an empty one costs a second round with any-of-the-words.
         """
+        await self._refresh_submitted_field_counts()
         terms = filters.terms()
         if not (terms and await search_ready(self.catalog)):
-            return await self._page(scope, filters, None, conjunctive=True)
-        page = await self._page(scope, filters, terms, conjunctive=True)
-        if page["total"] == 0 and " " in terms:
-            return await self._page(scope, filters, terms, conjunctive=False)
+            page = await self._page(scope, filters, None, conjunctive=True)
+        else:
+            page = await self._page(scope, filters, terms, conjunctive=True)
+            if page["total"] == 0 and " " in terms:
+                page = await self._page(scope, filters, terms, conjunctive=False)
+        counts = await self.your_alpha_counts([str(row["field_id"]) for row in page["results"]])
+        for row in page["results"]:
+            row["your_alphas"] = counts.get(str(row["field_id"]), 0)
         return page
 
     async def field(self, scope: Tuple4, field_id: str) -> dict[str, Any] | None:
@@ -378,7 +441,11 @@ class CatalogQueries:
             f"SELECT * FROM data_field WHERE {Tuple4.WHERE} AND field_id = ?",  # noqa: S608
             [*scope.params, field_id],
         )
-        return rows[0] if rows else None
+        if not rows:
+            return None
+        row = rows[0]
+        row["your_alphas"] = (await self.your_alpha_counts([field_id])).get(field_id, 0)
+        return row
 
     async def fields_by_id(
         self, scope: Tuple4, field_ids: list[str], *, whole_datasets: bool = False

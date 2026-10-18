@@ -18,6 +18,7 @@ import {
   type AlphaSortKey,
   pool,
 } from '@/screens/pool/api'
+import { AnalyzeSelectedAlphasButton } from '@/screens/pool/vault'
 import { MAX_SEEDS, MIN_SEEDS, useSeedPick } from '@/screens/research-labs/evolution/seed-pick'
 import { SharpeCell } from '@/screens/tasks/columns'
 import {
@@ -407,9 +408,17 @@ export function Stored({ onOpen }: { onOpen: (alphaId: string) => void }) {
 
         <div className="flex flex-wrap items-center gap-2">
           {!market && (
-            <span className={STATUS}>
-              <span className="num text-ink">{fmt.int(selected.size)}</span> selected
-            </span>
+            <>
+              <span className={STATUS}>
+                <span className="num text-ink">{fmt.int(selected.size)}</span> selected
+              </span>
+              {selected.size > 0 && (
+                <AnalyzeSelectedAlphasButton
+                  alphaIds={[...selected]}
+                  onStarted={() => setSelected(new Set())}
+                />
+              )}
+            </>
           )}
           <Button
             size="sm"

@@ -2397,9 +2397,60 @@ export interface paths {
         put?: never;
         /**
          * Analyze Quality
-         * @description Analyze every stored Alpha that does not yet have a quality verdict.
+         * @description Analyze pending Alphas, or the explicitly selected Alpha IDs.
          */
         post: operations["analyze_quality_api_vault_analyze_quality_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vault/analyze-quality/{task_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Quality Analysis */
+        post: operations["cancel_quality_analysis_api_vault_analyze_quality__task_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vault/analyze-quality/{task_id}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pause Quality Analysis */
+        post: operations["pause_quality_analysis_api_vault_analyze_quality__task_id__pause_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vault/analyze-quality/{task_id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resume Quality Analysis */
+        post: operations["resume_quality_analysis_api_vault_analyze_quality__task_id__resume_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3519,6 +3570,8 @@ export interface components {
             universe: string;
             /** User Count */
             user_count: number | null;
+            /** Your Alphas */
+            your_alphas: number;
         };
         /** DataFieldRow */
         DataFieldRow: {
@@ -3552,6 +3605,8 @@ export interface components {
             themes: string | null;
             /** User Count */
             user_count: number | null;
+            /** Your Alphas */
+            your_alphas: number;
         };
         /** DatasetFacet */
         DatasetFacet: {
@@ -4937,6 +4992,16 @@ export interface components {
             /** Columns */
             columns: components["schemas"]["PyramidColumn"][];
             quarter: components["schemas"]["Quarter"];
+        };
+        /** QualityAnalysisControl */
+        QualityAnalysisControl: {
+            /** Accepted */
+            accepted: boolean;
+        };
+        /** QualityAnalysisRequest */
+        QualityAnalysisRequest: {
+            /** Alpha Ids */
+            alpha_ids?: string[] | null;
         };
         /** QualityAnalysisStarted */
         QualityAnalysisStarted: {
@@ -10247,7 +10312,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["QualityAnalysisRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -10256,6 +10325,108 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["QualityAnalysisStarted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_quality_analysis_api_vault_analyze_quality__task_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QualityAnalysisControl"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pause_quality_analysis_api_vault_analyze_quality__task_id__pause_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QualityAnalysisControl"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resume_quality_analysis_api_vault_analyze_quality__task_id__resume_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QualityAnalysisControl"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

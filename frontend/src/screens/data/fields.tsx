@@ -114,9 +114,8 @@ function SearchMode({
 }
 
 /**
- * BRAIN's own Data Explorer columns, in its order and under its wording — plus Category, and
- * Users, which BRAIN still sends on every field but no longer draws. Against Alphas it gives
- * alphas per user: how hard the crowd is working a field, rather than how many have touched it.
+ * BRAIN's Data Explorer columns, plus Category and Users, which BRAIN still sends but no longer
+ * draws, and Your Alphas, which counts this account's submitted expressions using the field.
  */
 const COLUMNS: Column<DataFieldRow>[] = [
   {
@@ -164,6 +163,14 @@ const COLUMNS: Column<DataFieldRow>[] = [
         {r.field_type ?? DASH}
       </span>
     ),
+  },
+  {
+    key: 'your_alphas',
+    header: 'Your Alphas',
+    width: 'minmax(76px,0.55fr)',
+    align: 'right',
+    sortable: true,
+    cell: (r) => fmt.int(r.your_alphas),
   },
   {
     key: 'pyramid_multiplier',
@@ -1346,6 +1353,7 @@ function FieldSheet({
                 ['Category', d.category_name ?? DASH],
                 ['Subcategory', d.subcategory_name ?? DASH],
                 ['Type', d.field_type ?? DASH],
+                ['Your Alphas', fmt.int(d.your_alphas)],
                 ['Instrument Coverage', fmt.pct(d.coverage)],
                 ['Date Coverage', fmt.pct(d.date_coverage)],
                 ['Alpha Count', fmt.int(d.alpha_count)],

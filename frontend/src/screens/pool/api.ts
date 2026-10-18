@@ -80,7 +80,15 @@ export const pool = {
   summary: () => http.get<Record<string, number>>('/api/alphas/summary'),
   sync: () => http.post<Schemas['SyncStarted']>('/api/vault/sync'),
   /** Runs the stored-Alpha quality checks in the background, with task progress. */
-  analyzeQuality: () => http.post<{ taskId: string }>('/api/vault/analyze-quality'),
+  analyzeQuality: (alphaIds?: string[]) =>
+    http.post<{ taskId: string }>(
+      '/api/vault/analyze-quality',
+      alphaIds ? { alpha_ids: alphaIds } : undefined,
+    ),
+  controlQuality: (taskId: string, action: 'pause' | 'resume' | 'cancel') =>
+    http.post<{ accepted: boolean }>(
+      `/api/vault/analyze-quality/${encodeURIComponent(taskId)}/${action}`,
+    ),
   query: (body: AlphaPageRequest) => http.post<AlphaPage>('/api/vault/alphas/query', body),
   detail: (alphaId: string) =>
     http.get<AlphaDetail>(`/api/vault/alphas/${encodeURIComponent(alphaId)}/detail`),

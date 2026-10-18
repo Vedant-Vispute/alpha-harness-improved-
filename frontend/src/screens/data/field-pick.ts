@@ -130,6 +130,7 @@ export function excludedBy(row: DataFieldRow, filter: FieldFilterState): string 
 /** The columns a table can be sorted by, as a sentence names them. */
 const RANKS: Record<string, { name: string; desc: string; asc: string }> = {
   alpha_count: { name: 'Alphas', desc: 'most first', asc: 'fewest first' },
+  your_alphas: { name: 'Your Alphas', desc: 'most first', asc: 'fewest first' },
   user_count: { name: 'Users', desc: 'most first', asc: 'fewest first' },
   coverage: { name: 'Instrument Coverage', desc: 'highest first', asc: 'lowest first' },
   date_coverage: { name: 'Date Coverage', desc: 'highest first', asc: 'lowest first' },

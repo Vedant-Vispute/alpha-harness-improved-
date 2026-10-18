@@ -161,6 +161,14 @@ class QualityAnalysisStarted(Out):
     task_id: str
 
 
+class QualityAnalysisRequest(BaseModel):
+    alpha_ids: list[str] | None = Field(default=None, min_length=1, max_length=5_000)
+
+
+class QualityAnalysisControl(Out):
+    accepted: bool
+
+
 class AlphaDetail(Out):
     alpha_id: str
     expression: str | None
@@ -288,10 +296,38 @@ async def sync_alphas(state: State) -> SyncStarted:
 
 
 @router.post("/analyze-quality")
-async def analyze_quality(state: State) -> QualityAnalysisStarted:
-    """Analyze every stored Alpha that does not yet have a quality verdict."""
-    task_id = await state.backfill.start_quality_analysis()
+async def analyze_quality(
+    state: State, body: QualityAnalysisRequest | None = None
+) -> QualityAnalysisStarted:
+    """Analyze pending Alphas, or the explicitly selected Alpha IDs."""
+    alpha_ids = body.alpha_ids if body is not None else None
+    if alpha_ids is not None:
+        alpha_ids = list(dict.fromkeys(alpha_ids))
+        known = await state.alphas.by_ids(alpha_ids)
+        missing = [alpha_id for alpha_id in alpha_ids if alpha_id not in known]
+        if missing:
+            raise refuse(
+                404,
+                "unknown_alpha",
+                f"These selected Alphas are not stored locally: {', '.join(missing[:10])}",
+            )
+    task_id = await state.backfill.start_quality_analysis(alpha_ids)
     return QualityAnalysisStarted(task_id=task_id)
+
+
+@router.post("/analyze-quality/{task_id}/pause")
+async def pause_quality_analysis(task_id: str, state: State) -> QualityAnalysisControl:
+    return QualityAnalysisControl(accepted=await state.backfill.pause_quality(task_id))
+
+
+@router.post("/analyze-quality/{task_id}/resume")
+async def resume_quality_analysis(task_id: str, state: State) -> QualityAnalysisControl:
+    return QualityAnalysisControl(accepted=await state.backfill.resume_quality(task_id))
+
+
+@router.post("/analyze-quality/{task_id}/cancel")
+async def cancel_quality_analysis(task_id: str, state: State) -> QualityAnalysisControl:
+    return QualityAnalysisControl(accepted=state.backfill.cancel_quality(task_id))
 
 
 @router.get("/alphas/{alpha_id}/detail")

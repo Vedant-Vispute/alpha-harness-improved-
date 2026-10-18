@@ -33,6 +33,7 @@ export type FieldSortKey =
   | 'coverage'
   | 'user_count'
   | 'alpha_count'
+  | 'your_alphas'
   | 'pyramid_multiplier'
   | 'field_type'
   | 'date_coverage'
